@@ -1,0 +1,27 @@
+{
+  "workspace": {
+    "name": "IQ Development Workspace",
+    "type": "foundational",
+    "behavioralGuidelines": {
+      "builtIn": true,
+      "autoActivate": true,
+      "noConfigurationRequired": true
+    }
+  },
+  "defaults": {
+    "enforcement": {
+      "thinkBeforeCoding": true,
+      "simplicityFirst": true,
+      "surgicalChanges": true,
+      "goalDrivenExecution": true
+    },
+    "bias": "caution",
+    "continuousMonitoring": true
+  },
+  "activation": {
+    "onStartup": true,
+    "onFileOpen": true,
+    "onEdit": true,
+    "onCommit": true
+  }
+}

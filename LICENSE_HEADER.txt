@@ -1,0 +1,23 @@
+# IQ - Personal Multimodal LLM
+# Proprietary NIF Sovereign Architecture Implementation
+# Copyright © 2026 [Your Name]. All Rights Reserved.
+#
+# This software is proprietary and confidential. It is owned by [Your Name] and is
+# protected by copyright laws, international copyright treaties, and other
+# intellectual property laws.
+#
+# WARNING: This software contains proprietary algorithms and implementations including:
+# - NIF Sovereign Architecture
+# - Physics-based attention mechanisms
+# - Quantum-augmented neural networks
+# - Riemannian manifold embeddings
+# - Neutrino oscillation dynamics
+# - Ising Hamiltonian gates
+# - Custom optimization algorithms
+#
+# These implementations are trade secrets and proprietary intellectual property of [Your Name].
+# Unauthorized distribution, modification, or use is strictly prohibited and may result
+# in legal action and damages.
+#
+# By using this software, you agree to the terms of the PROPRIETARY_LICENSE.md file.
+# If you do not agree to these terms, you may not use this software.

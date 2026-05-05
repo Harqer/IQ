@@ -1,0 +1,366 @@
+# Google Cloud Training Configuration for IQ LLM
+# Proprietary NIF Sovereign Architecture Training Pipeline
+# Copyright © 2026 [Your Name]. All Rights Reserved.
+
+# Project Configuration
+project: "iq-llm-training"
+region: "us-central1"
+zone: "us-central1-a"
+
+# Training Job Configuration
+training_job:
+  name: "iq-nif-sovereign-training"
+  display_name: "IQ NIF Sovereign LLM Training"
+  description: "Training proprietary multimodal LLM with NIF architecture"
+
+# Compute Requirements
+compute:
+  # Primary training cluster
+  machine_type: "a3-highgpu-8g"  # 8x H200 GPUs
+  accelerator_type: "nvidia-h200"
+  accelerator_count: 8
+  boot_disk_size_gb: 2000  # Large disk for model checkpoints
+
+  # Memory Requirements
+  memory_gb: 192  # H200 GPU memory
+
+  # CPU Configuration
+  cpu_count: 96
+
+  # Network Configuration
+  network: "default"
+  subnetwork: "default"
+
+# Container Configuration
+container:
+  image: "us-docker.pkg.dev/deeplearning-platform-release/gpu.mojo:latest"
+
+  # Environment Variables
+  env_vars:
+    - name: "MOJO_VERSION"
+      value: "0.26.2"
+    - name: "CUDA_VERSION"
+      value: "12.4"
+    - name: "CUDA_Q_VERSION"
+      value: "0.3.0"
+    - name: "THUNDER_COMPUTE_ENDPOINT"
+      value: "https://api.thundercompute.com/v1"
+    - name: "NVIDIA_H200_TARGET"
+      value: "nvidia-h200-remote"
+    - name: "MODEL_NAME"
+      value: "IQ-NIF-Sovereign"
+    - name: "BASE_MODEL"
+      value: "Gemma-4-26B-A4B"
+    - name: "HIDDEN_DIM"
+      value: "4096"
+    - name: "NUM_LAYERS"
+      value: "32"
+    - name: "NUM_EXPERTS"
+      value: "3"
+    - name: "BATCH_SIZE"
+      value: "32"
+    - name: "SEQUENCE_LENGTH"
+      value: "8192"
+    - name: "LEARNING_RATE"
+      value: "1e-4"
+    - name: "MUON_MOMENTUM"
+      value: "0.9"
+    - name: "GALORE_RANK"
+      value: "64"
+    - name: "VERA_RANK"
+      value: "64"
+    - name: "RIEMANNIAN_CURVATURE"
+      value: "0.1"
+    - name: "NEUTRINO_OSCILLATION_DEPTH"
+      value: "8"
+    - name: "ISING_ITERATIONS"
+      value: "10"
+    - name: "MAX_STEPS"
+      value: "1000000"
+    - name: "SAVE_INTERVAL"
+      value: "10000"
+    - name: "EVAL_INTERVAL"
+      value: "5000"
+    - name: "LOG_INTERVAL"
+      value: "100"
+
+# Training Script Configuration
+training_script:
+  path: "/workspace/nif_sovereign/core/custom_training_logic.mojo"
+  entry_point: "main"
+
+  # Training Arguments
+  arguments:
+    - "--config-path=/workspace/config/nif_config.mojo"
+    - "--data-path=/data/training"
+    - "--output-path=/output/model"
+    - "--checkpoint-path=/output/checkpoints"
+    - "--log-path=/output/logs"
+    - "--tensorboard-path=/output/tensorboard"
+    - "--wandb-project=IQ-NIF-Training"
+    - "--wandb-entity=your-wandb-username"
+    - "--mixed-precision=true"
+    - "--gradient-accumulation-steps=4"
+    - "--max-grad-norm=1.0"
+    - "--warmup-steps=10000"
+    - "--weight-decay=0.01"
+    - "--adam-epsilon=1e-8"
+    - "--adam-betas=0.9,0.999"
+    - "--scheduler=cosine"
+    - "--min-lr=1e-6"
+    - "--dataloader-num-workers=8"
+    - "--pin-memory=true"
+    - "--persistent-workers=true"
+
+# Data Configuration
+data:
+  # Training Data
+  training_data:
+    - path: "gs://iq-training-data/gneissweb-2026"
+      format: "parquet"
+      type: "text"
+      weight: 0.7
+    - path: "gs://iq-training-data/stack-v3"
+      format: "parquet"
+      type: "code"
+      weight: 0.3
+
+  # Validation Data
+  validation_data:
+    - path: "gs://iq-training-data/validation"
+      format: "parquet"
+      type: "mixed"
+      weight: 1.0
+
+  # Test Data
+  test_data:
+    - path: "gs://iq-training-data/test"
+      format: "parquet"
+      type: "mixed"
+      weight: 1.0
+
+# Storage Configuration
+storage:
+  # Model Checkpoints
+  checkpoints:
+    path: "gs://iq-model-checkpoints/nif-sovereign"
+    retention_policy: "keep_last_10"
+
+  # Training Logs
+  logs:
+    path: "gs://iq-training-logs/nif-sovereign"
+    retention_policy: "keep_30_days"
+
+  # Model Artifacts
+  artifacts:
+    path: "gs://iq-model-artifacts/nif-sovereign"
+    retention_policy: "keep_all"
+
+# Monitoring and Logging
+monitoring:
+  # TensorBoard
+  tensorboard:
+    enabled: true
+    path: "gs://iq-training-logs/tensorboard"
+
+  # Weights & Biases
+  wandb:
+    enabled: true
+    project: "IQ-NIF-Training"
+    entity: "your-wandb-username"
+
+  # Cloud Monitoring
+  cloud_monitoring:
+    enabled: true
+    metrics:
+      - "gpu_utilization"
+      - "gpu_memory_used"
+      - "gpu_temperature"
+      - "training_loss"
+      - "validation_loss"
+      - "learning_rate"
+      - "gradient_norm"
+      - "throughput"
+
+# Distributed Training
+distributed:
+  strategy: "ddp"  # Distributed Data Parallel
+  backend: "nccl"
+
+  # Multi-node Configuration
+  worker_count: 8
+  worker_config:
+    machine_type: "a3-highgpu-8g"
+    accelerator_type: "nvidia-h200"
+    accelerator_count: 8
+
+# Hyperparameter Tuning
+hyperparameter_tuning:
+  enabled: true
+
+  # Tuning Metrics
+  objective_metric: "validation_loss"
+  objective: "minimize"
+
+  # Parameter Ranges
+  parameters:
+    learning_rate:
+      type: "double"
+      min: 1e-6
+      max: 1e-3
+      scale: "log"
+
+    batch_size:
+      type: "discrete"
+      values: [16, 32, 64]
+
+    muon_momentum:
+      type: "double"
+      min: 0.8
+      max: 0.99
+      scale: "linear"
+
+    galore_rank:
+      type: "discrete"
+      values: [32, 64, 128]
+
+    vera_rank:
+      type: "discrete"
+      values: [32, 64, 128]
+
+    riemannian_curvature:
+      type: "double"
+      min: 0.01
+      max: 1.0
+      scale: "log"
+
+    neutrino_oscillation_depth:
+      type: "discrete"
+      values: [4, 8, 16]
+
+    ising_iterations:
+      type: "discrete"
+      values: [5, 10, 20]
+
+  # Trial Configuration
+  max_trial_count: 50
+  parallel_trial_count: 5
+  max_failed_trial_count: 10
+
+# Resource Management
+resources:
+  # Preemption Configuration
+  preemptible: false
+  restart_on_failure: true
+
+  # Timeout Configuration
+  timeout_hours: 720  # 30 days
+
+  # Disk Management
+  disk_cleanup:
+    enabled: true
+    cleanup_interval_hours: 24
+    keep_checkpoints: 10
+
+  # Memory Management
+  memory_optimization:
+    gradient_checkpointing: true
+    mixed_precision: true
+    cpu_offload: false
+    activation_checkpointing: true
+
+# Security and Access
+security:
+  # Service Account
+  service_account: "iq-training@iq-llm-training.iam.gserviceaccount.com"
+
+  # IAM Permissions
+  required_permissions:
+    - "aiplatform.customJobs.create"
+    - "aiplatform.customJobs.get"
+    - "aiplatform.customJobs.list"
+    - "aiplatform.customJobs.delete"
+    - "storage.objects.get"
+    - "storage.objects.create"
+    - "storage.objects.update"
+    - "storage.objects.delete"
+    - "storage.buckets.get"
+    - "storage.buckets.create"
+    - "storage.buckets.update"
+    - "logging.logEntries.create"
+    - "monitoring.timeSeries.create"
+    - "monitoring.metrics.list"
+
+  # Network Configuration
+  network_policy:
+    egress_enabled: true
+    ingress_enabled: false
+
+  # Encryption
+  encryption:
+    kms_key_name: "projects/iq-llm-training/locations/us-central1/keyRings/encryption/cryptoKeys/model-encryption"
+
+# Cost Management
+cost:
+  # Budget Alert
+  budget_alert:
+    enabled: true
+    budget_amount: 50000  # $50,000 USD
+    alert_threshold: 0.8
+
+  # Cost Optimization
+  cost_optimization:
+    spot_instances: false  # Use regular instances for training stability
+    auto_scaling: true
+    resource_optimization: true
+
+  # Usage Tracking
+  usage_tracking:
+    enabled: true
+    tracking_interval: 300  # 5 minutes
+
+# Notification Configuration
+notifications:
+  # Email Notifications
+  email:
+    enabled: true
+    recipients:
+      - "your.email@example.com"
+    events:
+      - "job_started"
+      - "job_completed"
+      - "job_failed"
+      - "checkpoint_saved"
+      - "budget_alert"
+
+  # Slack Notifications
+  slack:
+    enabled: true
+    webhook_url: "https://hooks.slack.com/services/YOUR/SLACK/WEBHOOK"
+    channel: "#iq-training"
+    events:
+      - "job_started"
+      - "job_completed"
+      - "job_failed"
+      - "budget_alert"
+
+# Experimental Features
+experimental:
+  # Feature Flags
+  enable_cuda_q: true
+  enable_thunder_compute: true
+  enable_quantum_augmentation: true
+  enable_physics_optimization: true
+
+  # Debug Configuration
+  debug:
+    enabled: false
+    profiling: false
+    memory_profiling: false
+
+  # Advanced Features
+  advanced:
+    enable_gradient_accumulation: true
+    enable_dynamic_batching: false
+    enable_adaptive_learning_rate: true
+    enable_curriculum_learning: false

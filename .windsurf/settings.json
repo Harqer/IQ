@@ -1,0 +1,52 @@
+{
+  "behavioralGuidelines": {
+    "enabled": true,
+    "enforceOnSave": true,
+    "showWarnings": true,
+    "checkOnCommit": true,
+    "continuousEnforcement": true
+  },
+  "guidelines": {
+    "thinkBeforeCoding": {
+      "requireAssumptions": true,
+      "requireTradeoffs": true,
+      "askWhenUnclear": true,
+      "checkMagicNumbers": true,
+      "requireComplexityExplanation": true
+    },
+    "simplicityFirst": {
+      "maxLinesPerFile": 200,
+      "maxFilesPerChange": 5,
+      "warnOnAbstractions": true,
+      "checkSpeculativeFeatures": true,
+      "preventOverEngineering": true,
+      "seniorEngineerReview": true
+    },
+    "surgicalChanges": {
+      "warnOnUnrelatedChanges": true,
+      "enforceStyleConsistency": true,
+      "trackOrphanCleanup": true,
+      "preventImprovementChanges": true,
+      "requireDirectTraceability": true
+    },
+    "goalDrivenExecution": {
+      "requireSuccessCriteria": true,
+      "requireVerificationPlan": true,
+      "warnOnVagueGoals": true,
+      "transformVagueToSpecific": true,
+      "requireLoopVerification": true
+    }
+  },
+  "integrations": {
+    "preCommitHooks": true,
+    "linterRules": true,
+    "workflowPrompts": true,
+    "realTimeValidation": true,
+    "gitMessageValidation": true
+  },
+  "enforcement": {
+    "biasTowardCaution": true,
+    "trivialTaskJudgment": true,
+    "continuousMonitoring": true
+  }
+}
