@@ -1,172 +1,69 @@
-# Module B: Neutrino Oscillation Block
-# Recurrent logic loop that allows hidden state to iterate N times
-# through a shared weight manifold before the next layer
-# Inspired by neutrino flavor oscillations in quantum mechanics
+# NIF Sovereign Neutrino Oscillation Block
+# Liquid SSM Implementation: Differential Phase Morphing
+# Sovereign Implementation: Self-Evolving Sequence Engine
 
-from tensor import Tensor
-from math import sin, cos, exp, sqrt
+from math import sin, cos, exp, sqrt, tanh
+from nif_sovereign.system_config import SystemConfig
+from nif_sovereign.core.custom_training_logic import SovereignTensor
 
-struct NeutrinoOscillationBlock:
-    var config: NIFConfig
-    var hidden_dim: Int
-    var oscillation_depth: Int
-    var mixing_matrix: Tensor[DType.float32]
-    var mass_eigenstates: Tensor[DType.float32]
-    var phase_velocities: Tensor[DType.float32]
+struct NeutrinoOscillationBlock[dtype: DType]:
+    var config: SystemConfig
+    var mixing_matrix: SovereignTensor[Self.dtype]
+    var phase_velocities: SovereignTensor[Self.dtype]
+    
+    # Liquid Parameters
+    var stability_sensitivity: Scalar[Self.dtype]
 
-    fn __init__(inout self, config: NIFConfig):
+    fn __init__(out self, config: SystemConfig):
         self.config = config
-        self.hidden_dim = config.hidden_dim
-        self.oscillation_depth = config.neutrino_oscillation_depth
+        self.mixing_matrix = SovereignTensor[Self.dtype](9) # 3x3 mixing
+        self.phase_velocities = SovereignTensor[Self.dtype](config.hidden_dim)
+        self.stability_sensitivity = Scalar[Self.dtype](0.1)
+        
+        print("⚛️ Liquid Neutrino Block Initialized (SSM Morphing Enabled)")
 
-        # Initialize neutrino oscillation parameters
-        self.mixing_matrix = self.initialize_mixing_matrix()
-        self.mass_eigenstates = self.initialize_mass_eigenstates()
-        self.phase_velocities = self.initialize_phase_velocities()
+    fn __copyinit__(out self, copy: Self):
+        self.config = copy.config
+        self.mixing_matrix = copy.mixing_matrix
+        self.phase_velocities = copy.phase_velocities
+        self.stability_sensitivity = copy.stability_sensitivity
 
-        print("⚛️ Neutrino Oscillation Block Initialized")
-        print("   - Oscillation Depth: {}".format(self.oscillation_depth))
-        print("   - Hidden Dimension: {}".format(self.hidden_dim))
+    fn __moveinit__(out self, owned owned_val: Self):
+        self.config = owned_val.config
+        self.mixing_matrix = owned_val.mixing_matrix^
+        self.phase_velocities = owned_val.phase_velocities^
+        self.stability_sensitivity = owned_val.stability_sensitivity
 
-    @parameter
-    fn initialize_mixing_matrix() -> Tensor[DType.float32]:
-        # Initialize PMNS (Pontecorvo–Maki–Nakagawa–Sakata) mixing matrix
-        # This governs neutrino flavor oscillations
-        var mixing = Tensor[DType.float32](3, 3)  # 3 flavor states
+    fn liquid_oscillate(
+        mut self, 
+        mut hidden_states: SovereignTensor[dtype], 
+        stability: Scalar[dtype]
+    ):
+        """
+        Liquid Morphing: Phase velocities are no longer fixed.
+        They evolve as a differential of the input's stability metric.
+        """
+        # Calculate the Liquid Delta (Micro-Evolution)
+        # Shift phase based on the Ising field stability
+        var liquid_delta = (1.0 - stability) * self.stability_sensitivity
+        
+        print("💧 Mid-Sentence Morphing: Applying Liquid Delta", liquid_delta)
 
-        # Simplified PMNS matrix parameters
-        var theta12 = 0.59  # Solar angle
-        var theta23 = 0.85  # Atmospheric angle
-        var theta13 = 0.15  # Reactor angle
-        var delta_cp = 1.36  # CP violation phase
+        for i in range(hidden_states.buffer.size):
+            # Dynamic Phase Evolution: phi(t) = phi_0 + delta * complexity
+            var original_phase = self.phase_velocities.buffer.ptr.value()[i]
+            var liquid_phase = original_phase + liquid_delta
+            
+            # Oscillatory state evolution (Neutrino physics inspired)
+            var oscillation_factor = sin(liquid_phase)
+            hidden_states.buffer.ptr.value()[i] = tanh(hidden_states.buffer.ptr.value()[i] * oscillation_factor)
 
-        # Construct mixing matrix
-        mixing[0, 0] = cos(theta12) * cos(theta13)
-        mixing[0, 1] = sin(theta12) * cos(theta13)
-        mixing[0, 2] = sin(theta13) * exp(-1i * delta_cp)
-
-        mixing[1, 0] = -sin(theta12) * cos(theta23) - cos(theta12) * sin(theta23) * sin(theta13) * exp(1i * delta_cp)
-        mixing[1, 1] = cos(theta12) * cos(theta23) - sin(theta12) * sin(theta23) * sin(theta13) * exp(1i * delta_cp)
-        mixing[1, 2] = sin(theta23) * cos(theta13)
-
-        mixing[2, 0] = sin(theta12) * sin(theta23) - cos(theta12) * cos(theta23) * sin(theta13) * exp(1i * delta_cp)
-        mixing[2, 1] = -cos(theta12) * sin(theta23) - sin(theta12) * cos(theta23) * sin(theta13) * exp(1i * delta_cp)
-        mixing[2, 2] = cos(theta23) * cos(theta13)
-
-        return mixing
-
-    @parameter
-    fn initialize_mass_eigenstates() -> Tensor[DType.float32]:
-        # Initialize neutrino mass eigenstates
-        var masses = Tensor[DType.float32](3)
-        masses[0] = 0.001  # eV scale
-        masses[1] = 0.009  # eV scale
-        masses[2] = 0.05  # eV scale
-        return masses
-
-    @parameter
-    fn initialize_phase_velocities() -> Tensor[DType.float32]:
-        # Initialize phase velocities for oscillation
-        var velocities = Tensor[DType.float32](self.hidden_dim)
-        for i in range(self.hidden_dim):
-            velocities[i] = 2.0 * 3.14159 * Float32(i) / Float32(self.hidden_dim)
-        return velocities
-
-    fn oscillate(inout self, input_embeddings: Tensor[DType.float32]) -> Tensor[DType.float32]:
-        # Main oscillation function - iterates hidden state through weight manifold
-        var shape = input_embeddings.shape()
-        var batch_size = shape[0]
-        var seq_len = shape[1]
-        var hidden_dim = shape[2]
-
-        # Initialize oscillation states
-        var current_state = input_embeddings
-        var oscillation_history = Tensor[DType.float32](batch_size, seq_len, hidden_dim)
-
-        # Perform neutrino oscillation iterations
-        for iteration in range(self.oscillation_depth):
-            current_state = self.single_oscillation_step(current_state, iteration)
-
-            # Accumulate oscillation history
-            for b in range(batch_size):
-                for s in range(seq_len):
-                    for h in range(hidden_dim):
-                        oscillation_history[b, s, h] += current_state[b, s, h] / Float32(self.oscillation_depth)
-
-        return oscillation_history
-
-    fn single_oscillation_step(inout self, state: Tensor[DType.float32], iteration: Int) -> Tensor[DType.float32]:
-        # Single step of neutrino oscillation
-        var shape = state.shape()
-        var new_state = Tensor[DType.float32](shape[0], shape[1], shape[2])
-
-        for b in range(shape[0]):
-            for s in range(shape[1]):
-                new_state[b, s, :] = self.apply_flavor_oscillation(state[b, s, :], iteration)
-
-        return new_state
-
-    fn apply_flavor_oscillation(inout self, hidden_vector: Tensor[DType.float32], iteration: Int) -> Tensor[DType.float32]:
-        # Apply flavor oscillation to hidden vector
-        var dim = hidden_vector.shape()[0]
-        var oscillated = Tensor[DType.float32](dim)
-
-        # Treat hidden dimensions as neutrino flavor states
-        for i in range(dim):
-            var flavor_amplitude = 0.0
-
-            for flavor in range(3):  # 3 neutrino flavors
-                if i < dim:
-                    # Calculate oscillation probability
-                    var mass_diff = self.mass_eigenstates[flavor % 3] - self.mass_eigenstates[0]
-                    var phase = mass_diff * Float32(iteration) * self.phase_velocities[i % self.hidden_dim]
-                    var probability = sin(phase * 0.5) ** 2
-
-                    # Apply mixing matrix transformation
-                    flavor_amplitude += self.mixing_matrix[flavor, i % 3] * hidden_vector[i] * probability
-
-            oscillated[i] = flavor_amplitude
-
-        return oscillated
-
-    fn apply_shared_manifold_transform(inout self, state: Tensor[DType.float32]) -> Tensor[DType.float32]:
-        # Apply shared weight manifold transformation
-        var shape = state.shape()
-        var transformed = Tensor[DType.float32](shape[0], shape[1], shape[2])
-
-        # Create shared manifold weights (simplified)
-        var manifold_weights = self.create_shared_manifold()
-
-        for b in range(shape[0]):
-            for s in range(shape[1]):
-                # Apply manifold transformation
-                for i in range(shape[2]):
-                    var manifold_projection = 0.0
-                    for j in range(shape[2]):
-                        manifold_projection += manifold_weights[i, j] * state[b, s, j]
-                    transformed[b, s, i] = tanh(manifold_projection)
-
-        return transformed
-
-    fn create_shared_manifold() -> Tensor[DType.float32]:
-        # Create shared weight manifold for oscillation
-        var manifold = Tensor[DType.float32](self.hidden_dim, self.hidden_dim)
-
-        for i in range(self.hidden_dim):
-            for j in range(self.hidden_dim):
-                # Create structured manifold based on oscillation physics
-                var distance = abs(Float32(i - j)) / Float32(self.hidden_dim)
-                manifold[i, j] = exp(-distance * 2.0) * cos(2.0 * 3.14159 * distance)
-
-        return manifold
-
-    fn compute_oscillation_probability(inout self, energy: Float32, baseline: Float32) -> Float32:
-        # Compute neutrino oscillation probability
-        # P = sin²(2θ) * sin²(1.27 * Δm² * L / E)
-        var delta_m_squared = 0.000075  # eV²
-        var mixing_angle = 0.59  # radians
-
-        var phase = 1.27 * delta_m_squared * baseline / energy
-        var probability = sin(2.0 * mixing_angle) ** 2 * sin(phase) ** 2
-
-        return probability
+    fn inject_hamiltonian_noise(mut self, noise_level: Scalar[dtype]):
+        """
+        Hallucinate better architectural layouts by exploring new state spaces.
+        Introduces synthetic noise into the oscillation Hamiltonian.
+        """
+        print("🎲 Injecting Hamiltonian Noise to explore state space...")
+        # Add perturbation to the phase velocities
+        for i in range(self.phase_velocities.buffer.size):
+            self.phase_velocities.buffer.ptr.value()[i] += noise_level
