@@ -19,7 +19,7 @@ struct DataFlywheel:
         self.cosmopedia_version = "v2-high-quality"
         self.batch_size = config.batch_size
         self.sequence_length = config.sequence_length
-        self.data_buffer_size = 1000000 
+        self.data_buffer_size = 1000000
         self.processing_queue = ""
         self.is_active = False
 

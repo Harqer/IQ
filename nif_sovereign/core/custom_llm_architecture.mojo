@@ -41,27 +41,27 @@ struct MetacognitiveBuffer:
 struct NIFCustomLLM:
     var config: SystemConfig
     var metacognition: MetacognitiveBuffer
-    
+
     # Physics-based components (Refactored to be Liquid-Ready)
     var riemannian_embedding: LorentzianEmbedding[DType.float32]
     var neutrino_oscillation: NeutrinoOscillationBlock[DType.float32]
     var ising_gate: IsingGate[DType.float32]
-    
+
     # Dynamic Manifold Parameters
     var curvature_bias: SovereignTensor[DType.float64] # Float64 for geometry preservation
 
     fn __init__(out self, config: SystemConfig):
         self.config = config
         self.metacognition = MetacognitiveBuffer(config.hidden_dim)
-        
+
         # Initialize hardened components
         self.riemannian_embedding = LorentzianEmbedding[DType.float32](config)
         self.neutrino_oscillation = NeutrinoOscillationBlock[DType.float32](config)
         self.ising_gate = IsingGate[DType.float32](config)
-        
+
         # Dynamic Curvature initialization
         self.curvature_bias = SovereignTensor[DType.float64](config.num_layers)
-        
+
         print("🧠 Initializing NIF Sovereign Liquid Architecture")
         print("   - Base Tier: Gemma-4-26B")
         print("   - Synaptic Structure: Liquid SSM + Ising Hamiltonian")
@@ -76,29 +76,29 @@ struct NIFCustomLLM:
             print("🌀 LOGICAL BOTTLENECK: Shifting Manifold Curvature...")
             # Recursive shift in the curvature bias to allow more logical 'volume'
             for i in range(self.curvature_bias.buffer.size):
-                self.curvature_bias.buffer.ptr.value()[i] *= 1.1 
+                self.curvature_bias.buffer.ptr.value()[i] *= 1.1
 
     fn liquid_forward(mut self, mut hidden_states: SovereignTensor[DType.float32]):
         """
-        Liquid Morphing Forward Pass: 
+        Liquid Morphing Forward Pass:
         A and B matrices morph as functions of input complexity.
         """
         # 1. Update Metacognitive State from Ising Metabolism
         var current_ising_energy = self.ising_gate.get_energy()
         self.metacognition.update(current_ising_energy.cast[DType.float32]())
-        
+
         # 2. Check for Evolution Trigger
         self.recursive_geometry_expansion()
-        
+
         # 3. Liquid Neutrino Oscillation (Adaptive SSM)
         # Instead of fixed depth, we oscillate based on logical stability
         self.neutrino_oscillation.liquid_oscillate(
-            hidden_states, 
+            hidden_states,
             Scalar[DType.float32](self.metacognition.stability)
         )
-        
+
         # 4. Ising Logic Alignment
         # The Ising gate aligns the student's logic path with the ground-state
         self.ising_gate.find_ground_state(hidden_states)
-        
+
         print("✅ Liquid Pass Complete. Logic Stability:", self.metacognition.stability)

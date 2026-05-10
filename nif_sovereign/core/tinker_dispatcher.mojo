@@ -25,7 +25,7 @@ struct TinkerDispatcher:
         self.api_key = api_key
         self.project_id = project_id
         self.is_initialized = True
-        
+
         print("🚀 Tinker Management Engine Active")
         print("   - Project: " + self.project_id)
         print("   - Strategy: Hybrid NIF-Sovereign")
@@ -36,7 +36,7 @@ struct TinkerDispatcher:
         print("   - Step 1: Teacher (26B) -> Assistant (7B)")
         print("   - Step 2: Assistant (7B) -> Student (1B)")
         print("   - Strategy: Lorentzian Manifold Preservation (Target: 95% IQ)")
-        
+
         var bridge_id = "bridge_" + String("20260505_7B_1B")
         print("✅ Progressive Distillation Bridge Active: " + bridge_id)
         return bridge_id
@@ -44,11 +44,11 @@ struct TinkerDispatcher:
     fn launch_sft_job(self, config: SystemConfig, dataset_path: String) -> String:
         """Launch a Supervised Fine-Tuning job using Tinker's SFT recipe"""
         print("📡 Dispatching SFT Job to Tinker...")
-        
+
         # In a live environment with the SDK:
         # var client = tinker.TrainingClient(api_key=self.api_key)
         # var lora = tinker.types.LoraConfig(rank=config.adapter_rank, alpha=config.adapter_rank * 2)
-        
+
         var job_id = "sft_" + String("20260505_001")
         print("✅ SFT Job Dispatched: " + job_id)
         return job_id

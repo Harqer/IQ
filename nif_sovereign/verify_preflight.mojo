@@ -27,10 +27,10 @@ struct MockConfig:
 fn main():
     print("📋 IQ Pre-flight Configuration Check")
     print("=" * 40)
-    
+
     # 1. Load Configuration
     var config = MockConfig()
-    
+
     # 2. Verify Architecture
     print("\n[1/4] Verifying Architecture...")
     print("✅ Base Model: " + config.base_model)
@@ -52,7 +52,7 @@ fn main():
     print("\n[4/4] Verifying Infrastructure...")
     if config.tinker_api_key.startswith("tml-"):
         print("✅ Tinker API Key: Detected (Thinking Machine Labs)")
-        
+
     if config.gpu_target == "nvidia-h200-remote":
         print("✅ GPU Target: NVIDIA H200 Cluster")
 

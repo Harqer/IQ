@@ -10,7 +10,7 @@ struct NeutrinoOscillationBlock[dtype: DType]:
     var config: SystemConfig
     var mixing_matrix: SovereignTensor[Self.dtype]
     var phase_velocities: SovereignTensor[Self.dtype]
-    
+
     # Liquid Parameters
     var stability_sensitivity: Scalar[Self.dtype]
 
@@ -19,7 +19,7 @@ struct NeutrinoOscillationBlock[dtype: DType]:
         self.mixing_matrix = SovereignTensor[Self.dtype](9) # 3x3 mixing
         self.phase_velocities = SovereignTensor[Self.dtype](config.hidden_dim)
         self.stability_sensitivity = Scalar[Self.dtype](0.1)
-        
+
         print("⚛️ Liquid Neutrino Block Initialized (SSM Morphing Enabled)")
 
     fn __copyinit__(out self, copy: Self):
@@ -35,8 +35,8 @@ struct NeutrinoOscillationBlock[dtype: DType]:
         self.stability_sensitivity = owned_val.stability_sensitivity
 
     fn liquid_oscillate(
-        mut self, 
-        mut hidden_states: SovereignTensor[dtype], 
+        mut self,
+        mut hidden_states: SovereignTensor[dtype],
         stability: Scalar[dtype]
     ):
         """
@@ -46,14 +46,14 @@ struct NeutrinoOscillationBlock[dtype: DType]:
         # Calculate the Liquid Delta (Micro-Evolution)
         # Shift phase based on the Ising field stability
         var liquid_delta = (1.0 - stability) * self.stability_sensitivity
-        
+
         print("💧 Mid-Sentence Morphing: Applying Liquid Delta", liquid_delta)
 
         for i in range(hidden_states.buffer.size):
             # Dynamic Phase Evolution: phi(t) = phi_0 + delta * complexity
             var original_phase = self.phase_velocities.buffer.ptr.value()[i]
             var liquid_phase = original_phase + liquid_delta
-            
+
             # Oscillatory state evolution (Neutrino physics inspired)
             var oscillation_factor = sin(liquid_phase)
             hidden_states.buffer.ptr.value()[i] = tanh(hidden_states.buffer.ptr.value()[i] * oscillation_factor)

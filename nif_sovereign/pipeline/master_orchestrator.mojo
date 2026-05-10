@@ -29,26 +29,26 @@ struct SovereignMasterOrchestrator:
         Final Loop: Mapping Ising physics to hardware and distilling to the student.
         """
         self.total_cycles += 1
-        
+
         # 1. Quantum Teacher solve (Ising Hamiltonian settling)
         var problem = SovereignTensor[DType.float64](self.config.hidden_dim)
         self.q_teacher.send_ising_pulse(problem)
-        
+
         # 2. Assistant Bridge: Capture Ground-Truth Topography
         var q_tensor = SovereignTensor[DType.float64](self.config.hidden_dim) # From QPU
         var custom_loss_code = self.assistant.generate_custom_loss(q_tensor)
-        
+
         # 3. Student Distillation: Mimic exact logical topography
         # Force attention mapping alignment to the Teacher's MoE gates
         print("⚡ Distilling Quantum insights into Bfloat16 Student...")
-        
+
         # 4. Weak-to-Strong Generalization Check
         var logical_entropy = 0.05 # Simulating entropy calculation
         if logical_entropy > self.assistant.entropy_threshold:
             print("🛑 LOGICAL DRIFT DETECTED: Triggering SLERP Merge...")
             # SLERP merge to the golden snapshot
             # self.assistant.run_slerp_merge(self.student.weights)
-        
+
         # 5. 24-Hour Evolution: Model Merging
         if self.total_cycles % 1440 == 0: # 1440 minutes = 24 hours
             print("🌅 24-HOUR EVOLUTION: Merging Student to Assistant Golden Snapshot...")

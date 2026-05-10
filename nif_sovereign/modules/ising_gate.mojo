@@ -17,7 +17,7 @@ struct IsingGate[dtype: DType]:
         self.spin_state = SovereignTensor[Self.dtype](config.hidden_dim)
         self.coupling_constant = Scalar[Self.dtype](0.5)
         self.temperature = Scalar[Self.dtype](1.0)
-        
+
         print("🧲 Ising Gate Initialized (Ground-State Mode)")
 
     fn __copyinit__(out self, copy: Self):
@@ -37,7 +37,7 @@ struct IsingGate[dtype: DType]:
         """
         # Mimicking the teacher's Poincaré distance between components
         print("🌀 Aligning Spin States to Teacher Trajectory...")
-        
+
         # Ground-state energy minimization logic
         for i in range(self.spin_state.shape):
             # Student learns the specific spatial relationships (Ising trajectory)

@@ -20,7 +20,7 @@ struct MetabolicOrchestrator:
         self.trainer = NIFCustomTrainer(config)
         self.cycle_count = 0
         self.metabolism_rate = 0.01
-        
+
         print("🏛️ Metabolic Orchestrator Initialized (Sophia-G Engine)")
 
     fn execute_metabolic_cycle(mut self):
@@ -29,27 +29,27 @@ struct MetabolicOrchestrator:
         Re-optimizes kernels and explores new state spaces every 1000 cycles.
         """
         self.cycle_count += 1
-        
+
         # 1. Standard Distillation Step
         self.trainer.step()
-        
+
         # 2. Check Metacognitive Stability
         var stability = self.model.metacognition.stability
-        
+
         # 3. Macro-Evolution Trigger (Alpha Evolve)
         if self.cycle_count % 100 == 0: # Simulating "few thousand cycles"
             print("🔬 ALPHA EVOLVE: Evaluating Logical Topography...")
-            
+
             if stability < 0.4:
                 print("⚠️ STABILITY LOW: Rewriting Riemannian Integration Kernel...")
-                # In a production MAX environment, this would trigger a 
+                # In a production MAX environment, this would trigger a
                 # Mojo JIT re-compilation of specialized H200 kernels.
                 self.model.recursive_geometry_expansion()
-                
+
                 # Force architectural hallucination to find a better layout
                 # Re-accessing the neutrino block to inject noise
                 self.model.neutrino_oscillation.inject_hamiltonian_noise(0.05)
-                
+
             print("🚀 METABOLISM COMPLETE: Model efficiency recalibrated.")
 
     fn run_production_stream(mut self):

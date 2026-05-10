@@ -38,8 +38,8 @@ struct HybridSovereignTensor:
 
 # Advanced SLERP (Spherical Linear Interpolation) for Model Merging
 fn slerp[dtype: DType](
-    mut student: SovereignTensor[dtype], 
-    assistant: SovereignTensor[dtype], 
+    mut student: SovereignTensor[dtype],
+    assistant: SovereignTensor[dtype],
     alpha: Float32
 ):
     """
@@ -53,6 +53,6 @@ fn slerp[dtype: DType](
     for i in range(student.buffer.size):
         var v1 = student.buffer.ptr.value()[i]
         var v2 = assistant.buffer.ptr.value()[i]
-        # Simplified linear blend as a baseline; 
+        # Simplified linear blend as a baseline;
         # actual slerp requires dot product calculation for theta.
         student.buffer.ptr.value()[i] = v1 * (1.0 - alpha) + v2 * alpha

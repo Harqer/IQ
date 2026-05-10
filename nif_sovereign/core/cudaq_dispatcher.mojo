@@ -5,7 +5,7 @@
 from nif_sovereign.system_config import SystemConfig
 from nif_sovereign.core.custom_training_logic import SovereignTensor
 
-# Standardizing for NVIDIA DGX Spark / CUDA-Q 
+# Standardizing for NVIDIA DGX Spark / CUDA-Q
 struct QuantumPulseDispatcher:
     var config: SystemConfig
     var laser_pulse_timing: Float64
@@ -25,7 +25,7 @@ struct QuantumPulseDispatcher:
         print("📡 Dispatching Pulse to Rydberg Array via DGX Spark...")
         # In a production environment, this calls the CUDA-Q kernel:
         # qpu_execute(rydberg_kernel, pulse_schedule)
-        
+
     fn adjust_pulse_timing(mut self, noise_metric: Float64):
         """
         Self-Correction: AlphaEvolve rewrites the pulse timing if noise is detected.
@@ -33,7 +33,7 @@ struct QuantumPulseDispatcher:
         """
         if noise_metric > 0.05:
             print("🔧 ALPHA EVOLVE: Adjusting Laser Pulse Timing for Rydberg Blockade...")
-            self.laser_pulse_timing -= 0.0001 
+            self.laser_pulse_timing -= 0.0001
 
 # Assistant Distillation Bridge: Translating Quantum Tensors to Classical
 struct AssistantDistiller[dtype: DType]:
@@ -47,7 +47,7 @@ struct AssistantDistiller[dtype: DType]:
 
     fn generate_custom_loss(self, quantum_ground_truth: SovereignTensor[dtype]) -> String:
         """
-        Generates a Mojo-compiled custom loss function based on the 
+        Generates a Mojo-compiled custom loss function based on the
         Rydberg atom ground state. Prevents synthetic data drift.
         """
         return "fn custom_sovereign_loss(student_path: Tensor) -> Float32: ..."

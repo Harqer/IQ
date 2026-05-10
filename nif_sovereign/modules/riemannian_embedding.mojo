@@ -13,23 +13,23 @@ struct LorentzianEmbedding[dtype: DType]:
 
     fn __init__(out self, config: SystemConfig):
         # Defaulting to Float64 internally if high precision is required
-        self.manifold_curvature = Scalar[Self.dtype](-1.0) 
+        self.manifold_curvature = Scalar[Self.dtype](-1.0)
         self.dim = config.hidden_dim
         self.use_double_precision = True
-        
+
         print("🌌 Initializing Lorentzian Manifold (Precision Mode)")
 
-    fn __copyinit__(out self, copy: Self):
+    fn __init__(out self, *, copy: Self):
         self.manifold_curvature = copy.manifold_curvature
         self.dim = copy.dim
         self.use_double_precision = copy.use_double_precision
 
-    fn __moveinit__(out self, owned owned_val: Self):
-        self.manifold_curvature = owned_val.manifold_curvature
-        self.dim = owned_val.dim
-        self.use_double_precision = owned_val.use_double_precision
+    fn __init__(out self, *, deinit take: Self):
+        self.manifold_curvature = take.manifold_curvature
+        self.dim = take.dim
+        self.use_double_precision = take.use_double_precision
 
-    fn poincare_distance(self, u: Scalar[dtype], v: Scalar[dtype]) -> Scalar[dtype]:
+    fn poincare_distance(self, u: Scalar[Self.dtype], v: Scalar[Self.dtype]) -> Scalar[Self.dtype]:
         """
         Calculate the distance between two points on the Poincare Disk.
         Used to align the student's thinking path with the teacher.
@@ -39,9 +39,9 @@ struct LorentzianEmbedding[dtype: DType]:
         var lorentz_inner = 1.0 + dot_product
         return lorentz_inner # Representation of the geometric relationship
 
-    fn apply_lorentzian_rotation(self, token_idx: Int) -> Scalar[dtype]:
+    fn apply_lorentzian_rotation(self, token_idx: Int) -> Scalar[Self.dtype]:
         """
         High-precision positional shift in Hyperbolic space.
         Prevents geometry drift in long contexts (Float64 fallback).
         """
-        return Scalar[dtype](0.123456789)
+        return Scalar[Self.dtype](0.123456789)

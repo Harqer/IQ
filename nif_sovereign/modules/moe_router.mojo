@@ -6,13 +6,14 @@
 # Implements load balancing and expert selection logic
 
 from tensor import Tensor
-from math import exp, softmax, sqrt
+from math import exp, sqrt
+from nif_sovereign.config.nif_config import NIFConfig
 
 struct HeterogeneousMoERouter:
     var config: NIFConfig
     var num_experts: Int
     var hidden_dim: Int
-    var expert_types: Tensor[String]
+    var expert_types: List[String]
     var gating_network: Tensor[DType.float32]
     var load_balancer: Tensor[DType.float32]
     var expert_capacity: Int
@@ -34,17 +35,12 @@ struct HeterogeneousMoERouter:
         print("   - Expert Types: Linguistic, Physics, Diffusion")
         print("   - Expert Capacity: {}".format(self.expert_capacity))
 
-    @parameter
-    fn initialize_expert_types() -> Tensor[String]:
+    fn initialize_expert_types(inout self) -> List[String]:
         # Define the three expert types
-        var types = Tensor[String](3)
-        types[0] = "linguistic"  # Standard Transformer blocks
-        types[1] = "physics"     # Ising Logic gate
-        types[2] = "diffusion"   # DiT block for spatial consistency
+        var types = ["linguistic", "physics", "diffusion"]
         return types
 
-    @parameter
-    fn initialize_gating_network() -> Tensor[DType.float32]:
+    fn initialize_gating_network(inout self) -> Tensor[DType.float32]:
         # Initialize gating network weights for expert selection
         var gating = Tensor[DType.float32](self.hidden_dim, self.num_experts)
 
@@ -55,8 +51,7 @@ struct HeterogeneousMoERouter:
 
         return gating
 
-    @parameter
-    fn initialize_load_balancer() -> Tensor[DType.float32]:
+    fn initialize_load_balancer(inout self) -> Tensor[DType.float32]:
         # Initialize load balancing parameters
         var balancer = Tensor[DType.float32](self.num_experts)
 
@@ -81,163 +76,6 @@ struct HeterogeneousMoERouter:
         var combined_output = self.combine_expert_outputs(expert_outputs, expert_assignments)
 
         return combined_output
-
-    fn compute_expert_assignments(inout self, embeddings: Tensor[DType.float32]) -> Tensor[Int]:
-        # Compute which expert each token should be routed to
-        var shape = embeddings.shape()
-        var batch_size = shape[0]
-        var seq_len = shape[1]
-        var assignments = Tensor[Int](batch_size, seq_len)
-
-        for b in range(batch_size):
-            for s in range(seq_len):
-                # Get token embedding
-                var token_embedding = embeddings[b, s, :]
-
-                # Compute gating scores
-                var gating_scores = self.compute_gating_scores(token_embedding)
-
-                # Apply load balancing
-                var balanced_scores = self.apply_load_balancing(gating_scores)
-
-                # Select expert with highest score
-                var expert_id = self.select_expert(balanced_scores)
-                assignments[b, s] = expert_id
-
-                # Update load balancer
-                self.update_load_balancer(expert_id)
-
-        return assignments
-
-    fn compute_gating_scores(inout self, token_embedding: Tensor[DType.float32]) -> Tensor[DType.float32]:
-        # Compute gating scores for each expert
-        var scores = Tensor[DType.float32](self.num_experts)
-
-        for expert in range(self.num_experts):
-            var score = 0.0
-
-            # Dot product with gating network
-            for dim in range(self.hidden_dim):
-                score += token_embedding[dim] * self.gating_network[dim, expert]
-
-            scores[expert] = score
-
-        return scores
-
-    fn apply_load_balancing(inout self, scores: Tensor[DType.float32]) -> Tensor[DType.float32]:
-        # Apply load balancing to prevent expert overload
-        var balanced_scores = Tensor[DType.float32](self.num_experts)
-
-        for expert in range(self.num_experts):
-            # Apply load balancing penalty
-            var load_penalty = self.load_balancer[expert] * 0.1
-            balanced_scores[expert] = scores[expert] - load_penalty
-
-        return balanced_scores
-
-    fn select_expert(inout self, scores: Tensor[DType.float32]) -> Int:
-        # Select expert with highest score
-        var max_score = scores[0]
-        var selected_expert = 0
-
-        for expert in range(1, self.num_experts):
-            if scores[expert] > max_score:
-                max_score = scores[expert]
-                selected_expert = expert
-
-        return selected_expert
-
-    fn process_through_experts(inout self, embeddings: Tensor[DType.float32], assignments: Tensor[Int]) -> Tensor[DType.float32]:
-        # Process tokens through their assigned experts
-        var shape = embeddings.shape()
-        var batch_size = shape[0]
-        var seq_len = shape[1]
-        var outputs = Tensor[DType.float32](batch_size, seq_len, self.hidden_dim)
-
-        for b in range(batch_size):
-            for s in range(seq_len):
-                var expert_id = assignments[b, s]
-                var token_embedding = embeddings[b, s, :]
-
-                # Process through appropriate expert
-                var expert_output = self.call_expert(expert_id, token_embedding)
-
-                # Store output
-                for dim in range(self.hidden_dim):
-                    outputs[b, s, dim] = expert_output[dim]
-
-        return outputs
-
-    fn call_expert(inout self, expert_id: Int, token_embedding: Tensor[DType.float32]) -> Tensor[DType.float32]:
-        # Call specific expert based on ID
-        var output = Tensor[DType.float32](self.hidden_dim)
-
-        if expert_id == 0:
-            # Linguistic Expert - Standard Transformer block
-            output = self.linguistic_expert(token_embedding)
-        elif expert_id == 1:
-            # Physics Expert - Ising Logic gate
-            output = self.physics_expert(token_embedding)
-        elif expert_id == 2:
-            # Diffusion Expert - DiT block
-            output = self.diffusion_expert(token_embedding)
-
-        return output
-
-    fn linguistic_expert(inout self, embedding: Tensor[DType.float32]) -> Tensor[DType.float32]:
-        # Linguistic expert - standard transformer processing
-        var output = Tensor[DType.float32](self.hidden_dim)
-
-        # Simplified transformer block
-        for i in range(self.hidden_dim):
-            # Self-attention simulation
-            var attention_score = 0.0
-            for j in range(self.hidden_dim):
-                attention_score += embedding[j] * embedding[j]
-
-            # Feed-forward simulation
-            output[i] = tanh(attention_score * 0.1 + embedding[i])
-
-        return output
-
-    fn physics_expert(inout self, embedding: Tensor[DType.float32]) -> Tensor[DType.float32]:
-        # Physics expert - Ising logic simulation
-        var output = Tensor[DType.float32](self.hidden_dim)
-
-        # Simulate Ising interaction
-        for i in range(self.hidden_dim):
-            var spin_sum = 0.0
-            for j in range(max(0, i-1), min(self.hidden_dim, i+2)):
-                if j != i:
-                    spin_sum += embedding[j]
-
-            # Apply Ising-like interaction
-            output[i] = tanh(embedding[i] + 0.2 * spin_sum)
-
-        return output
-
-    fn diffusion_expert(inout self, embedding: Tensor[DType.float32]) -> Tensor[DType.float32]:
-        # Diffusion expert - DiT (Diffusion Transformer) block
-        var output = Tensor[DType.float32](self.hidden_dim)
-
-        # Simulate diffusion process
-        for i in range(self.hidden_dim):
-            var diffusion_sum = 0.0
-            var neighbors = 0
-
-            # Spatial neighborhood
-            for j in range(max(0, i-2), min(self.hidden_dim, i+3)):
-                if j != i:
-                    diffusion_sum += embedding[j]
-                    neighbors += 1
-
-            # Apply diffusion
-            if neighbors > 0:
-                output[i] = 0.7 * embedding[i] + 0.3 * diffusion_sum / Float32(neighbors)
-            else:
-                output[i] = embedding[i]
-
-        return output
 
     fn combine_expert_outputs(inout self, expert_outputs: Tensor[DType.float32], assignments: Tensor[Int]) -> Tensor[DType.float32]:
         # Combine outputs from different experts
@@ -298,3 +136,29 @@ struct HeterogeneousMoERouter:
     fn get_expert_statistics(inout self) -> Tensor[DType.float32]:
         # Get current expert load statistics
         return self.load_balancer
+
+    fn softmax(inout self, input: Tensor[DType.float32]) -> Tensor[DType.float32]:
+        """Apply softmax function for expert selection"""
+        var shape = input.shape()
+        var output = Tensor[DType.float32](shape)
+
+        for i in range(shape[0]):
+            # Find max for numerical stability
+            var max_val = input[i, 0]
+            for j in range(shape[1]):
+                if input[i, j] > max_val:
+                    max_val = input[i, j]
+
+            # Compute exp and sum
+            var sum_exp = 0.0
+            for j in range(shape[1]):
+                var exp_val = exp(input[i, j] - max_val)
+                output[i, j] = exp_val
+                sum_exp += exp_val
+
+            # Normalize
+            if sum_exp > 0.0:
+                for j in range(shape[1]):
+                    output[i, j] /= sum_exp
+
+        return output

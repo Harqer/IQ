@@ -17,7 +17,7 @@ struct SovereignBuffer[dtype: DType]:
         self.size = size
         # The 'alloc' function returns a pointer with a concrete origin
         self.ptr = alloc[Scalar[Self.dtype], MutAnyOrigin](size)
-        
+
         # Explicit initialization for safety
         if self.ptr:
             var p = self.ptr.value()
@@ -68,8 +68,8 @@ struct SovereignTensor[dtype: DType]:
 struct NIFCustomTrainer:
     var config: SystemConfig
     var learning_rate: Float32
-    var hmd_weight: Float64 
-    
+    var hmd_weight: Float64
+
     # State using hardened parameterized tensors
     var weights: SovereignTensor[DType.float32]
     var gradients: SovereignTensor[DType.float32]
@@ -78,11 +78,11 @@ struct NIFCustomTrainer:
         self.config = config
         self.learning_rate = 1e-4
         self.hmd_weight = 0.05
-        
+
         # Initializing the weights for the 26B model dimensions using hidden_dim
         self.weights = SovereignTensor[DType.float32](config.hidden_dim)
         self.gradients = SovereignTensor[DType.float32](config.hidden_dim)
-        
+
         print("🚀 NIF Sovereign Trainer Initialized (Mojo 2026 Strict Mode)")
 
     fn compute_hmd_loss(self, teacher_path: Float64, student_path: Float64) -> Float64:
