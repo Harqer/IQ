@@ -190,21 +190,15 @@ Thumbs.db
 *.swo
 *~
 
-# Behavioral guidelines (keep these)
-!.windsurf/
-!.windsurf/README.md
-!.windsurf/foundational.md
-!.windsurf/settings.json
-!.windsurf/workspace-config.json
-!.windsurf/.env
-!.windsurf/auto-startup.sh
-!.windsurf/global-behavioral-guidelines.json
-!.windsurf/global-workflows/
-!.windsurf/global-linters/
-!.windsurf/global-precommit.sh
-!.windsurf/global-settings.json
-!.windsurf/agent-behavioral-guidelines.json
-!.windsurf/agent-compliance-system.py
+# Private agent and IDE directories
+.agents/
+.agentskills/
+.windsurf/
+.cursor/
+.devin/
+.roo/
+.cline/
+.copilot/
 
 # Pre-commit hooks (keep these)
 !.pre-commit-config.yaml
