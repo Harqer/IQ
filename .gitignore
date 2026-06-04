@@ -199,6 +199,7 @@ Thumbs.db
 .roo/
 .cline/
 .copilot/
+.github/
 
 # Pre-commit hooks (keep these)
 !.pre-commit-config.yaml
