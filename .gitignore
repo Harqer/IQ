@@ -236,4 +236,7 @@ beta/
 
 # Mojo environment (exclude large files)
 mojo-env/
+
+# Exclude all dotfiles except specific ones
+!.gitignore
 .*
