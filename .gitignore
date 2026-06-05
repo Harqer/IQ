@@ -236,3 +236,4 @@ beta/
 
 # Mojo environment (exclude large files)
 mojo-env/
+.*
