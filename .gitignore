@@ -107,6 +107,7 @@ celerybeat.pid
 !.gitattributes
 !.github/
 !.gitmodules
+!.env.quantum.example
 .env
 .venv
 env/
