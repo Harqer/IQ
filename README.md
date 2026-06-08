@@ -17,7 +17,7 @@ IQ is a cutting-edge personal multimodal Large Language Model built with the lat
 ### ⚡ Performance & Optimization
 - **Muon Optimization**: Orthonormal updates for stable training
 - **GaLore Projection**: Gradient low-rank projection for VRAM efficiency
-- **VeRA Fine-tuning**: Vector-based Random Adaptation for parameter efficiency
+- **Muon Adapters**: Task-customized orthogonal adapter fusion for parameter-efficient fine-tuning
 - **CUDA-Q Integration**: Remote quantum computation on NVIDIA H200 clusters
 
 ### 🎯 Multimodal Capabilities
@@ -53,20 +53,21 @@ IQ is a cutting-edge personal multimodal Large Language Model built with the lat
 ### Technical Stack
 
 - **Language**: Mojo SDK v0.26.2+
-- **Quantum Backend**: CUDA-Q with NVIDIA H200
+- **Quantum Backend**: CUDA-Q with NVIDIA H200, IBM Quantum, IonQ
 - **Remote Compute**: Thunder Compute integration
-- **Base Model**: Gemma 4 (26B A4B) structural graft
-- **Optimization**: Muon, GaLore, VeRA
+- **Architecture**: Novel NIF Sovereign (non-transformer based)
+- **Optimization**: Muon, GaLore, Muon Adapters
 - **Data Sources**: GneissWeb 2026, The Stack v3
+- **Adapter Composition**: Stack, Fuse, Split patterns for task-customized fine-tuning
 
 ## 📊 Performance
 
 ### Model Specifications
-- **Parameters**: 26B (Gemma 4 base)
+- **Parameters**: Custom NIF architecture (parameter-efficient via adapters)
 - **Hidden Dimension**: 4096
-- **Layers**: 32
-- **Attention Heads**: 32
-- **Experts**: 3 (Linguistic, Physics, Diffusion)
+- **Architecture Layers**: Riemannian embedding → Neutrino oscillation → Ising gate → Adapters
+- **Adapters**: 4 (Linguistic, Physics, Diffusion, Quantum)
+- **Bottleneck Dimension**: 64
 
 ### Hardware Requirements
 - **GPU**: NVIDIA H200 (recommended)
