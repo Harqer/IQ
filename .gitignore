@@ -102,6 +102,11 @@ celerybeat.pid
 *.sage.py
 
 # Environments
+.*
+!.gitignore
+!.gitattributes
+!.github/
+!.gitmodules
 .env
 .venv
 env/
