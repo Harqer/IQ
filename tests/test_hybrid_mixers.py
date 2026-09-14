@@ -80,6 +80,31 @@ class HybridMixerCudaSmokeTests(unittest.TestCase):
             self.assertEqual(tuple(output.shape), tuple(hidden.shape))
             self.assertTrue(torch.isfinite(output).all())
 
+    def test_full_hybrid_recurrent_forward_backward_is_finite(self):
+        import torch
+        from iq_model import IQRecurrentPhiModel
+
+        torch.manual_seed(13)
+        phi, iq = self.tiny_configs()
+        model = IQRecurrentPhiModel(phi, iq).cuda().half().train()
+        ids = torch.randint(0, phi.vocab_size, (1, 64), device="cuda")
+
+        output = model(ids, capture_core_passes=True)
+        self.assertEqual(len(output.core_pass_states), iq.recurrent_passes)
+        self.assertTrue(torch.isfinite(output.logits).all())
+
+        loss = output.logits.float().square().mean()
+        self.assertTrue(torch.isfinite(loss))
+        loss.backward()
+
+        finite_gradients = 0
+        for parameter in model.parameters():
+            if parameter.grad is None:
+                continue
+            self.assertTrue(torch.isfinite(parameter.grad).all())
+            finite_gradients += 1
+        self.assertGreater(finite_gradients, 0)
+
 
 if __name__ == "__main__":
     unittest.main()
