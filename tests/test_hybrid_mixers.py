@@ -64,7 +64,7 @@ class HybridMixerCudaSmokeTests(unittest.TestCase):
         from iq_model.mixers import MixerContext, build_mixer
 
         phi, iq = self.tiny_configs()
-        hidden = torch.randn(1, 64, phi.hidden_size, device="cuda", dtype=torch.float16)
+        hidden = torch.randn(1, 64, phi.hidden_size, device="cuda", dtype=torch.float32)
         padding = torch.ones(1, 64, device="cuda", dtype=torch.long)
         context = MixerContext(
             padding_mask=padding,
@@ -74,8 +74,11 @@ class HybridMixerCudaSmokeTests(unittest.TestCase):
         )
 
         for layer_idx, kind in enumerate(("gated_deltanet", "nsa")):
-            mixer = build_mixer(kind, phi, iq, layer_idx=layer_idx).cuda().half().eval()
-            with torch.no_grad():
+            # Keep module parameters/state in FP32. FLA intentionally stores some
+            # recurrent parameters (for example A_log/dt_bias) in FP32; casting the
+            # entire module to half would invalidate that numerical design.
+            mixer = build_mixer(kind, phi, iq, layer_idx=layer_idx).cuda().eval()
+            with torch.no_grad(), torch.autocast(device_type="cuda", dtype=torch.float16):
                 output = mixer(hidden, context=context)
             self.assertEqual(tuple(output.shape), tuple(hidden.shape))
             self.assertTrue(torch.isfinite(output).all())
@@ -86,14 +89,15 @@ class HybridMixerCudaSmokeTests(unittest.TestCase):
 
         torch.manual_seed(13)
         phi, iq = self.tiny_configs()
-        model = IQRecurrentPhiModel(phi, iq).cuda().half().train()
+        model = IQRecurrentPhiModel(phi, iq).cuda().train()
         ids = torch.randint(0, phi.vocab_size, (1, 64), device="cuda")
 
-        output = model(ids, capture_core_passes=True)
-        self.assertEqual(len(output.core_pass_states), iq.recurrent_passes)
-        self.assertTrue(torch.isfinite(output.logits).all())
+        with torch.autocast(device_type="cuda", dtype=torch.float16):
+            output = model(ids, capture_core_passes=True)
+            self.assertEqual(len(output.core_pass_states), iq.recurrent_passes)
+            self.assertTrue(torch.isfinite(output.logits).all())
+            loss = output.logits.float().square().mean()
 
-        loss = output.logits.float().square().mean()
         self.assertTrue(torch.isfinite(loss))
         loss.backward()
 
