@@ -1,0 +1,263 @@
+from __future__ import annotations
+
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
+from typing import Callable, Iterable, Mapping
+from uuid import uuid4
+
+from .model import ModelBackend
+from .session import Session
+from .skills import SkillCatalog, SkillError
+from .tools import ApprovalHandler, ToolError, ToolRegistry
+from .types import AgentSpec, Message, ModelRequest, RunResult, ToolCall, ToolDescriptor, TraceEvent
+
+
+TraceHook = Callable[[TraceEvent], None]
+
+
+_SKILL_TOOL = ToolDescriptor(
+    "skills.load",
+    "Load the full instructions for an available Agent Skill when it is relevant to the task.",
+    {
+        "type": "object",
+        "properties": {"name": {"type": "string"}},
+        "required": ["name"],
+        "additionalProperties": False,
+    },
+)
+_DELEGATE_TOOL = ToolDescriptor(
+    "agent.delegate",
+    "Run a bounded specialist subagent and return its result while the current agent remains in control.",
+    {
+        "type": "object",
+        "properties": {
+            "agent": {"type": "string"},
+            "input": {"type": "string"},
+        },
+        "required": ["agent", "input"],
+        "additionalProperties": False,
+    },
+)
+_HANDOFF_TOOL = ToolDescriptor(
+    "agent.handoff",
+    "Transfer control of the active task to a specialist agent.",
+    {
+        "type": "object",
+        "properties": {
+            "agent": {"type": "string"},
+            "reason": {"type": "string"},
+        },
+        "required": ["agent"],
+        "additionalProperties": False,
+    },
+)
+
+
+class AgentRuntimeError(RuntimeError):
+    pass
+
+
+@dataclass
+class _RunState:
+    run_id: str
+    parent_run_id: str | None
+    messages: list[Message]
+    current_agent: str
+    depth: int
+    activated_skills: dict[str, set[str]] = field(default_factory=dict)
+    turns: int = 0
+
+
+class AgentRuntime:
+    """Model-agnostic agent loop with skills, tools, delegation, handoffs, memory and traces."""
+
+    def __init__(
+        self,
+        model: ModelBackend,
+        agents: Iterable[AgentSpec],
+        *,
+        tools: ToolRegistry | None = None,
+        skills: SkillCatalog | None = None,
+        approval: ApprovalHandler | None = None,
+        hooks: Iterable[TraceHook] = (),
+        max_delegation_depth: int = 4,
+    ) -> None:
+        self.model = model
+        self.agents = {agent.name: agent for agent in agents}
+        if not self.agents:
+            raise AgentRuntimeError("at least one agent is required")
+        self.tools = tools or ToolRegistry()
+        self.skills = skills or SkillCatalog()
+        self.approval = approval
+        self.hooks = tuple(hooks)
+        self.max_delegation_depth = max_delegation_depth
+        self._validate_agents()
+
+    def _validate_agents(self) -> None:
+        for agent in self.agents.values():
+            if agent.max_turns <= 0:
+                raise AgentRuntimeError(f"agent {agent.name}: max_turns must be positive")
+            for target in (*agent.delegates, *agent.handoffs):
+                if target not in self.agents:
+                    raise AgentRuntimeError(f"agent {agent.name}: unknown target {target}")
+            for tool in agent.tools:
+                self.tools.get(tool)
+            for skill in agent.skills:
+                self.skills.get(skill)
+
+    def _trace(self, state: _RunState, event: str, payload: Mapping[str, object]) -> None:
+        item = TraceEvent(event, state.run_id, state.current_agent, payload, state.parent_run_id)
+        for hook in self.hooks:
+            hook(item)
+
+    def _system_prompt(self, agent: AgentSpec, state: _RunState) -> str:
+        parts = [agent.instructions.strip()]
+        allowed_skills = agent.skills or self.skills.names()
+        if allowed_skills:
+            parts.extend([
+                "\nAgent Skills are available. Load a skill only when relevant, using skills.load.",
+                self.skills.catalog_text(allowed_skills),
+            ])
+        active = state.activated_skills.get(agent.name, set())
+        for name in sorted(active):
+            skill = self.skills.get(name)
+            parts.append(f"\n<active_skill name=\"{name}\">\n{skill.body}\n</active_skill>")
+        if agent.delegates:
+            parts.append("\nDelegatable specialists: " + ", ".join(agent.delegates))
+        if agent.handoffs:
+            parts.append("\nHandoff specialists: " + ", ".join(agent.handoffs))
+        return "\n".join(parts).strip()
+
+    def _descriptors(self, agent: AgentSpec) -> tuple[ToolDescriptor, ...]:
+        items = list(self.tools.descriptors(agent.tools))
+        if agent.skills or self.skills.names():
+            items.append(_SKILL_TOOL)
+        if agent.delegates:
+            items.append(_DELEGATE_TOOL)
+        if agent.handoffs:
+            items.append(_HANDOFF_TOOL)
+        return tuple(items)
+
+    def _allowed_skill(self, agent: AgentSpec, name: str) -> bool:
+        return name in (agent.skills or self.skills.names())
+
+    def _preapproved_tools(self, state: _RunState, agent: AgentSpec) -> set[str]:
+        allowed: set[str] = set()
+        for name in state.activated_skills.get(agent.name, set()):
+            allowed.update(self.skills.get(name).allowed_tools)
+        return allowed
+
+    def _delegate(self, parent: _RunState, target: str, user_input: str) -> str:
+        if parent.depth >= self.max_delegation_depth:
+            raise AgentRuntimeError("maximum delegation depth exceeded")
+        child = _RunState(
+            run_id=str(uuid4()),
+            parent_run_id=parent.run_id,
+            messages=[Message("user", user_input)],
+            current_agent=target,
+            depth=parent.depth + 1,
+        )
+        self._trace(parent, "delegate.start", {"target": target, "child_run_id": child.run_id})
+        result = self._drive(child, persist=None)
+        self._trace(parent, "delegate.end", {"target": target, "child_run_id": child.run_id})
+        return result.output
+
+    def _execute_delegate_batch(self, state: _RunState, agent: AgentSpec, calls: list[ToolCall]) -> dict[str, str]:
+        def execute(call: ToolCall) -> tuple[str, str]:
+            target = str(call.arguments.get("agent", ""))
+            if target not in agent.delegates:
+                raise AgentRuntimeError(f"agent {agent.name} cannot delegate to {target}")
+            user_input = str(call.arguments.get("input", ""))
+            return call.id, self._delegate(state, target, user_input)
+
+        workers = min(len(calls), 8)
+        if workers <= 1:
+            return dict(execute(call) for call in calls)
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="iq-subagent") as pool:
+            return dict(pool.map(execute, calls))
+
+    def _drive(self, state: _RunState, persist: Session | None) -> RunResult:
+        while True:
+            agent = self.agents[state.current_agent]
+            if state.turns >= agent.max_turns:
+                raise AgentRuntimeError(f"agent {agent.name} exceeded max_turns={agent.max_turns}")
+
+            request = ModelRequest(
+                system_prompt=self._system_prompt(agent, state),
+                messages=tuple(state.messages),
+                tools=self._descriptors(agent),
+            )
+            self._trace(state, "model.request", {"turn": state.turns + 1, "tool_count": len(request.tools)})
+            turn = self.model.generate(request)
+            state.turns += 1
+            self._trace(state, "model.response", {"tool_calls": [call.name for call in turn.tool_calls]})
+
+            if turn.content:
+                message = Message("assistant", turn.content, name=agent.name)
+                state.messages.append(message)
+                if persist:
+                    persist.append(message)
+
+            if not turn.tool_calls:
+                return RunResult(turn.content, agent.name, state.run_id, tuple(state.messages), state.turns)
+
+            delegate_calls = [call for call in turn.tool_calls if call.name == "agent.delegate"]
+            delegate_results = self._execute_delegate_batch(state, agent, delegate_calls) if delegate_calls else {}
+            handoff_occurred = False
+
+            for call in turn.tool_calls:
+                self._trace(state, "tool.call", {"name": call.name, "id": call.id})
+                try:
+                    if call.name == "skills.load":
+                        name = str(call.arguments.get("name", ""))
+                        if not self._allowed_skill(agent, name):
+                            raise SkillError(f"skill {name!r} is not enabled for agent {agent.name}")
+                        skill = self.skills.get(name)
+                        state.activated_skills.setdefault(agent.name, set()).add(name)
+                        result = f"Activated skill {name}. Its instructions are now in the agent context."
+                    elif call.name == "agent.delegate":
+                        result = delegate_results[call.id]
+                    elif call.name == "agent.handoff":
+                        target = str(call.arguments.get("agent", ""))
+                        if target not in agent.handoffs:
+                            raise AgentRuntimeError(f"agent {agent.name} cannot hand off to {target}")
+                        result = f"Control transferred from {agent.name} to {target}."
+                        state.current_agent = target
+                        handoff_occurred = True
+                    else:
+                        result = self.tools.execute(
+                            call,
+                            approval=self.approval,
+                            preapproved=self._preapproved_tools(state, agent),
+                        )
+                except (SkillError, ToolError, AgentRuntimeError) as exc:
+                    result = f"ERROR: {exc}"
+                    self._trace(state, "tool.error", {"name": call.name, "error": str(exc)})
+
+                tool_message = Message("tool", result, name=call.name, tool_call_id=call.id)
+                state.messages.append(tool_message)
+                if persist:
+                    persist.append(tool_message)
+                self._trace(state, "tool.result", {"name": call.name, "id": call.id})
+                if handoff_occurred:
+                    break
+
+    def run(self, agent_name: str, user_input: str, *, session: Session | None = None) -> RunResult:
+        if agent_name not in self.agents:
+            raise AgentRuntimeError(f"unknown agent: {agent_name}")
+        history = session.load() if session else []
+        user_message = Message("user", user_input)
+        history.append(user_message)
+        if session:
+            session.append(user_message)
+        state = _RunState(
+            run_id=str(uuid4()),
+            parent_run_id=None,
+            messages=history,
+            current_agent=agent_name,
+            depth=0,
+        )
+        self._trace(state, "run.start", {"input": user_input})
+        result = self._drive(state, persist=session)
+        self._trace(state, "run.end", {"last_agent": result.last_agent, "turns": result.turns})
+        return result
