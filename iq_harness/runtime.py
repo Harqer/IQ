@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Iterable, Mapping
 from uuid import uuid4
 
+from .guardrails import Guardrail
 from .model import ModelBackend
 from .session import Session
 from .skills import SkillCatalog, SkillError
@@ -22,6 +23,19 @@ _SKILL_TOOL = ToolDescriptor(
         "type": "object",
         "properties": {"name": {"type": "string"}},
         "required": ["name"],
+        "additionalProperties": False,
+    },
+)
+_SKILL_READ_TOOL = ToolDescriptor(
+    "skills.read",
+    "Read a file inside an already activated Agent Skill, such as references or assets.",
+    {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string"},
+            "path": {"type": "string"},
+        },
+        "required": ["name", "path"],
         "additionalProperties": False,
     },
 )
@@ -80,6 +94,7 @@ class AgentRuntime:
         skills: SkillCatalog | None = None,
         approval: ApprovalHandler | None = None,
         hooks: Iterable[TraceHook] = (),
+        guardrails: Iterable[Guardrail] = (),
         max_delegation_depth: int = 4,
     ) -> None:
         self.model = model
@@ -90,6 +105,7 @@ class AgentRuntime:
         self.skills = skills or SkillCatalog()
         self.approval = approval
         self.hooks = tuple(hooks)
+        self.guardrails = tuple(guardrails)
         self.max_delegation_depth = max_delegation_depth
         self._validate_agents()
 
@@ -102,17 +118,31 @@ class AgentRuntime:
                     raise AgentRuntimeError(f"agent {agent.name}: unknown target {target}")
             for tool in agent.tools:
                 self.tools.get(tool)
-            for skill in agent.skills:
-                self.skills.get(skill)
+            if agent.skills is not None:
+                for skill in agent.skills:
+                    self.skills.get(skill)
 
     def _trace(self, state: _RunState, event: str, payload: Mapping[str, object]) -> None:
         item = TraceEvent(event, state.run_id, state.current_agent, payload, state.parent_run_id)
         for hook in self.hooks:
             hook(item)
 
+    def _enforce_guardrails(self, phase: str, agent: str, value: object) -> None:
+        for guardrail in self.guardrails:
+            if phase == "input":
+                decision = guardrail.check_input(agent, value)
+            elif phase == "tool":
+                decision = guardrail.check_tool(agent, value)
+            elif phase == "output":
+                decision = guardrail.check_output(agent, value)
+            else:
+                raise AgentRuntimeError(f"unknown guardrail phase: {phase}")
+            if not decision.allowed:
+                raise AgentRuntimeError(decision.reason or f"{phase} guardrail blocked execution")
+
     def _system_prompt(self, agent: AgentSpec, state: _RunState) -> str:
         parts = [agent.instructions.strip()]
-        allowed_skills = agent.skills or self.skills.names()
+        allowed_skills = self.skills.names() if agent.skills is None else agent.skills
         if allowed_skills:
             parts.extend([
                 "\nAgent Skills are available. Load a skill only when relevant, using skills.load.",
@@ -123,15 +153,22 @@ class AgentRuntime:
             skill = self.skills.get(name)
             parts.append(f"\n<active_skill name=\"{name}\">\n{skill.body}\n</active_skill>")
         if agent.delegates:
-            parts.append("\nDelegatable specialists: " + ", ".join(agent.delegates))
+            parts.append("\nDelegatable specialists:\n" + "\n".join(
+                f"- {name}: {self.agents[name].description or self.agents[name].instructions.splitlines()[0]}"
+                for name in agent.delegates
+            ))
         if agent.handoffs:
-            parts.append("\nHandoff specialists: " + ", ".join(agent.handoffs))
+            parts.append("\nHandoff specialists:\n" + "\n".join(
+                f"- {name}: {self.agents[name].description or self.agents[name].instructions.splitlines()[0]}"
+                for name in agent.handoffs
+            ))
         return "\n".join(parts).strip()
 
     def _descriptors(self, agent: AgentSpec) -> tuple[ToolDescriptor, ...]:
         items = list(self.tools.descriptors(agent.tools))
-        if agent.skills or self.skills.names():
-            items.append(_SKILL_TOOL)
+        enabled_skills = self.skills.names() if agent.skills is None else agent.skills
+        if enabled_skills:
+            items.extend((_SKILL_TOOL, _SKILL_READ_TOOL))
         if agent.delegates:
             items.append(_DELEGATE_TOOL)
         if agent.handoffs:
@@ -139,7 +176,8 @@ class AgentRuntime:
         return tuple(items)
 
     def _allowed_skill(self, agent: AgentSpec, name: str) -> bool:
-        return name in (agent.skills or self.skills.names())
+        enabled = self.skills.names() if agent.skills is None else agent.skills
+        return name in enabled
 
     def _preapproved_tools(self, state: _RunState, agent: AgentSpec) -> set[str]:
         allowed: set[str] = set()
@@ -199,6 +237,7 @@ class AgentRuntime:
                     persist.append(message)
 
             if not turn.tool_calls:
+                self._enforce_guardrails("output", agent.name, turn.content)
                 return RunResult(turn.content, agent.name, state.run_id, tuple(state.messages), state.turns)
 
             delegate_calls = [call for call in turn.tool_calls if call.name == "agent.delegate"]
@@ -208,13 +247,20 @@ class AgentRuntime:
             for call in turn.tool_calls:
                 self._trace(state, "tool.call", {"name": call.name, "id": call.id})
                 try:
+                    self._enforce_guardrails("tool", agent.name, call)
                     if call.name == "skills.load":
                         name = str(call.arguments.get("name", ""))
                         if not self._allowed_skill(agent, name):
                             raise SkillError(f"skill {name!r} is not enabled for agent {agent.name}")
-                        skill = self.skills.get(name)
+                        self.skills.get(name)
                         state.activated_skills.setdefault(agent.name, set()).add(name)
                         result = f"Activated skill {name}. Its instructions are now in the agent context."
+                    elif call.name == "skills.read":
+                        name = str(call.arguments.get("name", ""))
+                        path = str(call.arguments.get("path", ""))
+                        if name not in state.activated_skills.get(agent.name, set()):
+                            raise SkillError(f"skill {name!r} must be activated before reading resources")
+                        result = self.skills.get(name).read_resource(path)
                     elif call.name == "agent.delegate":
                         result = delegate_results[call.id]
                     elif call.name == "agent.handoff":
@@ -257,6 +303,7 @@ class AgentRuntime:
             current_agent=agent_name,
             depth=0,
         )
+        self._enforce_guardrails("input", agent_name, tuple(history))
         self._trace(state, "run.start", {"input": user_input})
         result = self._drive(state, persist=session)
         self._trace(state, "run.end", {"last_agent": result.last_agent, "turns": result.turns})
