@@ -1,3 +1,4 @@
+from .guardrails import Guardrail, GuardrailDecision
 from .model import ModelBackend
 from .runtime import AgentRuntime, AgentRuntimeError
 from .session import InMemorySession, JsonlSession, Session
@@ -7,6 +8,8 @@ from .types import AgentSpec, Message, ModelRequest, ModelTurn, RunResult, ToolC
 
 __all__ = [
     "AgentRuntime",
+    "Guardrail",
+    "GuardrailDecision",
     "AgentRuntimeError",
     "AgentSpec",
     "InMemorySession",
