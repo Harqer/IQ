@@ -9,7 +9,7 @@ from iq_model import DenseToRecurrentLayout, IQArchitectureConfig, IQRecurrentPh
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Validate IQ v0 against the real Phi-4-mini config without loading weights")
+    parser = argparse.ArgumentParser(description="Validate IQ v0 Phi-control topology against Phi-4-mini without loading weights")
     parser.add_argument("--donor", default="microsoft/Phi-4-mini-instruct")
     return parser.parse_args()
 
@@ -22,11 +22,11 @@ def main() -> None:
     args = parse_args()
     donor = AutoConfig.from_pretrained(args.donor, trust_remote_code=True)
     donor._attn_implementation = "eager"
-    iq_cfg = IQArchitectureConfig()
+    # Explicitly pin the old validator to the Phi-only control. On hybrid-v1 the
+    # default architecture is Gated DeltaNet + NSA and must not redefine v0.
+    iq_cfg = IQArchitectureConfig.phi_control()
     iq_cfg.validate_teacher_depth(donor.num_hidden_layers)
 
-    # Meta tensors validate the full topology and parameter shapes without allocating
-    # the multi-billion-parameter checkpoint in CPU/GPU memory.
     with torch.device("meta"):
         model = IQRecurrentPhiModel(donor, iq_cfg)
 
@@ -34,6 +34,7 @@ def main() -> None:
     first_core = model.reasoning_core.blocks[0]
 
     print(f"donor={args.donor}")
+    print("profile=phi_control")
     print(f"vocab_size={donor.vocab_size}")
     print(f"hidden_size={donor.hidden_size}")
     print(f"intermediate_size={donor.intermediate_size}")
@@ -63,7 +64,7 @@ def main() -> None:
         iq_cfg.prelude_layers + iq_cfg.recurrent_layers * iq_cfg.recurrent_passes - 1
     )
 
-    print("architecture validation: PASS")
+    print("architecture v0 control validation: PASS")
 
 
 if __name__ == "__main__":
