@@ -82,6 +82,42 @@ class IQArchitectureTests(unittest.TestCase):
         self.assertEqual(tuple(ffn.gate_up_proj.weight.shape), (2 * phi.intermediate_size, phi.hidden_size))
         self.assertEqual(tuple(ffn.down_proj.weight.shape), (phi.hidden_size, phi.intermediate_size))
 
+    def test_explicit_gqa_matches_canonical_phi_eager_attention(self):
+        import torch
+        from transformers.models.phi3.modeling_phi3 import Phi3Attention, Phi3RotaryEmbedding
+        from iq_model.components import PhiCompatibleGQA
+
+        torch.manual_seed(9)
+        phi, _ = self.tiny_configs()
+        reference = Phi3Attention(phi, layer_idx=0).eval()
+        candidate = PhiCompatibleGQA(phi, layer_idx=0).eval()
+        candidate.load_state_dict(reference.state_dict(), strict=True)
+
+        hidden = torch.randn(2, 7, phi.hidden_size)
+        position_ids = torch.arange(7).unsqueeze(0).expand(2, -1)
+        rotary = Phi3RotaryEmbedding(phi)
+        position_embeddings = rotary(hidden, position_ids)
+        mask_value = torch.finfo(hidden.dtype).min
+        mask = torch.full((7, 7), mask_value, dtype=hidden.dtype)
+        mask = torch.triu(mask, diagonal=1).view(1, 1, 7, 7).expand(2, 1, 7, 7)
+
+        with torch.no_grad():
+            ref_out, ref_weights = reference(
+                hidden_states=hidden,
+                attention_mask=mask,
+                position_embeddings=position_embeddings,
+                past_key_values=None,
+            )
+            cand_out, cand_weights = candidate(
+                hidden_states=hidden,
+                attention_mask=mask,
+                position_ids=position_ids,
+                position_embeddings=position_embeddings,
+            )
+
+        self.assertTrue(torch.allclose(cand_out, ref_out, atol=1e-6, rtol=1e-5))
+        self.assertTrue(torch.allclose(cand_weights, ref_weights, atol=1e-6, rtol=1e-5))
+
     def test_forward_runs_all_recurrent_passes(self):
         import torch
         from iq_model import IQRecurrentPhiModel
