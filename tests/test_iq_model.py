@@ -57,9 +57,21 @@ class IQArchitectureTests(unittest.TestCase):
         self.assertEqual(model.physical_depth, 4)
         self.assertEqual(model.effective_depth, 6)
         self.assertEqual(len(model.prelude), 1)
-        self.assertEqual(len(model.recurrent_core), 2)
+        self.assertEqual(model.reasoning_core.physical_depth, 2)
+        self.assertEqual(model.reasoning_core.effective_depth, 4)
         self.assertEqual(len(model.coda), 1)
-        self.assertEqual(tuple(model.pass_embeddings.shape), (2, 32))
+        self.assertEqual(tuple(model.reasoning_core.pass_embeddings.shape), (2, 32))
+
+    def test_ffn_is_explicit_phi_compatible_swiglu(self):
+        from iq_model import IQRecurrentPhiModel
+        from iq_model.components import PhiCompatibleSwiGLU
+
+        phi, iq = self.tiny_configs()
+        model = IQRecurrentPhiModel(phi, iq)
+        ffn = model.reasoning_core.blocks[0].feed_forward
+        self.assertIsInstance(ffn, PhiCompatibleSwiGLU)
+        self.assertEqual(tuple(ffn.gate_up_proj.weight.shape), (2 * phi.intermediate_size, phi.hidden_size))
+        self.assertEqual(tuple(ffn.down_proj.weight.shape), (phi.hidden_size, phi.intermediate_size))
 
     def test_forward_runs_all_recurrent_passes(self):
         import torch
@@ -85,7 +97,8 @@ class IQArchitectureTests(unittest.TestCase):
 
         phi, iq = self.tiny_configs()
         model = IQRecurrentPhiModel(phi, iq)
-        self.assertTrue(torch.equal(model.pass_embeddings, torch.zeros_like(model.pass_embeddings)))
+        embeddings = model.reasoning_core.pass_embeddings
+        self.assertTrue(torch.equal(embeddings, torch.zeros_like(embeddings)))
 
     def test_unsupported_research_features_fail_explicitly(self):
         from iq_model import IQArchitectureConfig, IQRecurrentPhiModel
