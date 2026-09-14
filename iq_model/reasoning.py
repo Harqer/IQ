@@ -6,6 +6,7 @@ import torch
 from torch import nn
 
 from .components import IQBlock
+from .mixers import MixerContext
 
 
 @dataclass
@@ -15,11 +16,11 @@ class RecurrentCoreOutput:
 
 
 class RecurrentReasoningCore(nn.Module):
-    """Fixed-depth recurrent reasoning engine for IQ v0.
+    """Depth-recurrent reasoning engine over a heterogeneous physical block stack.
 
-    The same physical block stack is reused across multiple reasoning passes. v0 uses
-    a fixed pass count on purpose; token-wise routing and learned halting are later
-    experiments once recurrent stability and dense->loop transfer are established.
+    Sequence recurrence (for example Gated DeltaNet state) and depth recurrence are
+    intentionally separate.  The same eight physical blocks are revisited across
+    passes, while each block keeps its own sequence-mixer family.
     """
 
     def __init__(
@@ -56,13 +57,15 @@ class RecurrentReasoningCore(nn.Module):
     def effective_depth(self) -> int:
         return len(self.blocks) * self.passes
 
+    @property
+    def mixer_schedule(self) -> tuple[str, ...]:
+        return tuple(block.mixer_kind for block in self.blocks)
+
     def forward(
         self,
         hidden_states: torch.Tensor,
         *,
-        attention_mask: torch.Tensor,
-        position_ids: torch.Tensor | None,
-        position_embeddings: tuple[torch.Tensor, torch.Tensor],
+        context: MixerContext,
         capture_passes: bool = False,
     ) -> RecurrentCoreOutput:
         pass_states: list[torch.Tensor] = []
@@ -75,14 +78,9 @@ class RecurrentReasoningCore(nn.Module):
                 if not isinstance(block, IQBlock):
                     raise TypeError(f"recurrent block must be IQBlock, got {type(block).__name__}")
                 before = hidden_states
-                candidate = block(
-                    before,
-                    attention_mask=attention_mask,
-                    position_ids=position_ids,
-                    position_embeddings=position_embeddings,
-                )
-                # delta_scale=1 is function-preserving for a transplanted block.
-                # Alternative recurrence-aware scaling is an explicit ablation.
+                candidate = block(before, context=context)
+                # delta_scale=1 preserves the physical block function. Recurrent
+                # residual stabilization remains an explicit later ablation.
                 hidden_states = before + self.delta_scale * (candidate - before)
 
             if capture_passes:
