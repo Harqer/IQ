@@ -80,6 +80,8 @@ class ToolRegistry:
                 continue
             kind = spec.get("type")
             expected = expected_types.get(kind)
+            if kind in ("integer", "number") and isinstance(value, bool):
+                raise ToolError(f"invalid type for {key}: expected {kind}")
             if expected and not isinstance(value, expected):
                 raise ToolError(f"invalid type for {key}: expected {kind}")
 
