@@ -49,6 +49,15 @@ class IQArchitectureTests(unittest.TestCase):
         self.assertEqual(cfg.teacher_layer_for_coda(0), 28)
         self.assertEqual(cfg.teacher_layer_for_coda(3), 31)
 
+    def test_dense_to_recurrent_layout_groups_three_teacher_depths_per_core_block(self):
+        from iq_model import DenseToRecurrentLayout, IQArchitectureConfig
+
+        layout = DenseToRecurrentLayout.from_config(IQArchitectureConfig())
+        self.assertEqual(layout.prelude, ((0, 0), (1, 1), (2, 2), (3, 3)))
+        self.assertEqual(layout.teacher_layers_for_core_block(0), (4, 12, 20))
+        self.assertEqual(layout.teacher_layers_for_core_block(7), (11, 19, 27))
+        self.assertEqual(layout.coda, ((0, 28), (1, 29), (2, 30), (3, 31)))
+
     def test_model_uses_physical_recurrent_core_not_duplicated_passes(self):
         from iq_model import IQRecurrentPhiModel
 
