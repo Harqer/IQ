@@ -93,6 +93,10 @@ def teacher_targets(teacher, layer_idx: int, input_ids: torch.Tensor):
         return mixer_input, position_embeddings, outputs.attentions[layer_idx]
 
 
+def _student_inputs(hidden, position_embeddings):
+    return hidden.float(), tuple(component.float() for component in position_embeddings)
+
+
 @torch.no_grad()
 def evaluate(teacher, student, chunks, *, layer_idx: int, device: str, limit: int) -> float:
     student.eval()
@@ -100,8 +104,9 @@ def evaluate(teacher, student, chunks, *, layer_idx: int, device: str, limit: in
     for chunk in chunks[:limit]:
         input_ids = chunk.unsqueeze(0).to(device)
         hidden, pos, teacher_matrix = teacher_targets(teacher, layer_idx, input_ids)
-        student_matrix = student.mixing_matrix(hidden, position_embeddings=pos)
-        losses.append(float(normalized_frobenius_loss(student_matrix.float(), teacher_matrix.float()).item()))
+        student_hidden, student_pos = _student_inputs(hidden, pos)
+        student_matrix = student.mixing_matrix(student_hidden, position_embeddings=student_pos)
+        losses.append(float(normalized_frobenius_loss(student_matrix, teacher_matrix.float()).item()))
     student.train()
     return sum(losses) / len(losses)
 
@@ -127,12 +132,14 @@ def main() -> None:
     train_chunks = token_chunks(train_files, tokenizer, seq_len=args.seq_len, min_tokens=args.min_tokens)
     eval_chunks = token_chunks(eval_files, tokenizer, seq_len=args.seq_len, min_tokens=args.min_tokens)
 
+    # Stage 1 is a small single-mixer optimization.  Keep it in FP32 even though the
+    # frozen donor runs in BF16; this avoids throwing away signal in Q/K updates.
     student = IQLinearAttentionMixer(
         hidden_size=cfg.hidden_size,
         num_attention_heads=cfg.num_attention_heads,
         num_key_value_heads=cfg.num_key_value_heads,
         head_dim=cfg.hidden_size // cfg.num_attention_heads,
-    ).to(device=args.device, dtype=torch.bfloat16)
+    ).to(device=args.device, dtype=torch.float32)
 
     teacher_attn = teacher.model.layers[args.layer].self_attn
     student.initialize_from_phi4(teacher_attn.qkv_proj.weight, teacher_attn.o_proj.weight)
@@ -154,10 +161,11 @@ def main() -> None:
         chunk = train_chunks[step % len(train_chunks)]
         input_ids = chunk.unsqueeze(0).to(args.device)
         hidden, pos, teacher_matrix = teacher_targets(teacher, args.layer, input_ids)
+        student_hidden, student_pos = _student_inputs(hidden, pos)
 
         optimizer.zero_grad(set_to_none=True)
-        student_matrix = student.mixing_matrix(hidden, position_embeddings=pos)
-        loss = normalized_frobenius_loss(student_matrix.float(), teacher_matrix.float())
+        student_matrix = student.mixing_matrix(student_hidden, position_embeddings=student_pos)
+        loss = normalized_frobenius_loss(student_matrix, teacher_matrix.float())
         loss.backward()
         torch.nn.utils.clip_grad_norm_([student.q_proj.weight, student.k_proj.weight], 1.0)
         optimizer.step()
