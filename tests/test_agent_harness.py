@@ -149,6 +149,65 @@ class HarnessTests(unittest.TestCase):
         with self.assertRaisesRegex(Exception, "blocked"):
             runtime.run("main", "go")
 
+    def test_delegate_guardrail_blocks_before_subagent_runs(self) -> None:
+        calls = {"child": 0}
+
+        class RoutingModel:
+            def generate(self, request: ModelRequest) -> ModelTurn:
+                if "manager" in request.system_prompt:
+                    if any(m.role == "tool" for m in request.messages):
+                        return ModelTurn(content="finished")
+                    return ModelTurn(tool_calls=[ToolCall("d1", "agent.delegate", {"agent": "worker", "input": "work"})])
+                calls["child"] += 1
+                return ModelTurn(content="child")
+
+        class BlockDelegate(Guardrail):
+            def check_tool(self, agent: str, call: ToolCall) -> GuardrailDecision:
+                if call.name == "agent.delegate":
+                    return GuardrailDecision(False, "no delegation")
+                return GuardrailDecision(True)
+
+        runtime = AgentRuntime(
+            RoutingModel(),
+            [
+                AgentSpec("manager", "manager", delegates=("worker",), skills=()),
+                AgentSpec("worker", "worker", skills=()),
+            ],
+            guardrails=[BlockDelegate()],
+        )
+        result = runtime.run("manager", "go")
+        self.assertEqual(result.output, "finished")
+        self.assertEqual(calls["child"], 0)
+
+    def test_tool_result_guardrail_screens_context(self) -> None:
+        registry = ToolRegistry()
+        registry.register(Tool("external.read", "Read external content.", {"type": "object"}, lambda _: "INJECTION"))
+
+        class ResultModel:
+            def generate(self, request: ModelRequest) -> ModelTurn:
+                if not any(m.role == "tool" for m in request.messages):
+                    return ModelTurn(tool_calls=[ToolCall("t1", "external.read", {})])
+                tool_message = next(m for m in request.messages if m.role == "tool")
+                self.seen = tool_message.content
+                return ModelTurn(content="done")
+
+        class BlockInjection(Guardrail):
+            def check_tool_result(self, agent: str, call: ToolCall, result: str) -> GuardrailDecision:
+                if "INJECTION" in result:
+                    return GuardrailDecision(False, "suspect external content")
+                return GuardrailDecision(True)
+
+        model = ResultModel()
+        runtime = AgentRuntime(
+            model,
+            [AgentSpec("main", "main", tools=("external.read",), skills=())],
+            tools=registry,
+            guardrails=[BlockInjection()],
+        )
+        runtime.run("main", "read")
+        self.assertNotIn("INJECTION", model.seen)
+        self.assertIn("blocked", model.seen)
+
 
 if __name__ == "__main__":
     unittest.main()
