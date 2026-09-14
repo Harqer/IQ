@@ -1,11 +1,117 @@
 from __future__ import annotations
 
+import math
+
 import torch
 import torch.nn.functional as F
 from torch import nn
 
 from transformers.models.phi3.configuration_phi3 import Phi3Config
-from transformers.models.phi3.modeling_phi3 import Phi3Attention, Phi3RMSNorm
+from transformers.models.phi3.modeling_phi3 import Phi3RMSNorm
+
+
+def _rotate_half(x: torch.Tensor) -> torch.Tensor:
+    x1 = x[..., : x.shape[-1] // 2]
+    x2 = x[..., x.shape[-1] // 2 :]
+    return torch.cat((-x2, x1), dim=-1)
+
+
+def _apply_rotary(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    cos: torch.Tensor,
+    sin: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    cos = cos.unsqueeze(1)
+    sin = sin.unsqueeze(1)
+    rotary_dim = cos.shape[-1]
+
+    q_rot, q_pass = q[..., :rotary_dim], q[..., rotary_dim:]
+    k_rot, k_pass = k[..., :rotary_dim], k[..., rotary_dim:]
+
+    q_rot = (q_rot * cos) + (_rotate_half(q_rot) * sin)
+    k_rot = (k_rot * cos) + (_rotate_half(k_rot) * sin)
+    return torch.cat((q_rot, q_pass), dim=-1), torch.cat((k_rot, k_pass), dim=-1)
+
+
+def _repeat_kv(hidden_states: torch.Tensor, groups: int) -> torch.Tensor:
+    if groups == 1:
+        return hidden_states
+    batch, kv_heads, seq_len, head_dim = hidden_states.shape
+    hidden_states = hidden_states[:, :, None, :, :].expand(
+        batch, kv_heads, groups, seq_len, head_dim
+    )
+    return hidden_states.reshape(batch, kv_heads * groups, seq_len, head_dim)
+
+
+class PhiCompatibleGQA(nn.Module):
+    """Explicit eager grouped-query attention matching Phi-3/Phi-4-mini weights.
+
+    Parameter names and tensor shapes intentionally match the donor's `qkv_proj` and
+    `o_proj`. Keeping the reference mixer explicit prevents backend-specific Hugging
+    Face kernels from changing the transfer target underneath the experiment.
+    """
+
+    def __init__(self, config: Phi3Config, *, layer_idx: int) -> None:
+        super().__init__()
+        self.layer_idx = int(layer_idx)
+        self.hidden_size = int(config.hidden_size)
+        self.num_attention_heads = int(config.num_attention_heads)
+        self.num_key_value_heads = int(config.num_key_value_heads)
+        if self.num_attention_heads % self.num_key_value_heads != 0:
+            raise ValueError("num_attention_heads must be divisible by num_key_value_heads")
+
+        self.head_dim = self.hidden_size // self.num_attention_heads
+        self.num_key_value_groups = self.num_attention_heads // self.num_key_value_heads
+        self.scaling = 1.0 / math.sqrt(self.head_dim)
+        self.attention_dropout = float(config.attention_dropout)
+
+        q_rows = self.num_attention_heads * self.head_dim
+        kv_rows = self.num_key_value_heads * self.head_dim
+        self.q_rows = q_rows
+        self.kv_rows = kv_rows
+
+        self.qkv_proj = nn.Linear(
+            self.hidden_size,
+            q_rows + 2 * kv_rows,
+            bias=False,
+        )
+        self.o_proj = nn.Linear(q_rows, self.hidden_size, bias=False)
+
+    def forward(
+        self,
+        *,
+        hidden_states: torch.Tensor,
+        attention_mask: torch.Tensor,
+        position_ids: torch.Tensor | None,
+        position_embeddings: tuple[torch.Tensor, torch.Tensor],
+        **_: object,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        del position_ids  # position information is already represented by cos/sin.
+
+        batch, seq_len, _ = hidden_states.shape
+        qkv = self.qkv_proj(hidden_states)
+        q = qkv[..., : self.q_rows]
+        k = qkv[..., self.q_rows : self.q_rows + self.kv_rows]
+        v = qkv[..., self.q_rows + self.kv_rows :]
+
+        q = q.view(batch, seq_len, self.num_attention_heads, self.head_dim).transpose(1, 2)
+        k = k.view(batch, seq_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
+        v = v.view(batch, seq_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
+
+        cos, sin = position_embeddings
+        q, k = _apply_rotary(q, k, cos, sin)
+        k = _repeat_kv(k, self.num_key_value_groups)
+        v = _repeat_kv(v, self.num_key_value_groups)
+
+        scores = torch.matmul(q, k.transpose(-1, -2)) * self.scaling
+        scores = scores + attention_mask
+        weights = F.softmax(scores, dim=-1, dtype=torch.float32).to(q.dtype)
+        weights = F.dropout(weights, p=self.attention_dropout, training=self.training)
+
+        mixed = torch.matmul(weights, v)
+        mixed = mixed.transpose(1, 2).contiguous().view(batch, seq_len, self.q_rows)
+        return self.o_proj(mixed), weights
 
 
 class PhiCompatibleSwiGLU(nn.Module):
@@ -24,12 +130,7 @@ class PhiCompatibleSwiGLU(nn.Module):
 
 
 class IQBlock(nn.Module):
-    """Pluggable pre-norm decoder block used by the IQ backbone.
-
-    The initial mixer/FFN are Phi-compatible so weight transfer has a clean target.
-    Later research can replace either module independently without changing the
-    recurrent topology.
-    """
+    """Pluggable pre-norm decoder block used by the IQ backbone."""
 
     def __init__(
         self,
@@ -73,11 +174,10 @@ class IQBlock(nn.Module):
 
 
 def build_phi_compatible_block(config: Phi3Config, *, layer_idx: int) -> IQBlock:
-    """Build an IQ block with a Phi-compatible parameterization."""
     return IQBlock(
         hidden_size=config.hidden_size,
         rms_norm_eps=config.rms_norm_eps,
-        mixer=Phi3Attention(config=config, layer_idx=layer_idx),
+        mixer=PhiCompatibleGQA(config=config, layer_idx=layer_idx),
         feed_forward=PhiCompatibleSwiGLU(config.hidden_size, config.intermediate_size),
         resid_pdrop=config.resid_pdrop,
     )
