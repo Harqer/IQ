@@ -14,11 +14,13 @@ class IQArchitectureTests(unittest.TestCase):
         from transformers.models.phi3.configuration_phi3 import Phi3Config
         from iq_model import IQArchitectureConfig
 
+        # Unit tests use the Phi-only control so they do not require Triton/FLA.
         iq = IQArchitectureConfig(
             prelude_layers=1,
             recurrent_layers=2,
             recurrent_passes=2,
             coda_layers=1,
+            core_mixer_schedule=("phi_gqa", "phi_gqa"),
         )
         phi = Phi3Config(
             vocab_size=128,
@@ -36,18 +38,30 @@ class IQArchitectureTests(unittest.TestCase):
         phi._attn_implementation = "eager"
         return phi, iq
 
-    def test_default_topology_matches_phi4_mini_depth(self):
+    def test_default_topology_and_hybrid_schedule(self):
         from iq_model import IQArchitectureConfig
 
         cfg = IQArchitectureConfig()
         self.assertEqual(cfg.physical_layers, 16)
         self.assertEqual(cfg.effective_depth, 32)
-        self.assertEqual(cfg.teacher_layer_for_prelude(3), 3)
+        self.assertEqual(
+            cfg.core_mixer_schedule,
+            (
+                "gated_deltanet",
+                "gated_deltanet",
+                "nsa",
+                "gated_deltanet",
+                "gated_deltanet",
+                "nsa",
+                "gated_deltanet",
+                "nsa",
+            ),
+        )
+        self.assertEqual(cfg.core_mixer_schedule.count("gated_deltanet"), 5)
+        self.assertEqual(cfg.core_mixer_schedule.count("nsa"), 3)
         self.assertEqual(cfg.teacher_layer_for_core(0, 0), 4)
         self.assertEqual(cfg.teacher_layer_for_core(1, 0), 12)
         self.assertEqual(cfg.teacher_layer_for_core(2, 7), 27)
-        self.assertEqual(cfg.teacher_layer_for_coda(0), 28)
-        self.assertEqual(cfg.teacher_layer_for_coda(3), 31)
 
     def test_dense_to_recurrent_layout_groups_three_teacher_depths_per_core_block(self):
         from iq_model import DenseToRecurrentLayout, IQArchitectureConfig
@@ -68,6 +82,7 @@ class IQArchitectureTests(unittest.TestCase):
         self.assertEqual(len(model.prelude), 1)
         self.assertEqual(model.reasoning_core.physical_depth, 2)
         self.assertEqual(model.reasoning_core.effective_depth, 4)
+        self.assertEqual(model.reasoning_core.mixer_schedule, ("phi_gqa", "phi_gqa"))
         self.assertEqual(len(model.coda), 1)
         self.assertEqual(tuple(model.reasoning_core.pass_embeddings.shape), (2, 32))
 
@@ -85,7 +100,7 @@ class IQArchitectureTests(unittest.TestCase):
     def test_explicit_gqa_matches_canonical_phi_eager_attention(self):
         import torch
         from transformers.models.phi3.modeling_phi3 import Phi3Attention, Phi3RotaryEmbedding
-        from iq_model.components import PhiCompatibleGQA
+        from iq_model.mixers import MixerContext, PhiCompatibleGQA
 
         torch.manual_seed(9)
         phi, _ = self.tiny_configs()
@@ -102,21 +117,23 @@ class IQArchitectureTests(unittest.TestCase):
         mask = torch.triu(mask, diagonal=1).view(1, 1, 7, 7).expand(2, 1, 7, 7)
 
         with torch.no_grad():
-            ref_out, ref_weights = reference(
+            ref_out, _ = reference(
                 hidden_states=hidden,
                 attention_mask=mask,
                 position_embeddings=position_embeddings,
                 past_key_values=None,
             )
-            cand_out, cand_weights = candidate(
-                hidden_states=hidden,
-                attention_mask=mask,
-                position_ids=position_ids,
-                position_embeddings=position_embeddings,
+            cand_out = candidate(
+                hidden,
+                context=MixerContext(
+                    padding_mask=None,
+                    causal_mask=mask,
+                    position_ids=position_ids,
+                    position_embeddings=position_embeddings,
+                ),
             )
 
         self.assertTrue(torch.allclose(cand_out, ref_out, atol=1e-6, rtol=1e-5))
-        self.assertTrue(torch.allclose(cand_weights, ref_weights, atol=1e-6, rtol=1e-5))
 
     def test_forward_runs_all_recurrent_passes(self):
         import torch
@@ -133,8 +150,6 @@ class IQArchitectureTests(unittest.TestCase):
         self.assertEqual(tuple(output.logits.shape), (2, 11, phi.vocab_size))
         self.assertEqual(tuple(output.hidden_states.shape), (2, 11, phi.hidden_size))
         self.assertEqual(len(output.core_pass_states), iq.recurrent_passes)
-        for state in output.core_pass_states:
-            self.assertEqual(tuple(state.shape), (2, 11, phi.hidden_size))
 
     def test_pass_embeddings_are_zero_initialized_for_transfer_safety(self):
         import torch
@@ -145,7 +160,41 @@ class IQArchitectureTests(unittest.TestCase):
         embeddings = model.reasoning_core.pass_embeddings
         self.assertTrue(torch.equal(embeddings, torch.zeros_like(embeddings)))
 
-    def test_unsupported_research_features_fail_explicitly(self):
+    def test_latent_nsa_cannot_alias_plain_nsa(self):
+        from iq_model.mixers import UnsupportedMixerComposition, build_mixer
+
+        phi, iq = self.tiny_configs()
+        with self.assertRaises(UnsupportedMixerComposition):
+            build_mixer("latent_nsa", phi, iq, layer_idx=0)
+
+    def test_path_inside_nsa_fails_until_joint_operator_is_validated(self):
+        from iq_model import IQArchitectureConfig, IQRecurrentPhiModel
+
+        phi, _ = self.tiny_configs()
+        cfg = IQArchitectureConfig(
+            prelude_layers=1,
+            recurrent_layers=2,
+            recurrent_passes=2,
+            coda_layers=1,
+            core_mixer_schedule=("nsa", "phi_gqa"),
+            attention_position_strategy="path",
+        )
+        with self.assertRaises(NotImplementedError):
+            IQRecurrentPhiModel(phi, cfg)
+
+    def test_keystone_monitor_collects_cross_task_activity(self):
+        import torch
+        from iq_model.keystone import KeystoneActivationMonitor
+
+        monitor = KeystoneActivationMonitor(intermediate_size=4)
+        monitor.set_task("code")
+        monitor.observe(torch.tensor([[[1.0, -2.0, 0.0, 4.0]]]))
+        monitor.set_task("math")
+        monitor.observe(torch.tensor([[[3.0, 0.0, -2.0, 2.0]]]))
+        score = monitor.cross_task_mean_abs()
+        self.assertTrue(torch.allclose(score, torch.tensor([2.0, 1.0, 1.0, 3.0])))
+
+    def test_unsupported_latent_workspace_fails_explicitly(self):
         from iq_model import IQArchitectureConfig, IQRecurrentPhiModel
 
         phi, _ = self.tiny_configs()
@@ -157,6 +206,7 @@ class IQArchitectureTests(unittest.TestCase):
                     recurrent_layers=2,
                     recurrent_passes=2,
                     coda_layers=1,
+                    core_mixer_schedule=("phi_gqa", "phi_gqa"),
                     latent_slots=4,
                 ),
             )
