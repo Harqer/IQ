@@ -2,5 +2,7 @@
 
 # FLA is pinned to a reviewed commit so mixer semantics do not drift under the
 # architecture experiment. It provides Gated DeltaNet, Native Sparse Attention,
-# and PaTH reference/optimized implementations.
-flash-linear-attention[cuda,conv1d] @ git+https://github.com/fla-org/flash-linear-attention.git@516143e31fce09925e6c39ac37148444bad176c4
+# and PaTH reference/optimized implementations. The optional causal-conv1d wheel
+# is deliberately omitted; FLA's built-in short-convolution backend keeps Colab
+# setup more portable.
+flash-linear-attention[cuda] @ git+https://github.com/fla-org/flash-linear-attention.git@516143e31fce09925e6c39ac37148444bad176c4
