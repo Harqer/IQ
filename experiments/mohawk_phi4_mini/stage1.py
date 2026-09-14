@@ -115,12 +115,16 @@ def main() -> None:
     args = parse_args()
     torch.manual_seed(args.seed)
 
+    if args.device.startswith("cuda") and not torch.cuda.is_available():
+        raise RuntimeError("CUDA device requested but no GPU is available")
+    donor_dtype = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else torch.float16
+
     tokenizer = AutoTokenizer.from_pretrained(args.teacher, trust_remote_code=True)
     teacher = AutoModelForCausalLM.from_pretrained(
         args.teacher,
         trust_remote_code=True,
         attn_implementation="eager",
-        torch_dtype=torch.bfloat16,
+        torch_dtype=donor_dtype,
     ).to(args.device)
     teacher.eval().requires_grad_(False)
 
@@ -132,8 +136,8 @@ def main() -> None:
     train_chunks = token_chunks(train_files, tokenizer, seq_len=args.seq_len, min_tokens=args.min_tokens)
     eval_chunks = token_chunks(eval_files, tokenizer, seq_len=args.seq_len, min_tokens=args.min_tokens)
 
-    # Stage 1 is a small single-mixer optimization.  Keep it in FP32 even though the
-    # frozen donor runs in BF16; this avoids throwing away signal in Q/K updates.
+    # Stage 1 is a small single-mixer optimization. Keep it in FP32 even when the
+    # frozen donor runs in FP16/BF16; this avoids throwing away signal in Q/K updates.
     student = IQLinearAttentionMixer(
         hidden_size=cfg.hidden_size,
         num_attention_heads=cfg.num_attention_heads,
@@ -188,6 +192,7 @@ def main() -> None:
         "num_hidden_layers": cfg.num_hidden_layers,
         "num_attention_heads": cfg.num_attention_heads,
         "num_key_value_heads": cfg.num_key_value_heads,
+        "donor_dtype": str(donor_dtype),
         "initial_val_normalized_frobenius": initial_val,
         "final_val_normalized_frobenius": final_val,
         "relative_improvement": improvement,
