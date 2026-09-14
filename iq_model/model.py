@@ -9,8 +9,9 @@ from torch import nn
 from transformers.models.phi3.configuration_phi3 import Phi3Config
 from transformers.models.phi3.modeling_phi3 import Phi3RMSNorm, Phi3RotaryEmbedding
 
-from .components import IQBlock, build_phi_compatible_block
+from .components import IQBlock, build_iq_block
 from .config import IQArchitectureConfig
+from .mixers import MixerContext
 from .reasoning import RecurrentReasoningCore
 
 
@@ -24,11 +25,11 @@ class IQOutput:
 
 
 class IQRecurrentPhiModel(nn.Module):
-    """Research v0 IQ backbone with a shared recurrent reasoning core.
+    """IQ hybrid-v1 reference backbone.
 
-    The topology is independent from the concrete mixer/FFN implementation. v0 uses
-    Phi-compatible GQA + fused SwiGLU so a Phi-4-mini donor can be transferred
-    without introducing multiple architectural discontinuities at once.
+    Unique prelude/coda blocks stay Phi-compatible for the first transfer. The
+    recurrent middle core is heterogeneous and uses the configured physical mixer
+    schedule (Gated DeltaNet + sparse attention anchors by default).
     """
 
     def __init__(self, phi_config: Phi3Config, iq_config: IQArchitectureConfig | None = None) -> None:
@@ -38,9 +39,18 @@ class IQRecurrentPhiModel(nn.Module):
         self.iq_config.validate_teacher_depth(phi_config.num_hidden_layers)
 
         if self.iq_config.latent_slots:
-            raise NotImplementedError("latent workspace is reserved for a later controlled experiment")
+            raise NotImplementedError("latent workspace is reserved for its controlled implementation stage")
         if self.iq_config.use_adaptive_halting:
             raise NotImplementedError("adaptive halting is disabled until fixed-depth recurrence is validated")
+        if (
+            self.iq_config.attention_position_strategy == "path"
+            and "nsa" in self.iq_config.core_mixer_schedule
+        ):
+            raise NotImplementedError(
+                "PaTH-inside-NSA is not treated as a drop-in composition. Use a "
+                "path_attention anchor schedule to test PaTH independently, or keep "
+                "NSA on its validated RoPE path until the joint operator is derived."
+            )
 
         h = phi_config.hidden_size
         self.embed_tokens = nn.Embedding(phi_config.vocab_size, h, phi_config.pad_token_id)
@@ -49,7 +59,12 @@ class IQRecurrentPhiModel(nn.Module):
 
         self.prelude = nn.ModuleList(
             [
-                build_phi_compatible_block(phi_config, layer_idx=i)
+                build_iq_block(
+                    phi_config,
+                    self.iq_config,
+                    layer_idx=i,
+                    mixer_kind=self.iq_config.prelude_mixer,
+                )
                 for i in range(self.iq_config.prelude_layers)
             ]
         )
@@ -57,7 +72,12 @@ class IQRecurrentPhiModel(nn.Module):
         core_start = self.iq_config.prelude_layers
         core_blocks = nn.ModuleList(
             [
-                build_phi_compatible_block(phi_config, layer_idx=core_start + i)
+                build_iq_block(
+                    phi_config,
+                    self.iq_config,
+                    layer_idx=core_start + i,
+                    mixer_kind=self.iq_config.mixer_for_core_block(i),
+                )
                 for i in range(self.iq_config.recurrent_layers)
             ]
         )
@@ -75,7 +95,12 @@ class IQRecurrentPhiModel(nn.Module):
         )
         self.coda = nn.ModuleList(
             [
-                build_phi_compatible_block(phi_config, layer_idx=coda_start + i)
+                build_iq_block(
+                    phi_config,
+                    self.iq_config,
+                    layer_idx=coda_start + i,
+                    mixer_kind=self.iq_config.coda_mixer,
+                )
                 for i in range(self.iq_config.coda_layers)
             ]
         )
@@ -83,7 +108,6 @@ class IQRecurrentPhiModel(nn.Module):
         self.final_norm = Phi3RMSNorm(h, eps=phi_config.rms_norm_eps)
         self.lm_head = nn.Linear(h, phi_config.vocab_size, bias=False)
 
-        # These heads are architectural extension points, not required for v0 transfer.
         self.mtp_heads = nn.ModuleList(
             [nn.Linear(h, phi_config.vocab_size, bias=False) for _ in range(self.iq_config.mtp_heads)]
         )
@@ -143,16 +167,9 @@ class IQRecurrentPhiModel(nn.Module):
         block: IQBlock,
         hidden_states: torch.Tensor,
         *,
-        causal_mask: torch.Tensor,
-        position_ids: torch.Tensor | None,
-        position_embeddings: tuple[torch.Tensor, torch.Tensor],
+        context: MixerContext,
     ) -> torch.Tensor:
-        return block(
-            hidden_states,
-            attention_mask=causal_mask,
-            position_ids=position_ids,
-            position_embeddings=position_embeddings,
-        )
+        return block(hidden_states, context=context)
 
     def forward(
         self,
@@ -165,33 +182,25 @@ class IQRecurrentPhiModel(nn.Module):
         hidden_states = self.embed_dropout(self.embed_tokens(input_ids))
         causal_mask = self._build_causal_mask(hidden_states, attention_mask)
         position_embeddings = self._position_embeddings(hidden_states, position_ids)
+        context = MixerContext(
+            padding_mask=attention_mask,
+            causal_mask=causal_mask,
+            position_ids=position_ids,
+            position_embeddings=position_embeddings,
+        )
 
         for block in self.prelude:
-            hidden_states = self._run_block(
-                block,
-                hidden_states,
-                causal_mask=causal_mask,
-                position_ids=position_ids,
-                position_embeddings=position_embeddings,
-            )
+            hidden_states = self._run_block(block, hidden_states, context=context)
 
         core_output = self.reasoning_core(
             hidden_states,
-            attention_mask=causal_mask,
-            position_ids=position_ids,
-            position_embeddings=position_embeddings,
+            context=context,
             capture_passes=capture_core_passes,
         )
         hidden_states = core_output.hidden_states
 
         for block in self.coda:
-            hidden_states = self._run_block(
-                block,
-                hidden_states,
-                causal_mask=causal_mask,
-                position_ids=position_ids,
-                position_embeddings=position_embeddings,
-            )
+            hidden_states = self._run_block(block, hidden_states, context=context)
 
         hidden_states = self.final_norm(hidden_states)
         logits = self.lm_head(hidden_states)
