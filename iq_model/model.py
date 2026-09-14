@@ -148,11 +148,11 @@ class IQRecurrentPhiModel(nn.Module):
 
         return causal
 
-    def _position_embeddings(
-        self,
+    @staticmethod
+    def _resolve_position_ids(
         hidden_states: torch.Tensor,
         position_ids: torch.Tensor | None,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> torch.Tensor:
         batch, seq_len, _ = hidden_states.shape
         if position_ids is None:
             position_ids = torch.arange(seq_len, device=hidden_states.device).unsqueeze(0).expand(batch, -1)
@@ -160,6 +160,13 @@ class IQRecurrentPhiModel(nn.Module):
             raise ValueError(
                 f"position_ids must have shape {(batch, seq_len)}, got {tuple(position_ids.shape)}"
             )
+        return position_ids
+
+    def _position_embeddings(
+        self,
+        hidden_states: torch.Tensor,
+        position_ids: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         return self.rotary_emb(hidden_states, position_ids)
 
     @staticmethod
@@ -180,12 +187,13 @@ class IQRecurrentPhiModel(nn.Module):
         capture_core_passes: bool = False,
     ) -> IQOutput:
         hidden_states = self.embed_dropout(self.embed_tokens(input_ids))
+        resolved_position_ids = self._resolve_position_ids(hidden_states, position_ids)
         causal_mask = self._build_causal_mask(hidden_states, attention_mask)
-        position_embeddings = self._position_embeddings(hidden_states, position_ids)
+        position_embeddings = self._position_embeddings(hidden_states, resolved_position_ids)
         context = MixerContext(
             padding_mask=attention_mask,
             causal_mask=causal_mask,
-            position_ids=position_ids,
+            position_ids=resolved_position_ids,
             position_embeddings=position_embeddings,
         )
 
