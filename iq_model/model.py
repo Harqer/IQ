@@ -11,6 +11,7 @@ from transformers.models.phi3.modeling_phi3 import Phi3RMSNorm, Phi3RotaryEmbedd
 
 from .components import IQBlock, build_phi_compatible_block
 from .config import IQArchitectureConfig
+from .reasoning import RecurrentReasoningCore
 
 
 @dataclass
@@ -23,11 +24,11 @@ class IQOutput:
 
 
 class IQRecurrentPhiModel(nn.Module):
-    """Research v0 IQ backbone with a shared recurrent middle core.
+    """Research v0 IQ backbone with a shared recurrent reasoning core.
 
     The topology is independent from the concrete mixer/FFN implementation. v0 uses
-    Phi-compatible GQA + gated SiLU/SwiGLU-style FFNs so a Phi-4-mini donor can be
-    transferred without introducing multiple architectural discontinuities at once.
+    Phi-compatible GQA + fused SwiGLU so a Phi-4-mini donor can be transferred
+    without introducing multiple architectural discontinuities at once.
     """
 
     def __init__(self, phi_config: Phi3Config, iq_config: IQArchitectureConfig | None = None) -> None:
@@ -54,11 +55,18 @@ class IQRecurrentPhiModel(nn.Module):
         )
 
         core_start = self.iq_config.prelude_layers
-        self.recurrent_core = nn.ModuleList(
+        core_blocks = nn.ModuleList(
             [
                 build_phi_compatible_block(phi_config, layer_idx=core_start + i)
                 for i in range(self.iq_config.recurrent_layers)
             ]
+        )
+        self.reasoning_core = RecurrentReasoningCore(
+            core_blocks,
+            hidden_size=h,
+            passes=self.iq_config.recurrent_passes,
+            use_pass_embeddings=self.iq_config.use_pass_embeddings,
+            delta_scale=self.iq_config.recurrent_delta_scale,
         )
 
         coda_start = (
@@ -72,14 +80,10 @@ class IQRecurrentPhiModel(nn.Module):
             ]
         )
 
-        if self.iq_config.use_pass_embeddings:
-            self.pass_embeddings = nn.Parameter(torch.zeros(self.iq_config.recurrent_passes, h))
-        else:
-            self.register_parameter("pass_embeddings", None)
-
         self.final_norm = Phi3RMSNorm(h, eps=phi_config.rms_norm_eps)
         self.lm_head = nn.Linear(h, phi_config.vocab_size, bias=False)
 
+        # These heads are architectural extension points, not required for v0 transfer.
         self.mtp_heads = nn.ModuleList(
             [nn.Linear(h, phi_config.vocab_size, bias=False) for _ in range(self.iq_config.mtp_heads)]
         )
@@ -171,26 +175,14 @@ class IQRecurrentPhiModel(nn.Module):
                 position_embeddings=position_embeddings,
             )
 
-        pass_states: list[torch.Tensor] = []
-        delta_scale = self.iq_config.recurrent_delta_scale
-
-        for pass_index in range(self.iq_config.recurrent_passes):
-            if self.pass_embeddings is not None:
-                hidden_states = hidden_states + self.pass_embeddings[pass_index].view(1, 1, -1)
-
-            for block in self.recurrent_core:
-                before = hidden_states
-                candidate = self._run_block(
-                    block,
-                    before,
-                    causal_mask=causal_mask,
-                    position_ids=position_ids,
-                    position_embeddings=position_embeddings,
-                )
-                hidden_states = before + delta_scale * (candidate - before)
-
-            if capture_core_passes:
-                pass_states.append(hidden_states)
+        core_output = self.reasoning_core(
+            hidden_states,
+            attention_mask=causal_mask,
+            position_ids=position_ids,
+            position_embeddings=position_embeddings,
+            capture_passes=capture_core_passes,
+        )
+        hidden_states = core_output.hidden_states
 
         for block in self.coda:
             hidden_states = self._run_block(
@@ -211,5 +203,5 @@ class IQRecurrentPhiModel(nn.Module):
             hidden_states=hidden_states,
             mtp_logits=mtp_logits,
             verifier_scores=verifier_scores,
-            core_pass_states=tuple(pass_states),
+            core_pass_states=core_output.pass_states,
         )
