@@ -7,12 +7,9 @@ import torch
 from torch import nn
 
 from transformers.models.phi3.configuration_phi3 import Phi3Config
-from transformers.models.phi3.modeling_phi3 import (
-    Phi3DecoderLayer,
-    Phi3RMSNorm,
-    Phi3RotaryEmbedding,
-)
+from transformers.models.phi3.modeling_phi3 import Phi3RMSNorm, Phi3RotaryEmbedding
 
+from .components import IQBlock, build_phi_compatible_block
 from .config import IQArchitectureConfig
 
 
@@ -26,15 +23,11 @@ class IQOutput:
 
 
 class IQRecurrentPhiModel(nn.Module):
-    """Research v0 IQ backbone.
+    """Research v0 IQ backbone with a shared recurrent middle core.
 
-    The model keeps Phi-3/Phi-4-mini compatible token embeddings, GQA blocks,
-    SwiGLU MLPs, RMSNorm, and RoPE mechanics. Its architectural change is the
-    shared recurrent middle core.
-
-    This is deliberately a PyTorch reference model for transfer/training. Mojo
-    kernels should be implemented only after the topology and transfer behavior are
-    validated.
+    The topology is independent from the concrete mixer/FFN implementation. v0 uses
+    Phi-compatible GQA + gated SiLU/SwiGLU-style FFNs so a Phi-4-mini donor can be
+    transferred without introducing multiple architectural discontinuities at once.
     """
 
     def __init__(self, phi_config: Phi3Config, iq_config: IQArchitectureConfig | None = None) -> None:
@@ -55,7 +48,7 @@ class IQRecurrentPhiModel(nn.Module):
 
         self.prelude = nn.ModuleList(
             [
-                Phi3DecoderLayer(phi_config, layer_idx=i)
+                build_phi_compatible_block(phi_config, layer_idx=i)
                 for i in range(self.iq_config.prelude_layers)
             ]
         )
@@ -63,7 +56,7 @@ class IQRecurrentPhiModel(nn.Module):
         core_start = self.iq_config.prelude_layers
         self.recurrent_core = nn.ModuleList(
             [
-                Phi3DecoderLayer(phi_config, layer_idx=core_start + i)
+                build_phi_compatible_block(phi_config, layer_idx=core_start + i)
                 for i in range(self.iq_config.recurrent_layers)
             ]
         )
@@ -74,15 +67,13 @@ class IQRecurrentPhiModel(nn.Module):
         )
         self.coda = nn.ModuleList(
             [
-                Phi3DecoderLayer(phi_config, layer_idx=coda_start + i)
+                build_phi_compatible_block(phi_config, layer_idx=coda_start + i)
                 for i in range(self.iq_config.coda_layers)
             ]
         )
 
         if self.iq_config.use_pass_embeddings:
-            self.pass_embeddings = nn.Parameter(
-                torch.zeros(self.iq_config.recurrent_passes, h)
-            )
+            self.pass_embeddings = nn.Parameter(torch.zeros(self.iq_config.recurrent_passes, h))
         else:
             self.register_parameter("pass_embeddings", None)
 
@@ -92,9 +83,7 @@ class IQRecurrentPhiModel(nn.Module):
         self.mtp_heads = nn.ModuleList(
             [nn.Linear(h, phi_config.vocab_size, bias=False) for _ in range(self.iq_config.mtp_heads)]
         )
-        self.verifier_head = (
-            nn.Linear(h, 1, bias=True) if self.iq_config.use_verifier_head else None
-        )
+        self.verifier_head = nn.Linear(h, 1, bias=True) if self.iq_config.use_verifier_head else None
 
         if getattr(phi_config, "tie_word_embeddings", False):
             self.lm_head.weight = self.embed_tokens.weight
@@ -147,7 +136,7 @@ class IQRecurrentPhiModel(nn.Module):
 
     @staticmethod
     def _run_block(
-        block: Phi3DecoderLayer,
+        block: IQBlock,
         hidden_states: torch.Tensor,
         *,
         causal_mask: torch.Tensor,
@@ -159,7 +148,6 @@ class IQRecurrentPhiModel(nn.Module):
             attention_mask=causal_mask,
             position_ids=position_ids,
             position_embeddings=position_embeddings,
-            use_cache=False,
         )
 
     def forward(
