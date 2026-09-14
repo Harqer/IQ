@@ -20,5 +20,8 @@ class Guardrail:
     def check_tool(self, agent: str, call: ToolCall) -> GuardrailDecision:
         return GuardrailDecision(True)
 
+    def check_tool_result(self, agent: str, call: ToolCall, result: str) -> GuardrailDecision:
+        return GuardrailDecision(True)
+
     def check_output(self, agent: str, output: str) -> GuardrailDecision:
         return GuardrailDecision(True)
