@@ -28,7 +28,8 @@ struct SystemConfig:
     var oscillation_depth: Int
     var ising_iterations: Int
 
-    # API Keys
+    # Runtime credentials. Inject these from the execution environment or secret
+    # manager; never commit production credentials or put them into prompts/skills.
     var tinker_api_key: String
     var thunder_api_key: String
 
@@ -50,8 +51,8 @@ struct SystemConfig:
         manifold_curvature: Float64 = 0.1,
         oscillation_depth: Int = 5,
         ising_iterations: Int = 10,
-        tinker_api_key: String = "tml-UfsmNI2GJD8M0Si36Xcpk9iWQtHY8IXgv7eFScev6TT6Zk9fcc5vnlkLQXtnz1CNHAAAA",
-        thunder_api_key: String = "THUNDER_API_KEY_PLACEHOLDER"
+        tinker_api_key: String = "",
+        thunder_api_key: String = ""
     ):
         self.model_name = model_name
         self.base_model = base_model
