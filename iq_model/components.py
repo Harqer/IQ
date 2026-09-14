@@ -1,14 +1,30 @@
 from __future__ import annotations
 
-from torch import nn
 import torch
+import torch.nn.functional as F
+from torch import nn
 
 from transformers.models.phi3.configuration_phi3 import Phi3Config
-from transformers.models.phi3.modeling_phi3 import Phi3Attention, Phi3MLP, Phi3RMSNorm
+from transformers.models.phi3.modeling_phi3 import Phi3Attention, Phi3RMSNorm
+
+
+class PhiCompatibleSwiGLU(nn.Module):
+    """Exact Phi-style gated SiLU FFN with transfer-compatible parameter names."""
+
+    def __init__(self, hidden_size: int, intermediate_size: int) -> None:
+        super().__init__()
+        self.hidden_size = int(hidden_size)
+        self.intermediate_size = int(intermediate_size)
+        self.gate_up_proj = nn.Linear(hidden_size, 2 * intermediate_size, bias=False)
+        self.down_proj = nn.Linear(intermediate_size, hidden_size, bias=False)
+
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        gate, up = self.gate_up_proj(hidden_states).chunk(2, dim=-1)
+        return self.down_proj(F.silu(gate) * up)
 
 
 class IQBlock(nn.Module):
-    """Pluggable decoder block used by the IQ backbone.
+    """Pluggable pre-norm decoder block used by the IQ backbone.
 
     The initial mixer/FFN are Phi-compatible so weight transfer has a clean target.
     Later research can replace either module independently without changing the
@@ -57,11 +73,11 @@ class IQBlock(nn.Module):
 
 
 def build_phi_compatible_block(config: Phi3Config, *, layer_idx: int) -> IQBlock:
-    """Build a block with an exact Phi-compatible parameterization."""
+    """Build an IQ block with a Phi-compatible parameterization."""
     return IQBlock(
         hidden_size=config.hidden_size,
         rms_norm_eps=config.rms_norm_eps,
         mixer=Phi3Attention(config=config, layer_idx=layer_idx),
-        feed_forward=Phi3MLP(config),
+        feed_forward=PhiCompatibleSwiGLU(config.hidden_size, config.intermediate_size),
         resid_pdrop=config.resid_pdrop,
     )
