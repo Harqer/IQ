@@ -1,77 +1,78 @@
-# IQ Research Architecture
+# IQ Hybrid Research Architecture
 
-This document is the authoritative architecture target for the current IQ research branch.
-The older `nif_sovereign/` implementation predates the 2026 architecture research and is
-**legacy reference code**, not the target for new weight transfer.
+This document is the authoritative architecture target for `architecture/iq-hybrid-v1`.
+The previous `architecture/iq-research-v0` branch remains the Phi-compatible recurrent-depth
+control. The older `nif_sovereign/` implementation is legacy reference code.
 
 ## Design rule
 
 Keep three concerns separate:
 
 1. **Architecture** — the function IQ computes.
-2. **Training/optimization** — how IQ learns that function.
-3. **Transfer/deployment** — how pretrained knowledge and runtime infrastructure are supplied.
+2. **Training/optimization** — how IQ learns it.
+3. **Transfer/deployment** — how pretrained knowledge and runtime compute are supplied.
 
-MOHAWK, DoRA, Muon, GaLore, quantization, Colab, Hugging Face inference, and QPU access are
-not core model layers.
+MOHAWK, DoRA, Muon, GaLore, quantization, Colab, Hugging Face hosting, and QPU access are not
+model layers.
 
-## v0 architecture
-
-The first model changes one major structural property relative to Phi-4-mini: **depth is
-recurrent**. Tokenization, embedding width, GQA, RoPE, RMSNorm, and the gated FFN remain
-Phi-compatible so transfer can be measured cleanly.
+## Hybrid-v1 topology
 
 ```text
 input tokens
     |
     v
-embedding + Phi-compatible RoPE
+embedding
     |
     v
-4 unique prelude blocks
+4 unique Phi-compatible prelude blocks
     |
     v
-8 physical recurrent blocks  <-----------------+
-    |                                           |
-    +-- pass 0 ---------------------------------+
-    +-- pass 1 ---------------------------------+
-    +-- pass 2 ---------------------------------+
-    |
-    v
-4 unique coda blocks
-    |
-    v
++---------------- recurrent reasoning core ----------------+
+|                                                          |
+|  0  Gated DeltaNet                                      |
+|  1  Gated DeltaNet                                      |
+|  2  Native Sparse Attention anchor                      |
+|  3  Gated DeltaNet                                      |
+|  4  Gated DeltaNet                                      |
+|  5  Native Sparse Attention anchor                      |
+|  6  Gated DeltaNet                                      |
+|  7  Native Sparse Attention anchor                      |
+|                                                          |
+|                 repeat physical stack R=3               |
++--------------------------+-------------------------------+
+                           |
+                           v
+4 unique Phi-compatible coda blocks
+                           |
+                           v
 final RMSNorm
-    |
-    +--> LM head
-    +--> optional MTP heads
-    +--> optional verifier head
+                           |
+             +-------------+-------------+
+             |             |             |
+            LM            MTP         verifier
 ```
 
-Default topology:
+Default core ratio: **5 recurrent linear mixers : 3 sparse exact-attention anchors**.
+A stricter 6:2 / 3:1 schedule remains an ablation, not an undocumented change.
 
-| Property | v0 value |
-|---|---:|
-| Physical decoder blocks | 16 |
-| Prelude blocks | 4 |
-| Recurrent physical blocks | 8 |
-| Recurrent passes | 3 |
-| Coda blocks | 4 |
-| Effective depth | 32 |
-| Hidden width | donor config (Phi-4-mini: 3072) |
-| FFN width | donor config (Phi-4-mini: 8192) |
-| Mixer | Phi-compatible GQA initially |
-| FFN | fused SwiGLU / gated SiLU |
-| Norm | pre-RMSNorm |
-| Position | donor Phi RoPE/LongRoPE initially |
-| Halting | disabled in v0 |
-| Latent workspace | disabled in v0 |
-| MoE | disabled in v0 |
-| Energy descent | disabled in v0 |
+## Two recurrence axes
 
-## Exact donor-depth correspondence
+IQ intentionally has two different kinds of recurrence:
 
-For the default `4 + 8 x 3 + 4` topology:
+1. **Sequence recurrence** — Gated DeltaNet carries compressed recurrent state across tokens.
+2. **Depth recurrence** — the eight physical reasoning blocks are revisited across reasoning passes.
+
+These mechanisms solve different problems and must not be conflated.
+
+## Effective depth and donor alignment
+
+The physical topology stays `4 + 8 + 4 = 16` blocks while the default effective depth is:
+
+```text
+4 + (8 x 3) + 4 = 32
+```
+
+This keeps the exact Phi-4-mini teacher-depth correspondence:
 
 ```text
 prelude[0..3]              -> teacher layers 0..3
@@ -81,156 +82,201 @@ core pass 2, blocks 0..7  -> teacher layers 20..27
 coda[0..3]                 -> teacher layers 28..31
 ```
 
-This mapping is defined in `iq_model/config.py` and is the later dense-to-recurrent
-transfer target. It allows each shared core block to be supervised against three donor
-depths instead of inventing a layer-folding map after training starts.
+`iq_model/transfer_layout.py` is the source of truth for this mapping.
 
-## Block definition
+## Mixer contract
 
-Every physical v0 block is explicit and pluggable:
+`iq_model/mixers.py` owns heterogeneous sequence mixing. Every mixer receives a `MixerContext`
+that carries both forms of masking/position state required by the different operator families:
 
-```text
-x
-|
-RMSNorm
-|
-mixer
-|
-+ residual
-|
-RMSNorm
-|
-feed-forward
-|
-+ residual
-```
+- 2-D padding mask for recurrent/sparse kernels;
+- additive causal mask for dense GQA;
+- position ids;
+- Phi-compatible RoPE values for the transfer-control path.
 
-`iq_model/components.py` currently provides:
+This avoids incorrectly forcing Gated DeltaNet or NSA through dense-attention mask semantics.
 
-- Phi-compatible GQA mixer from the canonical Transformers implementation;
-- `PhiCompatibleSwiGLU`, with fused `gate_up_proj` and `down_proj` parameters matching
-  the donor layout;
-- `IQBlock`, which allows mixer and FFN families to be replaced independently.
+### Implemented mixer families
 
-## Recurrent reasoning core
+#### Phi-compatible GQA
 
-`iq_model/reasoning.py` owns reasoning depth. The same eight block objects are executed
-for multiple passes. They are **not cloned per pass**.
+Used in the unique prelude/coda and by the v0 control. Parameter names/shapes remain compatible
+with Phi-4-mini (`qkv_proj`, `o_proj`).
 
-The recurrent state update is currently:
+#### Gated DeltaNet
+
+Implemented through the pinned Flash Linear Attention (FLA) implementation. For Phi-4-mini:
 
 ```text
-candidate = block(h_r)
-h_{r+1} = h_r + alpha * (candidate - h_r)
+hidden size       = 3072
+key width ratio   = 0.75
+key width         = 2304
+head dim          = 128
+GDN heads         = 18
+value expansion   = 2.0
 ```
 
-with `alpha = 1` by default. This preserves the transplanted block function for the first
-experiment. Recurrence-aware residual scaling is an explicit ablation rather than an
-untracked architecture change.
+Short convolution remains enabled because it is part of the validated GDN design.
 
-A learned pass embedding is available, but initialized to exactly zero. It therefore adds
-no behavior before training and later allows the shared core to distinguish recurrence
-visits.
+#### Native Sparse Attention
+
+Implemented through FLA NSA with three learned branches:
+
+- compressed/global context;
+- selected sparse blocks;
+- sliding/local context.
+
+Default research settings:
+
+```text
+block size   = 64
+block count  = 16
+local window = 512
+```
+
+The exact values are experiment parameters, not universal constants.
+
+#### PaTH attention
+
+FLA PaTH is available as a **standalone attention candidate**. It applies data-dependent
+Householder-style position transformations as part of its attention operator.
+
+It is intentionally *not* silently injected into NSA. `attention_position_strategy="path"`
+with ordinary NSA fails explicitly until the combined operator is derived and validated.
+
+## MLA + NSA target
+
+The final sparse-attention direction remains latent NSA:
+
+```text
+local branch        -> Multi-head Latent Attention (MLA)
+global compression  -> latent/group-head attention
+global selection    -> latent/group-head attention
+```
+
+This follows the published latent-NSA direction that reduces KV-cache cost while retaining
+NSA's local/compression/selection structure.
+
+`latent_nsa` exists as an architecture identifier but currently raises
+`UnsupportedMixerComposition`. Ordinary NSA must never be relabeled as latent NSA.
+
+Transition gate:
+
+1. validate GDN + NSA recurrent core;
+2. implement latent branch projections/cache layout;
+3. reproduce dense-vs-latent NSA equivalence/quality controls;
+4. only then make `latent_nsa` executable.
+
+## Position strategy
+
+Current executable sparse path: **NSA + its validated RoPE implementation**.
+
+Research target: **PaTH/data-dependent position on global attention paths**, but only after its
+interaction with latent/sparse cache structure is mathematically and empirically validated.
+
+PaTH can already be tested independently by placing `path_attention` in the mixer schedule.
 
 ## Feed-forward network
 
-The old NIF feed-forward path (`GELU -> neutrino oscillation -> Ising gate`) is not part of
-the research backbone.
-
-v0 uses a fused gated SiLU/SwiGLU-style FFN:
+Hybrid-v1 still uses dense, transfer-compatible fused SwiGLU:
 
 ```text
 gate, up = gate_up_proj(x).chunk(2)
 y = down_proj(SiLU(gate) * up)
 ```
 
-This is deliberately transfer-compatible with Phi-4-mini.
+This is intentional. Changing recurrent mixers and FFN routing simultaneously would make a
+failed transfer difficult to diagnose.
 
-### Later FFN experiments
+Next FFN stage:
 
-Only after recurrent transfer is stable:
+```text
+shared SwiGLU path (always active)
+        +
+top-k routed fine-grained experts
+```
 
-1. fine-grained MoE / shared + routed experts;
-2. differentiable routing (ReMoE-style);
-3. recurrent-depth routing jointly with expert routing;
-4. tensor-factorized FFN/operator experiments.
+Experts must specialize through training. Do not restore manually named linguistic/physics/
+diffusion experts from the legacy NIF architecture.
 
-Do not add manually named "linguistic", "physics", or "diffusion" experts to the v0
-backbone.
+## Keystone neurons
 
-## Mixer roadmap
+Keystone neurons are treated as an **empirical property discovered after pretraining/transfer**,
+not a predeclared neuron class.
 
-The v0 mixer is intentionally conservative. Later controlled replacements:
+`PhiCompatibleSwiGLU` exposes an activation-observer hook, and
+`iq_model/keystone.py` collects cross-task mean absolute activation statistics.
 
-1. Differential Attention;
-2. Native/DeepSeek-style sparse attention;
-3. linear recurrent mixer (KDA/DeltaNet-family experiment);
-4. hybrid linear-time layers plus sparse exact-attention correction layers;
-5. Differential + sparse only if each component wins independently.
+The monitor does not yet:
 
-Changing recurrence and the sequence mixer in the same first experiment is prohibited
-because a failed transfer would be uninterpretable.
+- label neurons as keystone;
+- freeze or protect weights;
+- alter learning rates;
+- prune neurons.
 
-## Reasoning roadmap
+Those actions require reproducing the published identification and ablation protocol first.
 
-The research sequence is:
+## Recurrent reasoning core
 
-1. fixed recurrent depth (`R=3`);
-2. recurrence stability/residual-scaling ablations;
-3. latent workspace / looped latent reasoning;
-4. token-dependent recursion (Mixture-of-Recursions-style);
-5. learned halting/adaptive computation;
-6. auxiliary energy/verifier calibration;
-7. Hamiltonian/conservative-dissipative recurrence only as a controlled alternative
-   update rule, not as an assumption of quantum computation.
+`iq_model/reasoning.py` owns depth recurrence. Physical blocks are shared across passes and keep
+fixed mixer identities.
 
-## Auxiliary heads
+```text
+candidate = block(h)
+h_next = h + alpha * (candidate - h)
+```
 
-The code exposes optional MTP and verifier heads, but both are disabled by default.
+`alpha=1` remains the transfer-safe baseline. Learned/per-pass/gated residual policies are later
+controlled experiments.
 
-The verifier/energy scalar is **auxiliary**. It does not alter hidden states and does not
-control halting until calibration demonstrates that its score tracks actual solution
-quality.
+Zero-initialized pass embeddings let the shared core learn visit identity without changing the
+initial transplanted function.
 
-Planned objective experiments after the backbone is stable:
+## Not yet implemented in hybrid-v1
 
-- next-token prediction;
-- multi-token prediction;
-- FIM / structural FIM;
-- horizon-length prediction for infilling;
-- future-summary prediction;
-- latent-reasoning supervision.
+These remain explicit architecture stages rather than hidden placeholders:
 
-## Not architecture
+- persistent latent reasoning workspace;
+- Mixture-of-Recursions/token-dependent depth;
+- learned halting;
+- shared+routed MoE;
+- executable latent NSA;
+- PaTH-inside-latent-NSA;
+- code-graph structural input stream;
+- fast-weight/repository memory;
+- FSP/HLP/FIM objective heads and losses;
+- Hamiltonian/conservative-dissipative recurrence ablation.
 
-The following should not appear as mandatory decoder components:
+## Dependencies
 
-| Item | Correct role |
-|---|---|
-| MOHAWK | dense-to-new-architecture transfer procedure |
-| DoRA / LoRA | optional parameter-efficient fine-tuning |
-| Muon / AdamW | optimizer |
-| GaLore | optimizer-memory reduction |
-| quantization | training/deployment optimization |
-| classical shadows | optional transfer/probing research |
-| Colab / remote GPU | compute infrastructure |
-| QPU | optional isolated quantum experiment, not LLM tensor runtime |
+Base research environment:
 
-## Current implementation
+```text
+torch==2.14.0
+transformers==5.17.0
+```
 
-- `iq_model/config.py` — topology and exact teacher-depth mapping.
-- `iq_model/components.py` — pluggable decoder block and explicit SwiGLU FFN.
-- `iq_model/reasoning.py` — fixed-depth recurrent reasoning subsystem.
-- `iq_model/model.py` — complete embedding -> prelude -> recurrent core -> coda -> heads model.
-- `tests/test_iq_model.py` — shape, sharing, mapping, and transfer-safety invariants.
+Hybrid kernels are supplied by a pinned FLA commit in `requirements-hybrid.txt`. Do not float to
+FLA `main` during an architecture experiment.
 
-## Next implementation gate
+## Current source map
 
-Before any Phi weights are inserted:
+- `iq_model/config.py` — topology, mixer schedule, kernel parameters, donor-depth mapping.
+- `iq_model/mixers.py` — Phi GQA, Gated DeltaNet, NSA, PaTH adapters, unsupported latent-NSA gate.
+- `iq_model/components.py` — pre-norm block, dense SwiGLU, keystone activation hook.
+- `iq_model/reasoning.py` — heterogeneous depth-recurrent reasoning core.
+- `iq_model/model.py` — embedding -> prelude -> hybrid recurrent core -> coda -> heads.
+- `iq_model/keystone.py` — cross-task activation instrumentation.
+- `iq_model/transfer_layout.py` — dense teacher -> recurrent depth correspondence.
+- `tests/test_iq_model.py` — architecture invariants without FLA/CUDA.
+- `tests/test_hybrid_mixers.py` — conditional CUDA/FLA kernel smoke tests.
 
-1. install the current pinned Transformers/PyTorch environment in Colab;
-2. run the tiny architecture tests;
-3. instantiate the real Phi-4-mini config without loading weights;
-4. verify parameter names/shapes for embeddings, norms, GQA, SwiGLU, and LM head;
-5. verify the recurrent model forward pass at small sequence length;
-6. only then implement dense-to-recurrent weight initialization/distillation.
+## Transition order before weight insertion
+
+1. Run Phi-control tests and numerical GQA equivalence.
+2. Install `requirements-hybrid.txt` on Colab GPU.
+3. Run Gated DeltaNet + NSA CUDA smoke tests.
+4. Run a tiny full hybrid recurrent forward/backward stability test.
+5. Establish hybrid-v1 random-init numerical health (no NaNs, bounded activation growth).
+6. Only then define the Phi -> hybrid operator-distillation/MOHAWK mapping.
+7. After hybrid transfer is stable, implement latent NSA and PaTH integration as separate gates.
