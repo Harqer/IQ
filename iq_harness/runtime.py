@@ -127,14 +127,25 @@ class AgentRuntime:
         for hook in self.hooks:
             hook(item)
 
-    def _enforce_guardrails(self, phase: str, agent: str, value: object) -> None:
+    def _enforce_guardrails(
+        self,
+        phase: str,
+        agent: str,
+        value: object,
+        *,
+        call: ToolCall | None = None,
+    ) -> None:
         for guardrail in self.guardrails:
             if phase == "input":
                 decision = guardrail.check_input(agent, value)
             elif phase == "tool":
                 decision = guardrail.check_tool(agent, value)
+            elif phase == "tool_result":
+                if call is None:
+                    raise AgentRuntimeError("tool_result guardrail requires a tool call")
+                decision = guardrail.check_tool_result(agent, call, str(value))
             elif phase == "output":
-                decision = guardrail.check_output(agent, value)
+                decision = guardrail.check_output(agent, str(value))
             else:
                 raise AgentRuntimeError(f"unknown guardrail phase: {phase}")
             if not decision.allowed:
@@ -230,24 +241,43 @@ class AgentRuntime:
             state.turns += 1
             self._trace(state, "model.response", {"tool_calls": [call.name for call in turn.tool_calls]})
 
+            if not turn.tool_calls:
+                self._enforce_guardrails("output", agent.name, turn.content)
+                if turn.content:
+                    message = Message("assistant", turn.content, name=agent.name)
+                    state.messages.append(message)
+                    if persist:
+                        persist.append(message)
+                return RunResult(turn.content, agent.name, state.run_id, tuple(state.messages), state.turns)
+
             if turn.content:
                 message = Message("assistant", turn.content, name=agent.name)
                 state.messages.append(message)
                 if persist:
                     persist.append(message)
 
-            if not turn.tool_calls:
-                self._enforce_guardrails("output", agent.name, turn.content)
-                return RunResult(turn.content, agent.name, state.run_id, tuple(state.messages), state.turns)
-
-            delegate_calls = [call for call in turn.tool_calls if call.name == "agent.delegate"]
-            delegate_results = self._execute_delegate_batch(state, agent, delegate_calls) if delegate_calls else {}
+            delegate_results: dict[str, str] = {}
+            valid_delegate_calls: list[ToolCall] = []
+            for call in turn.tool_calls:
+                if call.name != "agent.delegate":
+                    continue
+                try:
+                    self._enforce_guardrails("tool", agent.name, call)
+                    target = str(call.arguments.get("agent", ""))
+                    if target not in agent.delegates:
+                        raise AgentRuntimeError(f"agent {agent.name} cannot delegate to {target}")
+                    valid_delegate_calls.append(call)
+                except AgentRuntimeError as exc:
+                    delegate_results[call.id] = f"ERROR: {exc}"
+            if valid_delegate_calls:
+                delegate_results.update(self._execute_delegate_batch(state, agent, valid_delegate_calls))
             handoff_occurred = False
 
             for call in turn.tool_calls:
                 self._trace(state, "tool.call", {"name": call.name, "id": call.id})
                 try:
-                    self._enforce_guardrails("tool", agent.name, call)
+                    if call.name != "agent.delegate":
+                        self._enforce_guardrails("tool", agent.name, call)
                     if call.name == "skills.load":
                         name = str(call.arguments.get("name", ""))
                         if not self._allowed_skill(agent, name):
@@ -280,6 +310,12 @@ class AgentRuntime:
                     result = f"ERROR: {exc}"
                     self._trace(state, "tool.error", {"name": call.name, "error": str(exc)})
 
+                try:
+                    self._enforce_guardrails("tool_result", agent.name, result, call=call)
+                except AgentRuntimeError as exc:
+                    result = f"ERROR: tool result blocked: {exc}"
+                    self._trace(state, "tool_result.blocked", {"name": call.name, "error": str(exc)})
+
                 tool_message = Message("tool", result, name=call.name, tool_call_id=call.id)
                 state.messages.append(tool_message)
                 if persist:
@@ -294,6 +330,7 @@ class AgentRuntime:
         history = session.load() if session else []
         user_message = Message("user", user_input)
         history.append(user_message)
+        self._enforce_guardrails("input", agent_name, tuple(history))
         if session:
             session.append(user_message)
         state = _RunState(
@@ -303,7 +340,6 @@ class AgentRuntime:
             current_agent=agent_name,
             depth=0,
         )
-        self._enforce_guardrails("input", agent_name, tuple(history))
         self._trace(state, "run.start", {"input": user_input})
         result = self._drive(state, persist=session)
         self._trace(state, "run.end", {"last_agent": result.last_agent, "turns": result.turns})
