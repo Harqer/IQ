@@ -1,105 +1,98 @@
-# IQ Shadow Transport
+# IQ Functional-Shadow Transfer Ablation
 
-Canonical architecture for transferring learned operators from pretrained donor LLMs into IQ.
+This document describes an **optional transfer/probing experiment**. It is not the canonical
+Phi -> IQ transfer path for `architecture/iq-hybrid-v1`.
 
-## Goal
+## Canonical transfer direction
 
-Phi-4 is the proof-of-mechanism donor, not a permanent dependency. The transport engine must remain donor-independent so later experiments can move to larger Qwen/Llama/MoE checkpoints without rewriting IQ.
+The current target is cross-architecture functional transfer:
 
 ```text
-Donor checkpoint
-    -> DonorInspector
-    -> lazy OperatorRef catalog
-    -> paired calibration activations
-    -> FunctionalShadow observables
-    -> monotonic layer correspondence
-    -> source->IQ coordinate maps
-    -> transported Q/K/V/O + MLP operators
-    -> DoRA correction
-    -> Hamiltonian/energy alignment
-    -> IQ adaptation/evaluation
+Phi-4-mini donor
+    |
+    +-- directly copy genuinely compatible modules
+    |      embeddings / norms / dense SwiGLU / LM head where shapes and semantics match
+    |
+    +-- operator alignment for incompatible sequence mixers
+    |      GQA teacher -> Gated DeltaNet / NSA student
+    |
+    +-- block hidden-state alignment
+    |
+    +-- recurrent-depth supervision
+    |      shared IQ block j is supervised by teacher depths j across all three passes
+    |
+    +-- end-to-end logit / language-model distillation
+    |
+    `-- continued training / evaluation
 ```
 
-## Current implementation
+MOHAWK-style matrix/operator alignment and staged block/end-to-end distillation are the primary
+mechanisms. There is no assumed universal algebraic map from arbitrary donor weights to the new
+hybrid architecture.
 
-`iq_transfer/` is the source of truth.
+## What remains useful from `iq_transfer/`
 
-- `donor.py` - donor/config/tensor-source contracts.
-- `checkpoint.py` - lazy local safetensors access; large checkpoints are not loaded wholesale.
-- `phi4.py` - Phi-4/Phi-4-mini inspector for the `Phi3ForCausalLM` fused QKV and gated-MLP layout.
-- `shadows.py` - architecture-independent randomized quadratic observables over paired activations and monotonic layer matching.
-- `transport.py` - sample-space ridge coordinate fitting and linear-operator transport.
-- `scaling.py` - objective gate for deciding whether to progress to a larger donor.
+The existing code is retained because several pieces are still valuable research infrastructure:
 
-The old Gemma-specific mock graft is intentionally removed. New donors implement `DonorInspector`; they do not get separate graft architectures.
+- `donor.py` — donor/config/tensor-source contracts;
+- `checkpoint.py` — lazy safetensors access;
+- `phi4.py` — Phi checkpoint layout inspection;
+- `shadows.py` — randomized activation sketches;
+- `transport.py` — controlled coordinate-map experiments;
+- `scaling.py` — experimental progression metrics.
 
-## Shadow definition
+None of these files should be interpreted as proof that arbitrary architecture weights can be
+transported directly.
 
-For centered calibration activations `X` with Frobenius-normalized `X_hat`, use the same random measurement matrix `U` across donor and IQ:
+## Functional shadows
+
+The randomized-shadow code can still test whether compressed teacher measurements are sufficient
+supervision compared with storing full activations/operators.
+
+For centered activation matrix `X` and shared random projection `U`:
 
 ```text
 observable_j = || U_j X_hat ||^2
 ```
 
-This measures quadratic forms of the sample Gram operator and is comparable even when donor and IQ hidden widths differ. It is the classical randomized-shadow baseline. A quantum-shadow backend can later replace the measurement engine without changing the transport interface.
+This is a **classical randomized functional sketch**. It is not quantum shadow tomography and no
+quantum sample-complexity claim transfers automatically to this setting.
+
+Useful experiment:
+
+```text
+ordinary KD
+vs
+full hidden/operator alignment
+vs
+compressed functional-shadow alignment
+```
+
+Measure final capability retention, teacher-storage cost, transfer compute, and convergence speed.
 
 ## Coordinate transport
 
-Fit paired coordinates with the sample-space ridge solution:
+The existing ridge coordinate-map machinery is valid only as an experimental initialization or
+controlled linear-equivalence test. It must not be applied to semantically different nonlinear or
+recurrent operators as though their parameters correspond directly.
 
-```text
-X_iq ~= X_donor P
-P = X_donor^T (X_donor X_donor^T + lambda I)^-1 X_iq
-```
+Direct weight transformation remains appropriate only when the source and target operators are
+mathematically equivalent or connected by a known function-preserving reparameterization.
 
-For source linear operator `W_s`, source->target input map `P_in`, and output map `P_out`:
+## DoRA and energy alignment
 
-```text
-W_iq = P_out^T W_s pinv(P_in)^T
-```
+DoRA is optional PEFT and is **not** part of the canonical architecture-transfer pipeline.
 
-Q, K, V, O, gate, up, and down projections are transported independently. Fused donor tensors are represented as lazy row slices and are only materialized when needed.
+Hamiltonian/energy alignment is also not a required transfer stage. Energy/verifier research belongs
+to the reasoning/evaluation track and must demonstrate correlation with actual solution quality
+before influencing hidden-state dynamics or halting.
 
-## Phi proof
+## Hybrid-v1 transfer prerequisite
 
-Use a local official Phi checkpoint directory containing `config.json` and safetensors files. The inspector reads checkpoint metadata rather than assuming one Phi size.
+Do not resume donor-weight insertion until:
 
-The first experiment should keep the tokenizer/calibration prompts fixed and compare:
-
-1. randomly initialized IQ,
-2. IQ + ordinary distillation,
-3. IQ + full-activation transport,
-4. IQ + functional-shadow transport.
-
-Do not claim success from training loss alone. Record held-out language/reasoning scores, shadow error, coordinate-map error, adaptation compute, and scratch baseline.
-
-## Scale gate
-
-Only advance donor size when the configured gate passes. Initial defaults are experimental, not scientific constants:
-
-```text
-retention = IQ_score / donor_score >= 0.80
-IQ_score >= scratch_score
-adaptation_compute / scratch_compute <= 0.50
-```
-
-After Phi establishes a real baseline, tune these thresholds from evidence.
-
-## Scaling path
-
-Keep the IQ recipient architecture fixed first:
-
-```text
-Phi-4 family -> mid-size dense donor -> 30-70B donor -> 100B+ donor -> frontier MoE
-```
-
-Each new checkpoint needs only a donor inspector plus checkpoint-layout tests. The shadow, correspondence, transport, DoRA, energy, and evaluation pipeline stays shared.
-
-## Tests
-
-```bash
-pip install -r requirements-transfer.txt
-python -m unittest discover -s tests -p 'test_transfer.py' -v
-```
-
-The unit tests verify fused-operator parsing, checkpoint shape validation, cross-width shadows, order-preserving layer matching, coordinate-map recovery, exact controlled linear transport, and scale-gate behavior.
+1. the Phi-control recurrent model is green;
+2. Gated DeltaNet + NSA CUDA smoke tests are green;
+3. the tiny hybrid recurrent model has stable forward/backward dynamics;
+4. the exact operator targets for GQA -> Gated DeltaNet and GQA -> NSA are defined;
+5. latent NSA and PaTH are kept out of the first transfer unless their own implementation gates pass.
