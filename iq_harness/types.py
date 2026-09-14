@@ -47,7 +47,7 @@ class AgentSpec:
     name: str
     instructions: str
     tools: tuple[str, ...] = ()
-    skills: tuple[str, ...] = ()
+    skills: tuple[str, ...] | None = None
     delegates: tuple[str, ...] = ()
     handoffs: tuple[str, ...] = ()
     description: str = ""
