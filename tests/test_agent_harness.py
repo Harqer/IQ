@@ -7,6 +7,8 @@ from pathlib import Path
 from iq_harness import (
     AgentRuntime,
     AgentSpec,
+    Guardrail,
+    GuardrailDecision,
     InMemorySession,
     ModelRequest,
     ModelTurn,
@@ -112,6 +114,40 @@ class HarnessTests(unittest.TestCase):
         result = runtime.run("triage", "fix it")
         self.assertEqual(result.output, "coded")
         self.assertEqual(result.last_agent, "coder")
+
+    def test_skill_resource_requires_activation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "skills"
+            skill = root / "repo-audit"
+            (skill / "references").mkdir(parents=True)
+            (skill / "SKILL.md").write_text(
+                "---\nname: repo-audit\ndescription: Audit repositories. Use for code review.\n---\nRead references/checks.md.\n",
+                encoding="utf-8",
+            )
+            (skill / "references" / "checks.md").write_text("CHECKS", encoding="utf-8")
+            catalog = SkillCatalog([root])
+            model = ScriptedModel([
+                ModelTurn(tool_calls=[ToolCall("1", "skills.load", {"name": "repo-audit"})]),
+                ModelTurn(tool_calls=[ToolCall("2", "skills.read", {"name": "repo-audit", "path": "references/checks.md"})]),
+                ModelTurn(content="done"),
+            ])
+            runtime = AgentRuntime(model, [AgentSpec("main", "You are IQ.", skills=("repo-audit",))], skills=catalog)
+            result = runtime.run("main", "audit")
+            self.assertEqual(result.output, "done")
+            self.assertTrue(any(m.role == "tool" and m.content == "CHECKS" for m in result.messages))
+
+    def test_output_guardrail_can_block(self) -> None:
+        class BlockOutput(Guardrail):
+            def check_output(self, agent: str, output: str) -> GuardrailDecision:
+                return GuardrailDecision(False, "blocked")
+
+        runtime = AgentRuntime(
+            ScriptedModel([ModelTurn(content="unsafe")]),
+            [AgentSpec("main", "test", skills=())],
+            guardrails=[BlockOutput()],
+        )
+        with self.assertRaisesRegex(Exception, "blocked"):
+            runtime.run("main", "go")
 
 
 if __name__ == "__main__":
