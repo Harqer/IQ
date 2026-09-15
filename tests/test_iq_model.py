@@ -14,7 +14,7 @@ class IQArchitectureTests(unittest.TestCase):
         from transformers.models.phi3.configuration_phi3 import Phi3Config
         from iq_model import IQArchitectureConfig
 
-        # Unit tests use the Phi-only control so they do not require Triton/FLA.
+        # CPU unit tests use the Phi-only control so they do not require GPU kernels.
         iq = IQArchitectureConfig(
             prelude_layers=1,
             recurrent_layers=2,
@@ -38,7 +38,7 @@ class IQArchitectureTests(unittest.TestCase):
         phi._attn_implementation = "eager"
         return phi, iq
 
-    def test_default_topology_and_hybrid_schedule(self):
+    def test_default_topology_and_mamba_schedule(self):
         from iq_model import IQArchitectureConfig
 
         cfg = IQArchitectureConfig()
@@ -47,21 +47,32 @@ class IQArchitectureTests(unittest.TestCase):
         self.assertEqual(
             cfg.core_mixer_schedule,
             (
-                "gated_deltanet",
-                "gated_deltanet",
+                "mamba3_mimo",
+                "mamba3_mimo",
                 "nsa",
-                "gated_deltanet",
-                "gated_deltanet",
+                "mamba3_mimo",
+                "mamba3_mimo",
                 "nsa",
-                "gated_deltanet",
+                "mamba3_mimo",
                 "nsa",
             ),
         )
-        self.assertEqual(cfg.core_mixer_schedule.count("gated_deltanet"), 5)
+        self.assertEqual(cfg.core_mixer_schedule.count("mamba3_mimo"), 5)
         self.assertEqual(cfg.core_mixer_schedule.count("nsa"), 3)
+        self.assertTrue(cfg.use_latent_predictor)
         self.assertEqual(cfg.teacher_layer_for_core(0, 0), 4)
         self.assertEqual(cfg.teacher_layer_for_core(1, 0), 12)
         self.assertEqual(cfg.teacher_layer_for_core(2, 7), 27)
+
+    def test_mamba3_reference_geometry(self):
+        from iq_model import IQArchitectureConfig
+
+        cfg = IQArchitectureConfig()
+        self.assertEqual(cfg.mamba3_state_size, 128)
+        self.assertEqual(cfg.mamba3_head_dim, 64)
+        self.assertEqual(cfg.mamba3_mimo_rank, 4)
+        self.assertEqual(cfg.mamba3_chunk_size * cfg.mamba3_mimo_rank, 64)
+        self.assertEqual(cfg.mamba3_rope_fraction, 0.5)
 
     def test_dense_to_recurrent_layout_groups_three_teacher_depths_per_core_block(self):
         from iq_model import DenseToRecurrentLayout, IQArchitectureConfig
@@ -135,7 +146,7 @@ class IQArchitectureTests(unittest.TestCase):
 
         self.assertTrue(torch.allclose(cand_out, ref_out, atol=1e-6, rtol=1e-5))
 
-    def test_forward_runs_all_recurrent_passes(self):
+    def test_forward_runs_all_recurrent_passes_and_latent_predictor(self):
         import torch
         from iq_model import IQRecurrentPhiModel
 
@@ -149,6 +160,7 @@ class IQArchitectureTests(unittest.TestCase):
 
         self.assertEqual(tuple(output.logits.shape), (2, 11, phi.vocab_size))
         self.assertEqual(tuple(output.hidden_states.shape), (2, 11, phi.hidden_size))
+        self.assertEqual(tuple(output.latent_prediction.shape), (2, 11, phi.hidden_size))
         self.assertEqual(len(output.core_pass_states), iq.recurrent_passes)
 
     def test_pass_embeddings_are_zero_initialized_for_transfer_safety(self):
