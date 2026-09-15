@@ -26,7 +26,7 @@ class IQOutput:
     core_pass_states: tuple[torch.Tensor, ...] = ()
 
 
-class IQRecurrentPhiModel(nn.Module):
+class IQMambaHybridModel(nn.Module):
     """IQ Mamba hybrid-v2 reference backbone.
 
     Unique prelude/coda blocks remain Phi-compatible transfer scaffolding. The
@@ -233,3 +233,8 @@ class IQRecurrentPhiModel(nn.Module):
             latent_prediction=latent_prediction,
             core_pass_states=core_output.pass_states,
         )
+
+
+# Compatibility alias for v0/v1 tests and transfer utilities. New v2 code should
+# import IQMambaHybridModel directly.
+IQRecurrentPhiModel = IQMambaHybridModel
