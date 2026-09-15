@@ -18,9 +18,10 @@ class RecurrentCoreOutput:
 class RecurrentReasoningCore(nn.Module):
     """Depth-recurrent reasoning engine over a heterogeneous physical block stack.
 
-    Sequence recurrence (for example Gated DeltaNet state) and depth recurrence are
-    intentionally separate.  The same eight physical blocks are revisited across
-    passes, while each block keeps its own sequence-mixer family.
+    Sequence recurrence (Mamba-3 state in v2) and depth recurrence are intentionally
+    separate. The same physical blocks are revisited across reasoning passes, while
+    each invocation performs a fresh sequence scan over the updated representation.
+    Sequence state is not silently carried from one depth pass into the next.
     """
 
     def __init__(
