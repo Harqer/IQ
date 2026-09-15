@@ -32,15 +32,17 @@ class IQArchitectureConfig:
     recurrent_passes: int = 3
     coda_layers: int = 4
 
-    # Primary v2 schedule: five Mamba-3 recurrent operators and three exact/sparse
-    # retrieval anchors. This preserves the v1 5:3 operator budget for clean A/Bs.
+    # Mamba-first default: six recurrent operators and two retrieval anchors.
+    # Mamba-3's published hybrid experiments use a 5:1 linear:attention ratio;
+    # 6:2 is the nearest simple schedule for an eight-block core while reserving
+    # additional exact-retrieval capacity for code. 7:1 and 5:3 stay ablations.
     core_mixer_schedule: tuple[str, ...] = (
         "mamba3_mimo",
         "mamba3_mimo",
+        "mamba3_mimo",
         "nsa",
         "mamba3_mimo",
         "mamba3_mimo",
-        "nsa",
         "mamba3_mimo",
         "nsa",
     )
@@ -124,8 +126,8 @@ class IQArchitectureConfig:
             self.mamba3_chunk_size,
         ) <= 0:
             raise ValueError("Mamba-3 dimensions must be positive")
-        if not 0.0 <= self.mamba3_rope_fraction <= 1.0:
-            raise ValueError("mamba3_rope_fraction must be in [0, 1]")
+        if self.mamba3_rope_fraction not in {0.5, 1.0}:
+            raise ValueError("official Mamba-3 currently supports rope_fraction 0.5 or 1.0")
         if self.mamba3_chunk_size * self.mamba3_mimo_rank != 64:
             raise ValueError(
                 "bf16 Mamba-3 MIMO reference kernels expect chunk_size * mimo_rank == 64"
@@ -158,7 +160,7 @@ class IQArchitectureConfig:
 
     @classmethod
     def gated_deltanet_control(cls) -> "IQArchitectureConfig":
-        """Hybrid-v1 control using the same retrieval-anchor schedule."""
+        """Hybrid-v1 control using its original 5:3 GDN:NSA schedule."""
         return cls(
             core_mixer_schedule=(
                 "gated_deltanet",
