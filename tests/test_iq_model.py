@@ -49,16 +49,16 @@ class IQArchitectureTests(unittest.TestCase):
             (
                 "mamba3_mimo",
                 "mamba3_mimo",
+                "mamba3_mimo",
                 "nsa",
                 "mamba3_mimo",
                 "mamba3_mimo",
-                "nsa",
                 "mamba3_mimo",
                 "nsa",
             ),
         )
-        self.assertEqual(cfg.core_mixer_schedule.count("mamba3_mimo"), 5)
-        self.assertEqual(cfg.core_mixer_schedule.count("nsa"), 3)
+        self.assertEqual(cfg.core_mixer_schedule.count("mamba3_mimo"), 6)
+        self.assertEqual(cfg.core_mixer_schedule.count("nsa"), 2)
         self.assertTrue(cfg.use_latent_predictor)
         self.assertEqual(cfg.teacher_layer_for_core(0, 0), 4)
         self.assertEqual(cfg.teacher_layer_for_core(1, 0), 12)
