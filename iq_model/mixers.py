@@ -28,9 +28,9 @@ class MixerContext:
     """Inputs shared across heterogeneous sequence mixers.
 
     Dense Phi attention consumes the additive causal mask and precomputed RoPE.
-    FLA recurrent/sparse layers consume the 2-D padding mask and own their sequence
-    state/position implementation. Keeping both forms prevents adapters from silently
-    converting one semantic into another.
+    FLA sparse/recurrent layers consume the 2-D padding mask. Mamba-3 owns its
+    state-space dynamics and currently requires packed/unpadded sequences in the
+    IQ reference path; padded batches are rejected rather than silently corrupted.
     """
 
     padding_mask: torch.Tensor | None
@@ -126,16 +126,67 @@ class PhiCompatibleGQA(nn.Module):
         return self.o_proj(mixed)
 
 
+def _require_mamba3() -> None:
+    if find_spec("mamba_ssm") is None:
+        raise MixerDependencyError(
+            "Mamba-3 mixers require the pinned state-spaces/mamba dependency; "
+            "install requirements-mamba-v2.txt"
+        )
+
+
+class Mamba3MIMOMixer(nn.Module):
+    """Adapter around the official state-spaces Mamba-3 MIMO implementation."""
+
+    def __init__(
+        self,
+        config: Phi3Config,
+        architecture: IQArchitectureConfig,
+        *,
+        layer_idx: int,
+    ) -> None:
+        super().__init__()
+        _require_mamba3()
+        from mamba_ssm import Mamba3
+
+        inner_size = int(config.hidden_size * architecture.mamba3_expand)
+        if inner_size % architecture.mamba3_head_dim != 0:
+            raise ValueError(
+                "Mamba-3 expanded width must be divisible by mamba3_head_dim: "
+                f"inner={inner_size}, head_dim={architecture.mamba3_head_dim}"
+            )
+
+        self.layer = Mamba3(
+            d_model=config.hidden_size,
+            d_state=architecture.mamba3_state_size,
+            expand=architecture.mamba3_expand,
+            headdim=architecture.mamba3_head_dim,
+            rope_fraction=architecture.mamba3_rope_fraction,
+            is_outproj_norm=architecture.mamba3_outproj_norm,
+            is_mimo=True,
+            mimo_rank=architecture.mamba3_mimo_rank,
+            chunk_size=architecture.mamba3_chunk_size,
+            layer_idx=layer_idx,
+        )
+
+    def forward(self, hidden_states: torch.Tensor, *, context: MixerContext) -> torch.Tensor:
+        if context.padding_mask is not None and not bool(torch.all(context.padding_mask != 0)):
+            raise ValueError(
+                "IQ's Mamba-3 reference path currently requires packed/unpadded batches. "
+                "Do not pass zero-padded tokens through Mamba state; pack sequences first."
+            )
+        return self.layer(hidden_states)
+
+
 def _require_fla() -> None:
     if find_spec("fla") is None:
         raise MixerDependencyError(
-            "hybrid mixers require flash-linear-attention; install the pinned "
-            "requirements-hybrid.txt environment"
+            "hybrid attention controls require flash-linear-attention; install the "
+            "pinned requirements-mamba-v2.txt environment"
         )
 
 
 class FLAGatedDeltaNetMixer(nn.Module):
-    """Adapter around FLA's validated Gated DeltaNet implementation."""
+    """Hybrid-v1 A/B control around FLA's Gated DeltaNet implementation."""
 
     def __init__(
         self,
@@ -180,12 +231,7 @@ class FLAGatedDeltaNetMixer(nn.Module):
 
 
 class FLANativeSparseAttentionMixer(nn.Module):
-    """Adapter around FLA Native Sparse Attention.
-
-    This is intentionally plain NSA with its validated RoPE path. It is *not* named
-    MLA/latent NSA. The later latent-NSA stage must implement the published latent
-    branches explicitly rather than silently relabeling this operator.
-    """
+    """Adapter around FLA Native Sparse Attention using its validated RoPE path."""
 
     def __init__(
         self,
@@ -227,12 +273,7 @@ class FLANativeSparseAttentionMixer(nn.Module):
 
 
 class FLAPaTHAttentionMixer(nn.Module):
-    """Standalone PaTH attention candidate from FLA.
-
-    PaTH is treated as an attention operator with data-dependent Householder position
-    transformations. It is not injected into NSA until that composition is derived
-    and validated separately.
-    """
+    """Standalone PaTH candidate; never silently injected into Mamba or NSA."""
 
     def __init__(self, config: Phi3Config, *, layer_idx: int) -> None:
         super().__init__()
@@ -263,9 +304,8 @@ class LatentNSAMixer(nn.Module):
     def __init__(self, *_: object, **__: object) -> None:
         super().__init__()
         raise UnsupportedMixerComposition(
-            "latent_nsa is intentionally unavailable: the target is the published "
-            "latent-NSA composition (MLA local branch + latent grouped global branches), "
-            "not ordinary NSA under a new name. Implement and validate that stage first."
+            "latent_nsa remains gated: implement the actual latent-NSA cache/projection "
+            "structure before enabling it. Ordinary NSA must not be relabeled."
         )
 
 
@@ -278,6 +318,8 @@ def build_mixer(
 ) -> nn.Module:
     if kind == "phi_gqa":
         return PhiCompatibleGQA(phi_config, layer_idx=layer_idx)
+    if kind == "mamba3_mimo":
+        return Mamba3MIMOMixer(phi_config, architecture, layer_idx=layer_idx)
     if kind == "gated_deltanet":
         return FLAGatedDeltaNetMixer(phi_config, architecture, layer_idx=layer_idx)
     if kind == "nsa":
