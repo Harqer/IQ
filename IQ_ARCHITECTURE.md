@@ -38,10 +38,10 @@ embedding
 |                                                          |
 |  0  Mamba-3 MIMO                                        |
 |  1  Mamba-3 MIMO                                        |
-|  2  Native Sparse Attention anchor                      |
-|  3  Mamba-3 MIMO                                        |
+|  2  Mamba-3 MIMO                                        |
+|  3  Native Sparse Attention anchor                      |
 |  4  Mamba-3 MIMO                                        |
-|  5  Native Sparse Attention anchor                      |
+|  5  Mamba-3 MIMO                                        |
 |  6  Mamba-3 MIMO                                        |
 |  7  Native Sparse Attention anchor                      |
 |                                                          |
@@ -98,7 +98,15 @@ NSA contributes:
 - compressed/global context;
 - selected sparse blocks.
 
-Default v2 schedule uses five Mamba-3 blocks and three NSA anchors. This is an experimental ratio, not a universal constant.
+Mamba-3's published hybrid experiments use roughly a 5:1 linear-layer:self-attention ratio. IQ v2 starts with six Mamba-3 blocks and two NSA anchors (3:1) because code workloads place unusually high value on exact symbol/function retrieval. The ratio is experimental.
+
+Required schedule ablations:
+
+```text
+7:1  Mamba-3 : NSA
+6:2  Mamba-3 : NSA   <- default
+5:3  Mamba-3 : NSA
+```
 
 ### Later anchor candidates
 
@@ -131,7 +139,9 @@ physical core
 
 This remains motivated separately from sequence recurrence by looped/recurrent-depth work, especially code-oriented evidence such as LoopCoder.
 
-The two mechanisms must remain independently ablatable.
+Each depth pass re-runs the sequence operators over the updated hidden representation; Mamba sequence state is not silently persisted across depth passes in v2.
+
+The two recurrence mechanisms must remain independently ablatable.
 
 ## JEPA-style latent prediction
 
@@ -276,6 +286,7 @@ Do not rewrite a validated CUDA/Triton kernel solely to eliminate Python. Port o
 2. GDN+NSA hybrid-v1 control remains available.
 3. Official Mamba-3 MIMO adapter passes CUDA forward/backward tests.
 4. Mamba-3 + NSA recurrent composition has finite activations and gradients over repeated passes.
-5. Packed-sequence semantics are implemented/tested for Mamba training.
-6. JEPA predictor target construction is defined in the training experiment, not guessed inside the model.
-7. Only then implement Phi -> Mamba-3/NSA functional distillation.
+5. 7:1 / 6:2 / 5:3 retrieval-anchor schedules are measured before claiming a preferred ratio.
+6. Packed-sequence semantics are implemented/tested for Mamba training.
+7. JEPA predictor target construction is defined in the training experiment, not guessed inside the model.
+8. Only then implement Phi -> Mamba-3/NSA functional distillation.
