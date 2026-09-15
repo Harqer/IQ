@@ -11,6 +11,7 @@ from transformers.models.phi3.modeling_phi3 import Phi3RMSNorm, Phi3RotaryEmbedd
 
 from .components import IQBlock, build_iq_block
 from .config import IQArchitectureConfig
+from .latent import FutureLatentPredictor
 from .mixers import MixerContext
 from .reasoning import RecurrentReasoningCore
 
@@ -21,15 +22,16 @@ class IQOutput:
     hidden_states: torch.Tensor
     mtp_logits: tuple[torch.Tensor, ...] = ()
     verifier_scores: Optional[torch.Tensor] = None
+    latent_prediction: Optional[torch.Tensor] = None
     core_pass_states: tuple[torch.Tensor, ...] = ()
 
 
 class IQRecurrentPhiModel(nn.Module):
-    """IQ hybrid-v1 reference backbone.
+    """IQ Mamba hybrid-v2 reference backbone.
 
-    Unique prelude/coda blocks stay Phi-compatible for the first transfer. The
-    recurrent middle core is heterogeneous and uses the configured physical mixer
-    schedule (Gated DeltaNet + sparse attention anchors by default).
+    Unique prelude/coda blocks remain Phi-compatible transfer scaffolding. The
+    recurrent middle core is heterogeneous and uses Mamba-3 MIMO for sequence state
+    plus sparse attention anchors for exact/global retrieval.
     """
 
     def __init__(self, phi_config: Phi3Config, iq_config: IQArchitectureConfig | None = None) -> None:
@@ -39,17 +41,16 @@ class IQRecurrentPhiModel(nn.Module):
         self.iq_config.validate_teacher_depth(phi_config.num_hidden_layers)
 
         if self.iq_config.latent_slots:
-            raise NotImplementedError("latent workspace is reserved for its controlled implementation stage")
+            raise NotImplementedError("latent slots are not required by v2's JEPA-style predictor")
         if self.iq_config.use_adaptive_halting:
-            raise NotImplementedError("adaptive halting is disabled until fixed-depth recurrence is validated")
+            raise NotImplementedError("adaptive halting stays gated until fixed-depth v2 is validated")
         if (
             self.iq_config.attention_position_strategy == "path"
             and "nsa" in self.iq_config.core_mixer_schedule
         ):
             raise NotImplementedError(
-                "PaTH-inside-NSA is not treated as a drop-in composition. Use a "
-                "path_attention anchor schedule to test PaTH independently, or keep "
-                "NSA on its validated RoPE path until the joint operator is derived."
+                "PaTH-inside-NSA is not a drop-in composition. Use path_attention as "
+                "an explicit anchor ablation or keep NSA on its validated RoPE path."
             )
 
         h = phi_config.hidden_size
@@ -105,6 +106,11 @@ class IQRecurrentPhiModel(nn.Module):
             ]
         )
 
+        self.latent_predictor = (
+            FutureLatentPredictor(h, self.iq_config.latent_predictor_dim)
+            if self.iq_config.use_latent_predictor
+            else None
+        )
         self.final_norm = Phi3RMSNorm(h, eps=phi_config.rms_norm_eps)
         self.lm_head = nn.Linear(h, phi_config.vocab_size, bias=False)
 
@@ -205,7 +211,11 @@ class IQRecurrentPhiModel(nn.Module):
             context=context,
             capture_passes=capture_core_passes,
         )
-        hidden_states = core_output.hidden_states
+        reasoning_hidden = core_output.hidden_states
+        latent_prediction = (
+            self.latent_predictor(reasoning_hidden) if self.latent_predictor is not None else None
+        )
+        hidden_states = reasoning_hidden
 
         for block in self.coda:
             hidden_states = self._run_block(block, hidden_states, context=context)
@@ -220,5 +230,6 @@ class IQRecurrentPhiModel(nn.Module):
             hidden_states=hidden_states,
             mtp_logits=mtp_logits,
             verifier_scores=verifier_scores,
+            latent_prediction=latent_prediction,
             core_pass_states=core_output.pass_states,
         )
