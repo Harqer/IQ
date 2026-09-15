@@ -1,5 +1,6 @@
 from .config import IQArchitectureConfig
 from .keystone import KeystoneActivationMonitor, KeystoneActivationSummary
+from .latent import FutureLatentPredictor
 from .mixers import (
     MixerContext,
     MixerDependencyError,
@@ -11,6 +12,7 @@ from .transfer_layout import DenseToRecurrentLayout, SharedCoreTarget
 
 __all__ = [
     "DenseToRecurrentLayout",
+    "FutureLatentPredictor",
     "IQArchitectureConfig",
     "IQOutput",
     "IQRecurrentPhiModel",
