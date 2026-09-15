@@ -1,21 +1,28 @@
-# IQ Hybrid Research Architecture
+# IQ Mamba Hybrid-v2 Architecture
 
-This document is the authoritative architecture target for `architecture/iq-hybrid-v1`.
-The previous `architecture/iq-research-v0` branch remains the Phi-compatible recurrent-depth
-control. The older `nif_sovereign/` implementation is legacy reference code.
+This document is the authoritative architecture target for `architecture/iq-mamba-v2`.
 
-## Design rule
+Controls remain available:
 
-Keep three concerns separate:
+- `architecture/iq-research-v0` — Phi-compatible recurrent-depth control.
+- `architecture/iq-hybrid-v1` — Gated DeltaNet + NSA hybrid control.
+- `architecture/iq-mamba-v2` — Mamba-3 MIMO + NSA + recurrent-depth research target.
 
-1. **Architecture** — the function IQ computes.
-2. **Training/optimization** — how IQ learns it.
-3. **Transfer/deployment** — how pretrained knowledge and runtime compute are supplied.
+The older `nif_sovereign/` physics-inspired implementation remains legacy reference code.
 
-MOHAWK, DoRA, Muon, GaLore, quantization, Colab, Hugging Face hosting, and QPU access are not
-model layers.
+## Design principle
 
-## Hybrid-v1 topology
+Use each mechanism only when it solves a distinct problem. Do not combine mechanisms merely because they are novel.
+
+1. **Mamba-3 MIMO** — compressed recurrent sequence state.
+2. **Native Sparse Attention** — exact/content-addressable long-range retrieval anchors.
+3. **Depth recurrence** — repeated reasoning compute with shared physical parameters.
+4. **JEPA-style latent prediction** — representation-space future-state supervision.
+5. **Dense SwiGLU initially** — stable FFN control while the new sequence architecture is measured.
+
+Hamiltonian/conservative-dissipative dynamics are removed from the active v2 target. Mamba-3 already supplies learned state-space dynamics; stacking a second speculative dynamical system would duplicate responsibilities without comparable LLM evidence.
+
+## Default topology
 
 ```text
 input tokens
@@ -24,259 +31,251 @@ input tokens
 embedding
     |
     v
-4 unique Phi-compatible prelude blocks
+4 unique Phi-compatible transfer-boundary blocks
     |
     v
 +---------------- recurrent reasoning core ----------------+
 |                                                          |
-|  0  Gated DeltaNet                                      |
-|  1  Gated DeltaNet                                      |
+|  0  Mamba-3 MIMO                                        |
+|  1  Mamba-3 MIMO                                        |
 |  2  Native Sparse Attention anchor                      |
-|  3  Gated DeltaNet                                      |
-|  4  Gated DeltaNet                                      |
+|  3  Mamba-3 MIMO                                        |
+|  4  Mamba-3 MIMO                                        |
 |  5  Native Sparse Attention anchor                      |
-|  6  Gated DeltaNet                                      |
+|  6  Mamba-3 MIMO                                        |
 |  7  Native Sparse Attention anchor                      |
 |                                                          |
 |                 repeat physical stack R=3               |
 +--------------------------+-------------------------------+
                            |
+                           +--> JEPA-style latent predictor
+                           |
                            v
-4 unique Phi-compatible coda blocks
+4 unique Phi-compatible transfer-boundary blocks
                            |
                            v
 final RMSNorm
                            |
-             +-------------+-------------+
-             |             |             |
-            LM            MTP         verifier
+                    LM / auxiliary heads
 ```
 
-Default core ratio: **5 recurrent linear mixers : 3 sparse exact-attention anchors**.
-A stricter 6:2 / 3:1 schedule remains an ablation, not an undocumented change.
-
-## Two recurrence axes
-
-IQ intentionally has two different kinds of recurrence:
-
-1. **Sequence recurrence** — Gated DeltaNet carries compressed recurrent state across tokens.
-2. **Depth recurrence** — the eight physical reasoning blocks are revisited across reasoning passes.
-
-These mechanisms solve different problems and must not be conflated.
-
-## Effective depth and donor alignment
-
-The physical topology stays `4 + 8 + 4 = 16` blocks while the default effective depth is:
+Physical depth remains 16 blocks. Effective depth remains 32:
 
 ```text
 4 + (8 x 3) + 4 = 32
 ```
 
-This keeps the exact Phi-4-mini teacher-depth correspondence:
+Keeping the same macro-depth as v0/v1 makes the sequence-operator transition attributable.
+
+## Why Mamba-3 is primary
+
+Mamba-3 is the primary v2 sequence mixer because it is a current state-space architecture designed to improve recurrent sequence modeling while retaining linear-time/constant-state execution. IQ uses the official MIMO implementation rather than recreating the operator.
+
+Default research geometry:
 
 ```text
-prelude[0..3]              -> teacher layers 0..3
-core pass 0, blocks 0..7  -> teacher layers 4..11
-core pass 1, blocks 0..7  -> teacher layers 12..19
-core pass 2, blocks 0..7  -> teacher layers 20..27
-coda[0..3]                 -> teacher layers 28..31
+state size       = 128
+head dim         = 64
+expansion        = 2
+MIMO rank        = 4
+chunk size       = 16
+RoPE fraction    = 0.5
 ```
 
-`iq_model/transfer_layout.py` is the source of truth for this mapping.
+The chunk/rank relationship follows the official bf16 MIMO kernel recommendation.
 
-## Mixer contract
+Mamba-3 is not assumed to be universally superior. `architecture/iq-hybrid-v1` remains the matched Gated DeltaNet control, and Gated DeltaNet-2 is a future matched comparator because current NVIDIA results show it can outperform Mamba-3 variants on several 1.3B matched evaluations.
 
-`iq_model/mixers.py` owns heterogeneous sequence mixing. Every mixer receives a `MixerContext`
-that carries both forms of masking/position state required by the different operator families:
+## Exact-retrieval anchors
 
-- 2-D padding mask for recurrent/sparse kernels;
-- additive causal mask for dense GQA;
-- position ids;
-- Phi-compatible RoPE values for the transfer-control path.
+A fixed-size recurrent state is efficient but can lose exact details. IQ therefore retains sparse attention anchors.
 
-This avoids incorrectly forcing Gated DeltaNet or NSA through dense-attention mask semantics.
+Current executable anchor: **Native Sparse Attention (NSA)**.
 
-### Implemented mixer families
+NSA contributes:
 
-#### Phi-compatible GQA
-
-Used in the unique prelude/coda and by the v0 control. Parameter names/shapes remain compatible
-with Phi-4-mini (`qkv_proj`, `o_proj`).
-
-#### Gated DeltaNet
-
-Implemented through the pinned Flash Linear Attention (FLA) implementation. For Phi-4-mini:
-
-```text
-hidden size       = 3072
-key width ratio   = 0.75
-key width         = 2304
-head dim          = 128
-GDN heads         = 18
-value expansion   = 2.0
-```
-
-Short convolution remains enabled because it is part of the validated GDN design.
-
-#### Native Sparse Attention
-
-Implemented through FLA NSA with three learned branches:
-
+- local/sliding retrieval;
 - compressed/global context;
-- selected sparse blocks;
-- sliding/local context.
+- selected sparse blocks.
 
-Default research settings:
+Default v2 schedule uses five Mamba-3 blocks and three NSA anchors. This is an experimental ratio, not a universal constant.
+
+### Later anchor candidates
+
+Evaluate independently against NSA:
+
+- log-linear attention — logarithmically growing state to relax the fixed-state bottleneck;
+- PaTH attention — data-dependent positional transformations;
+- latent NSA — MLA/GLA-style latent cache inside sparse branches.
+
+Do not enable these simultaneously in the default architecture.
+
+## Two recurrence axes
+
+IQ intentionally contains two different kinds of recurrence.
+
+### Sequence recurrence
+
+Mamba-3 carries state across token positions.
+
+### Reasoning/depth recurrence
+
+The eight physical middle blocks are reused across reasoning passes.
 
 ```text
-block size   = 64
-block count  = 16
-local window = 512
+physical core
+    -> pass 0
+    -> pass 1
+    -> pass 2
 ```
 
-The exact values are experiment parameters, not universal constants.
+This remains motivated separately from sequence recurrence by looped/recurrent-depth work, especially code-oriented evidence such as LoopCoder.
 
-#### PaTH attention
+The two mechanisms must remain independently ablatable.
 
-FLA PaTH is available as a **standalone attention candidate**. It applies data-dependent
-Householder-style position transformations as part of its attention operator.
+## JEPA-style latent prediction
 
-It is intentionally *not* silently injected into NSA. `attention_position_strategy="path"`
-with ordinary NSA fails explicitly until the combined operator is derived and validated.
+V2 adds `FutureLatentPredictor` after the recurrent reasoning core.
 
-## MLA + NSA target
-
-The final sparse-attention direction remains latent NSA:
+The predictor outputs a representation, not tokens:
 
 ```text
-local branch        -> Multi-head Latent Attention (MLA)
-global compression  -> latent/group-head attention
-global selection    -> latent/group-head attention
+reasoning representation h_r
+          |
+          v
+FutureLatentPredictor
+          |
+          v
+predicted target representation z_hat
 ```
 
-This follows the published latent-NSA direction that reduces KV-cache cost while retaining
-NSA's local/compression/selection structure.
+The training pipeline owns target construction. Candidate targets include:
 
-`latent_nsa` exists as an architecture identifier but currently raises
-`UnsupportedMixerComposition`. Ordinary NSA must never be relabeled as latent NSA.
+- future token-span representation;
+- future summary representation;
+- later recurrent-pass representation;
+- completed-function representation;
+- code-structure/state representation.
 
-Transition gate:
+This is intentionally broader than directly copying VL-JEPA. VL-JEPA provides evidence for prediction in continuous representation space; IQ must validate which language/code target is useful.
 
-1. validate GDN + NSA recurrent core;
-2. implement latent branch projections/cache layout;
-3. reproduce dense-vs-latent NSA equivalence/quality controls;
-4. only then make `latent_nsa` executable.
+The latent predictor is auxiliary. Autoregressive LM generation remains available and should not be removed before representation-space objectives prove their value.
 
-## Position strategy
+## Position handling
 
-Current executable sparse path: **NSA + its validated RoPE implementation**.
+Mamba-3 owns its internal state-space positional dynamics and MIMO rotary mechanism.
 
-Research target: **PaTH/data-dependent position on global attention paths**, but only after its
-interaction with latent/sparse cache structure is mathematically and empirically validated.
+NSA currently retains its validated RoPE implementation.
 
-PaTH can already be tested independently by placing `path_attention` in the mixer schedule.
+PaTH is an attention-family experiment only. It must not be inserted into Mamba-3 recurrence as though it were a generic positional embedding.
+
+`PaTH + NSA` or `PaTH + latent NSA` require their own derivation and validation.
 
 ## Feed-forward network
 
-Hybrid-v1 still uses dense, transfer-compatible fused SwiGLU:
+V2 keeps dense fused SwiGLU:
 
 ```text
 gate, up = gate_up_proj(x).chunk(2)
 y = down_proj(SiLU(gate) * up)
 ```
 
-This is intentional. Changing recurrent mixers and FFN routing simultaneously would make a
-failed transfer difficult to diagnose.
+This is not a belief that dense FFNs are final. It keeps the Mamba transition measurable.
 
-Next FFN stage:
+Next FFN experiment:
 
 ```text
-shared SwiGLU path (always active)
+shared always-on SwiGLU
         +
-top-k routed fine-grained experts
+fine-grained routed experts
 ```
 
-Experts must specialize through training. Do not restore manually named linguistic/physics/
-diffusion experts from the legacy NIF architecture.
+No semantic expert labels are allowed. Experts specialize through training.
 
-## Keystone neurons
+Keystone-neuron instrumentation remains observational only until cross-task identification and causal ablation reproduce the reported effect.
 
-Keystone neurons are treated as an **empirical property discovered after pretraining/transfer**,
-not a predeclared neuron class.
+## Adaptive depth
 
-`PhiCompatibleSwiGLU` exposes an activation-observer hook, and
-`iq_model/keystone.py` collects cross-task mean absolute activation statistics.
+V2 uses fixed `R=3` depth recurrence first.
 
-The monitor does not yet:
+Later experiments may compare Mixture-of-Recursions/token-level depth routing and learned halting, but adaptive compute must not be introduced before the fixed recurrent Mamba core is numerically stable.
 
-- label neurons as keystone;
-- freeze or protect weights;
-- alter learning rates;
-- prune neurons.
+## Code-specific structure
 
-Those actions require reproducing the published identification and ablation protocol first.
+A code-graph/AST/symbol stream remains a planned input experiment, not part of the v2 default. It is orthogonal to the Mamba sequence operator and should be introduced only after token-only baselines exist.
 
-## Recurrent reasoning core
+Candidate structural nodes/edges include:
 
-`iq_model/reasoning.py` owns depth recurrence. Physical blocks are shared across passes and keep
-fixed mixer identities.
+- file/function/class/symbol/type/import nodes;
+- call, ownership, type, dependency and test relationships.
+
+## Transfer strategy
+
+V2 is deliberately farther from Phi than v0/v1.
+
+Compatible boundary components may still be copied directly where semantics match, but Mamba-3 and NSA must be learned through functional transfer/distillation rather than assumed tensor equivalence.
+
+Canonical sequence:
 
 ```text
-candidate = block(h)
-h_next = h + alpha * (candidate - h)
+Phi donor
+  |
+  +--> direct copy: genuinely compatible embeddings/norms/FFN/head
+  |
+  +--> teacher operator/activation traces
+  |
+  +--> Mamba-3 / NSA block-level functional alignment
+  |
+  +--> recurrent-depth supervision across teacher depths
+  |
+  +--> end-to-end logit / LM distillation
+  |
+  `--> continued training
 ```
 
-`alpha=1` remains the transfer-safe baseline. Learned/per-pass/gated residual policies are later
-controlled experiments.
+The transfer framework must become donor-neutral before architecture-independence is claimed. A later experiment must repeat transfer from a second non-Phi donor.
 
-Zero-initialized pass embeddings let the shared core learn visit identity without changing the
-initial transplanted function.
+## Explicitly excluded from v2 default
 
-## Not yet implemented in hybrid-v1
+- Hamiltonian latent/state dynamics;
+- Mamba-3 + Gated DeltaNet in the same default stack;
+- MoE enabled simultaneously with first Mamba transfer;
+- PaTH injected into Mamba state;
+- ordinary NSA renamed as latent NSA;
+- adaptive halting before fixed-depth stability;
+- manually named semantic experts;
+- quantum/neutrino/Ising layers from legacy NIF.
 
-These remain explicit architecture stages rather than hidden placeholders:
+## Implementation-language boundary
 
-- persistent latent reasoning workspace;
-- Mixture-of-Recursions/token-dependent depth;
-- learned halting;
-- shared+routed MoE;
-- executable latent NSA;
-- PaTH-inside-latent-NSA;
-- code-graph structural input stream;
-- fast-weight/repository memory;
-- FSP/HLP/FIM objective heads and losses;
-- Hamiltonian/conservative-dissipative recurrence ablation.
-
-## Dependencies
-
-Base research environment:
+The research reference remains Python where upstream PyTorch/Triton implementations are required. Stable components should migrate according to:
 
 ```text
-torch==2.14.0
-transformers==5.17.0
+Mojo / MAX  -> accelerator hot paths and custom tensor kernels
+Rust        -> runtime, checkpoint/transfer, tokenizer/data, state ownership, evaluation
+Go          -> distributed orchestration, workers, telemetry, services
+Python      -> upstream research compatibility, training experiments, notebooks
 ```
 
-Hybrid kernels are supplied by a pinned FLA commit in `requirements-hybrid.txt`. Do not float to
-FLA `main` during an architecture experiment.
+Do not rewrite a validated CUDA/Triton kernel solely to eliminate Python. Port only after the architecture wins its ablation and numerical equivalence can be tested.
 
-## Current source map
+## Source map
 
-- `iq_model/config.py` — topology, mixer schedule, kernel parameters, donor-depth mapping.
-- `iq_model/mixers.py` — Phi GQA, Gated DeltaNet, NSA, PaTH adapters, unsupported latent-NSA gate.
-- `iq_model/components.py` — pre-norm block, dense SwiGLU, keystone activation hook.
-- `iq_model/reasoning.py` — heterogeneous depth-recurrent reasoning core.
-- `iq_model/model.py` — embedding -> prelude -> hybrid recurrent core -> coda -> heads.
-- `iq_model/keystone.py` — cross-task activation instrumentation.
-- `iq_model/transfer_layout.py` — dense teacher -> recurrent depth correspondence.
-- `tests/test_iq_model.py` — architecture invariants without FLA/CUDA.
-- `tests/test_hybrid_mixers.py` — conditional CUDA/FLA kernel smoke tests.
+- `iq_model/config.py` — topology, Mamba/NSA settings, controls.
+- `iq_model/mixers.py` — Phi GQA, Mamba-3 MIMO, GDN control, NSA, PaTH adapters.
+- `iq_model/components.py` — pre-norm block + dense SwiGLU.
+- `iq_model/reasoning.py` — shared depth-recurrent core.
+- `iq_model/latent.py` — JEPA-style future latent predictor.
+- `iq_model/keystone.py` — neuron instrumentation.
+- `iq_model/model.py` — complete v2 backbone.
+- `iq_model/transfer_layout.py` — current Phi depth correspondence control.
 
-## Transition order before weight insertion
+## Validation gate before donor weights
 
-1. Run Phi-control tests and numerical GQA equivalence.
-2. Install `requirements-hybrid.txt` on Colab GPU.
-3. Run Gated DeltaNet + NSA CUDA smoke tests.
-4. Run a tiny full hybrid recurrent forward/backward stability test.
-5. Establish hybrid-v1 random-init numerical health (no NaNs, bounded activation growth).
-6. Only then define the Phi -> hybrid operator-distillation/MOHAWK mapping.
-7. After hybrid transfer is stable, implement latent NSA and PaTH integration as separate gates.
+1. Phi-only control remains numerically green.
+2. GDN+NSA hybrid-v1 control remains available.
+3. Official Mamba-3 MIMO adapter passes CUDA forward/backward tests.
+4. Mamba-3 + NSA recurrent composition has finite activations and gradients over repeated passes.
+5. Packed-sequence semantics are implemented/tested for Mamba training.
+6. JEPA predictor target construction is defined in the training experiment, not guessed inside the model.
+7. Only then implement Phi -> Mamba-3/NSA functional distillation.
