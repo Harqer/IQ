@@ -1,0 +1,5 @@
+-r requirements-hybrid.txt
+
+# Official Mamba-3 source pinned to a reviewed commit so recurrent-kernel behavior
+# cannot drift during architecture experiments. Install after CUDA-enabled torch.
+mamba-ssm @ git+https://github.com/state-spaces/mamba.git@e9594ce1c732d97440f0332fdc43170a2294dbfa
