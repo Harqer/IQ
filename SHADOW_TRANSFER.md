@@ -1,53 +1,61 @@
 # IQ Functional-Shadow Transfer Ablation
 
-This document describes an **optional transfer/probing experiment**. It is not the canonical
-Phi -> IQ transfer path for `architecture/iq-hybrid-v1`.
+This document describes an **optional transfer/probing experiment**. It is not the canonical donor -> IQ transfer path for `architecture/iq-mamba-v2`.
 
-## Canonical transfer direction
+## Canonical v2 transfer direction
 
-The current target is cross-architecture functional transfer:
+IQ v2 deliberately crosses operator families:
 
 ```text
-Phi-4-mini donor
+dense Transformer donor
     |
-    +-- directly copy genuinely compatible modules
-    |      embeddings / norms / dense SwiGLU / LM head where shapes and semantics match
+    +-- direct copy only where semantics genuinely match
+    |      embeddings / compatible norms / dense SwiGLU / LM head
     |
-    +-- operator alignment for incompatible sequence mixers
-    |      GQA teacher -> Gated DeltaNet / NSA student
+    +-- teacher operator and activation traces
+    |
+    +-- functional alignment
+    |      attention teacher -> Mamba-3 MIMO student
+    |      attention teacher -> NSA retrieval anchor
     |
     +-- block hidden-state alignment
     |
     +-- recurrent-depth supervision
-    |      shared IQ block j is supervised by teacher depths j across all three passes
+    |      shared IQ block j learns from multiple teacher depths
     |
     +-- end-to-end logit / language-model distillation
     |
     `-- continued training / evaluation
 ```
 
-MOHAWK-style matrix/operator alignment and staged block/end-to-end distillation are the primary
-mechanisms. There is no assumed universal algebraic map from arbitrary donor weights to the new
-hybrid architecture.
+MOHAWK-style staged operator/block/model alignment is the main precedent. There is no assumed universal algebraic map from Transformer weights into Mamba-3 state-space parameters.
 
-## What remains useful from `iq_transfer/`
+## Transfer success criterion
 
-The existing code is retained because several pieces are still valuable research infrastructure:
+The research claim is not "the student initializes without crashing." Measure:
+
+```text
+transfer advantage = transferred IQ score - scratch IQ score
+```
+
+at matched architecture, data, optimization budget and evaluation suite.
+
+Architecture-transfer evidence becomes stronger only if that advantage survives larger architectural changes and later transfers from a second donor family.
+
+## Existing `iq_transfer/` infrastructure
+
+Several utilities remain useful:
 
 - `donor.py` — donor/config/tensor-source contracts;
 - `checkpoint.py` — lazy safetensors access;
-- `phi4.py` — Phi checkpoint layout inspection;
+- `phi4.py` — Phi checkpoint inspection;
 - `shadows.py` — randomized activation sketches;
 - `transport.py` — controlled coordinate-map experiments;
-- `scaling.py` — experimental progression metrics.
+- `scaling.py` — progression metrics.
 
-None of these files should be interpreted as proof that arbitrary architecture weights can be
-transported directly.
+The donor interface must eventually be generalized beyond Phi before donor-independent transfer is claimed.
 
 ## Functional shadows
-
-The randomized-shadow code can still test whether compressed teacher measurements are sufficient
-supervision compared with storing full activations/operators.
 
 For centered activation matrix `X` and shared random projection `U`:
 
@@ -55,10 +63,7 @@ For centered activation matrix `X` and shared random projection `U`:
 observable_j = || U_j X_hat ||^2
 ```
 
-This is a **classical randomized functional sketch**. It is not quantum shadow tomography and no
-quantum sample-complexity claim transfers automatically to this setting.
-
-Useful experiment:
+This remains useful as a compressed supervision ablation:
 
 ```text
 ordinary KD
@@ -68,31 +73,42 @@ vs
 compressed functional-shadow alignment
 ```
 
-Measure final capability retention, teacher-storage cost, transfer compute, and convergence speed.
+It is a classical randomized functional sketch, not quantum shadow tomography.
 
 ## Coordinate transport
 
-The existing ridge coordinate-map machinery is valid only as an experimental initialization or
-controlled linear-equivalence test. It must not be applied to semantically different nonlinear or
-recurrent operators as though their parameters correspond directly.
+Ridge coordinate maps may be useful for controlled initialization experiments when source and target representations are approximately linearly related. They must not be interpreted as a direct parameter mapping from Transformer attention into Mamba-3 recurrence.
 
-Direct weight transformation remains appropriate only when the source and target operators are
-mathematically equivalent or connected by a known function-preserving reparameterization.
+Direct tensor transformation is valid only for mathematically equivalent/reparameterized operators.
 
-## DoRA and energy alignment
+## JEPA latent predictor and transfer
 
-DoRA is optional PEFT and is **not** part of the canonical architecture-transfer pipeline.
+The v2 latent predictor is trained against representation targets defined by the training experiment. It is not initialized by pretending a donor token head is the same operator.
 
-Hamiltonian/energy alignment is also not a required transfer stage. Energy/verifier research belongs
-to the reasoning/evaluation track and must demonstrate correlation with actual solution quality
-before influencing hidden-state dynamics or halting.
+Possible teacher targets include:
 
-## Hybrid-v1 transfer prerequisite
+- future donor hidden representations;
+- future-summary representations;
+- later-depth teacher states;
+- code-state/structure targets.
 
-Do not resume donor-weight insertion until:
+Evaluate each target independently.
 
-1. the Phi-control recurrent model is green;
-2. Gated DeltaNet + NSA CUDA smoke tests are green;
-3. the tiny hybrid recurrent model has stable forward/backward dynamics;
-4. the exact operator targets for GQA -> Gated DeltaNet and GQA -> NSA are defined;
-5. latent NSA and PaTH are kept out of the first transfer unless their own implementation gates pass.
+## Not part of the canonical transfer path
+
+- DoRA/LoRA as mandatory stages;
+- Hamiltonian/energy alignment;
+- quantum/neutrino transformations;
+- renaming ordinary NSA as latent NSA;
+- direct tensor mapping into Mamba-3 state parameters without a function-preserving derivation.
+
+## V2 prerequisites before donor insertion
+
+1. Phi recurrent control is green.
+2. Hybrid-v1 GDN + NSA control remains reproducible.
+3. Mamba-3 MIMO CUDA forward/backward is green.
+4. Mamba-3 + NSA repeated-depth composition has finite activations/gradients.
+5. packed/variable-length Mamba training semantics are validated.
+6. exact teacher targets for attention -> Mamba-3 and attention -> NSA are specified.
+7. JEPA target construction is specified separately from LM distillation.
+8. only then begin donor transfer.
