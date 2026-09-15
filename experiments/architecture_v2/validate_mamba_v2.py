@@ -6,7 +6,7 @@ import importlib.util
 import torch
 from transformers import AutoConfig
 
-from iq_model import IQArchitectureConfig, IQRecurrentPhiModel
+from iq_model import IQArchitectureConfig, IQMambaHybridModel
 
 
 def parse_args() -> argparse.Namespace:
@@ -42,10 +42,10 @@ def main() -> None:
     print(f"jepa_latent_predictor={iq.use_latent_predictor}")
 
     if importlib.util.find_spec("mamba_ssm") is None or importlib.util.find_spec("fla") is None:
-        raise RuntimeError("install requirements-mamba-v2.txt before constructing the hybrid model")
+        raise RuntimeError("run experiments/architecture_v2/install.sh before constructing the hybrid model")
 
     with torch.device("meta"):
-        model = IQRecurrentPhiModel(donor, iq)
+        model = IQMambaHybridModel(donor, iq)
 
     params = sum(parameter.numel() for parameter in model.parameters())
     print(f"iq_parameters={params:,}")
