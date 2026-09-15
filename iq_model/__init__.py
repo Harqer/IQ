@@ -6,7 +6,7 @@ from .mixers import (
     MixerDependencyError,
     UnsupportedMixerComposition,
 )
-from .model import IQOutput, IQRecurrentPhiModel
+from .model import IQMambaHybridModel, IQOutput, IQRecurrentPhiModel
 from .reasoning import RecurrentCoreOutput, RecurrentReasoningCore
 from .transfer_layout import DenseToRecurrentLayout, SharedCoreTarget
 
@@ -14,6 +14,7 @@ __all__ = [
     "DenseToRecurrentLayout",
     "FutureLatentPredictor",
     "IQArchitectureConfig",
+    "IQMambaHybridModel",
     "IQOutput",
     "IQRecurrentPhiModel",
     "KeystoneActivationMonitor",
