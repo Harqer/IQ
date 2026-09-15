@@ -44,8 +44,6 @@ def main() -> None:
     if importlib.util.find_spec("mamba_ssm") is None or importlib.util.find_spec("fla") is None:
         raise RuntimeError("install requirements-mamba-v2.txt before constructing the hybrid model")
 
-    # Validate the full real-width topology without allocating its multi-billion
-    # parameters or loading donor weights.
     with torch.device("meta"):
         model = IQRecurrentPhiModel(donor, iq)
 
@@ -56,8 +54,8 @@ def main() -> None:
     assert model.effective_depth == donor.num_hidden_layers
     assert model.reasoning_core.mixer_schedule == iq.core_mixer_schedule
     assert model.latent_predictor is not None
-    assert iq.core_mixer_schedule.count("mamba3_mimo") == 5
-    assert iq.core_mixer_schedule.count("nsa") == 3
+    assert iq.core_mixer_schedule.count("mamba3_mimo") == 6
+    assert iq.core_mixer_schedule.count("nsa") == 2
 
     print("mamba-v2 architecture validation: PASS")
 
