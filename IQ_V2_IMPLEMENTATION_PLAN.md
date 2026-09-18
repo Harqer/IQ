@@ -2,7 +2,7 @@
 
 Status: canonical implementation plan for the trainable IQ architecture.
 
-This document replaces the old Gemma/NIF training assumptions. `SHADOW_TRANSFER.md` remains the source of truth for donor-independent weight transport. This plan defines the recipient architecture, training runtime, data path, distributed execution, validation, and migration criteria.
+This document replaces the old Gemma/NIF training assumptions. `SHADOW_TRANSFER.md` remains the source of truth for donor-independent transport math, and `IQ_WEIGHT_TRANSFER_IMPLEMENTATION_PLAN.md` defines the production multi-donor transfer sequence. This plan defines the recipient architecture, training runtime, data path, distributed execution, validation, and migration criteria.
 
 ## 0. Non-negotiable engineering rules
 
