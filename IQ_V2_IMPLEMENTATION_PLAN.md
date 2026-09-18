@@ -2,7 +2,7 @@
 
 Status: canonical implementation plan for the trainable IQ architecture.
 
-This document replaces the old Gemma/NIF training assumptions. `SHADOW_TRANSFER.md` remains the source of truth for donor-independent weight transport. This plan defines the recipient architecture, training runtime, data path, distributed execution, validation, and migration criteria.
+This document replaces the old Gemma/NIF training assumptions. `SHADOW_TRANSFER.md` remains the source of truth for donor-independent transport math, and `IQ_WEIGHT_TRANSFER_IMPLEMENTATION_PLAN.md` defines the production multi-donor transfer sequence. This plan defines the recipient architecture, training runtime, data path, distributed execution, validation, and migration criteria.
 
 ## 0. Non-negotiable engineering rules
 
@@ -57,6 +57,12 @@ max_inner_steps: 4
 max_outer_steps: 4
 min_inner_steps: 1
 min_outer_steps: 1
+mamba3_state_size: 128
+mamba3_head_dim: 64
+mamba3_mimo_rank: 4
+global_attention_period: 4
+hybrid_fusion: parallel_gated_residual
+executive_geometry: euclidean
 ```
 
 These are implementation defaults, not immutable research constants. Changes require a config version bump and a reproducible ablation.
@@ -74,8 +80,12 @@ iq_model/
   attention/
     nsa.py
     differential.py
+    global_attention.py
     global_memory.py
     kernels.py
+  state/
+    mamba3.py
+    hybrid_fusion.py
   mlp/
     swiglu.py
     moe.py
@@ -93,6 +103,9 @@ iq_model/
     scalar_energy.py
     hamiltonian_ring.py
     diagnostics.py
+  geometry/
+    euclidean.py
+    hyperbolic.py
   adapters/
     dora.py
   objectives/
@@ -194,27 +207,67 @@ The spectral encoding is projected into the executive latent and/or residual str
 
 ## 6. Core block and hybrid execution
 
-Each block is a transported backbone plus zero/near-zero initialized residual extensions so new IQ mechanisms do not destroy donor behavior at initialization.
+IQ v2 is explicitly a **Mamba-3 + Transformer hybrid**. Mamba-3 is never treated as a replacement for attention. The two paths solve different memory problems:
 
-### Inner execution path
+- Mamba-3: linear-time recurrent state propagation, long-horizon state tracking, and constant-size decode state.
+- Transformer attention: exact content-addressable retrieval, induction, code-symbol lookup, and needle-in-context recall.
+- NSA: efficient local/selected/compressed token addressing on ordinary inner blocks.
+- periodic global attention: explicit full-context anchor blocks for high-recall retrieval.
+- Differential Attention: outer-loop controller attention over compressed/global memory, not a replacement for token-level attention.
+
+The default topology is parallel fusion within each inner block plus a periodic global Transformer anchor:
 
 ```text
 x
  -> RMSNorm
- -> optional linear-time/state projection sidecar
- -> Native Sparse Attention
- -> residual
- -> RMSNorm
- -> dense SwiGLU
- -> residual
- -> gated executive-latent injection
+ -> +----------------------+-------------------------+
+    | Mamba-3 state path   | Transformer path        |
+    | complex/MIMO SSM     | NSA or global attention |
+    +----------------------+-------------------------+
+                    |
+             bounded residual fusion
+                    |
+                 residual
+                    |
+                RMSNorm
+                    |
+              dense SwiGLU
+                    |
+        executive-latent injection
 ```
 
-New sidecars use a learned residual gate initialized to preserve the transported backbone:
+Every fourth block is a global-attention anchor by default; the three intervening blocks use NSA. The ratio is configurable and must be evaluated on code dependency retrieval, multi-needle recall, long-context perplexity, KV-memory use, recurrent-state memory, and tokens/sec.
+
+Use independent bounded residual gates rather than a zero-sum mixer:
 
 ```text
-y = x + gate * F(x), gate ~= 0 at initialization
+m = Mamba3(norm(x))
+a = Attention(norm(x))
+y = x + alpha_m * m + alpha_a * a
+alpha_m = alpha_m_max * sigmoid(g_m)
+alpha_a = alpha_a_max * sigmoid(g_a)
 ```
+
+For the first Phi transport stage, `alpha_a` initializes to preserve the transported attention path and `alpha_m` initializes near zero. When a compatible Mamba-3 donor is available, the Mamba path can be donor-initialized and its gate can start at a nonzero calibrated value.
+
+### Mamba-3 recurrent state path
+
+Use the published Mamba-3 block semantics rather than a hand-written "linear projection" approximation:
+
+- expressive SSM discretization
+- complex-valued state update
+- MIMO mode where supported
+- recurrent state carried across decode tokens
+- BF16 reference implementation first
+- state parameters kept at the precision required for stable recurrence
+- exact state reset/continuation semantics covered by tests
+- chunked training must produce the same state transition as the reference unchunked path within tolerance
+
+The production implementation may wrap the upstream Mamba-3 kernel initially; custom Triton/Mojo kernels are permitted only after forward/backward/state parity.
+
+### Transformer token-retrieval path
+
+Ordinary inner blocks use Native Sparse Attention. Periodic anchor blocks use explicit global Transformer attention. Both share the same positional interface and causal semantics. The global path is not removed even if Mamba long-context metrics improve; it is the model's exact addressable-memory mechanism.
 
 ### Native Sparse Attention
 
@@ -345,7 +398,7 @@ Coconut, soft-thinking, and IQ executive-latent reasoning are independently feat
 
 ## 10. Hamiltonian executive controller
 
-Replace `IsingGate` entirely. No fake scalar energy and no spin-copy operation remains.
+Replace `IsingGate` entirely. No fake scalar energy and no spin-copy operation remains. The useful legacy NIF idea is retained as a real differentiable energy-based executive controller, not as a quantum-spin simulation.
 
 The executive state is intentionally small (`d_exec=512`) so energy-gradient dynamics are computationally tractable.
 
@@ -392,6 +445,24 @@ L_energy = softplus(E_positive - E_negative + margin)
 ```
 
 Energy is also logged as a calibration signal for halting; halting does not rely on energy alone.
+
+### Optional Riemannian executive geometry
+
+Riemannian/hyperbolic geometry is retained only as an explicit executive/concept-space experiment. It is not applied to the transferred token backbone by default.
+
+Baseline:
+
+```text
+z_exec in R^d
+```
+
+Experimental variant:
+
+```text
+z_exec in H^d
+```
+
+The hyperbolic implementation must provide numerically stable exp/log maps, distance, projection/retraction, mixed-precision guards, and Euclidean-vs-hyperbolic ablation parity. No curvature-dependent hand-designed attention factor is permitted.
 
 ## 11. Concept collapse / lexicalization head
 
@@ -523,7 +594,8 @@ Delete/retire the current parameter-Gram-Schmidt `MuonOptimizer` after the new o
 Production optimizer groups:
 
 - Muon: eligible 2D matrix weights where the implementation and distributed sharding are valid
-- AdamW: embeddings, norm scales, scalar/vector parameters, router scalars, halting parameters, energy scalars, and parameters not supported by Muon
+- AdamW: embeddings, norm scales, scalar/vector parameters, router scalars, halting parameters, energy scalars, Mamba recurrence parameters that require non-Muon handling, and parameters not supported by Muon
+- GaLore: optional memory-constrained training mode only; never stack it implicitly on parameters already assigned to Muon. Its activation is explicit in the experiment config and must show a measured HBM benefit without unacceptable convergence regression.
 
 Muon performs momentum + gradient/update orthogonalization; it does not periodically orthonormalize model parameters.
 
@@ -551,6 +623,10 @@ Keep numerically sensitive operations in BF16/FP32 as needed:
 - selected optimizer state
 
 No low-precision mode becomes default solely because it runs faster.
+
+### Quantum/CUDA-Q isolation
+
+CUDA-Q and external QPUs are not dependencies of the production forward, backward, optimizer, checkpoint, or inference path. They remain an isolated research backend for future experiments. No training launch may require QPU availability, and no quantum claim is used as evidence for model reasoning quality.
 
 ## 17. Distributed training
 
@@ -790,6 +866,7 @@ Do not keep parallel legacy implementations after replacement is green.
 - `nif_sovereign/core/custom_llm_architecture.mojo`
 - `nif_sovereign/core/physics_transformer_block.mojo`
 - `nif_sovereign/modules/ising_gate.mojo`
+- legacy neutrino-oscillation blocks on the production path; their useful recurrent/oscillatory role is replaced by Mamba-3
 - `nif_sovereign/optimization/muon_optimizer.mojo`
 - legacy Gemma/Neutrino/Ising architecture config fields
 - `gcp_training_script.sh`
@@ -828,15 +905,18 @@ Exit: empty framework is not enough. A real minimal dense decoder must run forwa
 
 Exit: Phi->IQ transported model trains and evaluates end-to-end without recurrent/Hamiltonian features.
 
-### Phase 2 — sparse/hybrid execution
+### Phase 2 — Mamba-3 + Transformer hybrid execution
 
-1. NSA reference implementation
-2. optimized sparse kernel
-3. outer Differential Attention
-4. compressed global memory
-5. parity + throughput benchmarks
+1. integrate the reference Mamba-3 state path with exact recurrent-state semantics
+2. implement parallel bounded residual fusion
+3. NSA reference implementation for ordinary Transformer branches
+4. periodic global-attention anchor blocks
+5. optimized sparse/state kernels only after reference parity
+6. outer Differential Attention
+7. compressed global memory
+8. evaluate attention-anchor frequency (for example 8:1, 4:1, 3:1, 2:1 Mamba-heavy/sparse blocks to global anchors) on long-context coding and needle retrieval
 
-Exit: sparse path is numerically correct and yields target memory/throughput without donor-retention regression.
+Exit: Mamba state continuation, sparse attention, global retrieval, and fusion are numerically correct; the hybrid meets the donor-retention gate and demonstrates the intended memory/throughput tradeoff.
 
 ### Phase 3 — recurrence + halting
 

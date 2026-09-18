@@ -85,6 +85,21 @@ adaptation_compute / scratch_compute <= 0.50
 
 After Phi establishes a real baseline, tune these thresholds from evidence.
 
+## IQ v2 multi-donor integration
+
+Detailed production sequencing, parameter provenance, Transformer -> Mamba-3 bootstrap, cross-tokenizer alignment, and Mellum2 MoE transfer are specified in `IQ_WEIGHT_TRANSFER_IMPLEMENTATION_PLAN.md`.
+
+The current ownership policy is:
+
+```text
+Phi-4 -> dense Transformer base
+Transformer projections -> Mamba-3 x/B/C/out bootstrap
+Mellum2 -> code-specialized DoRA + MoE + MTP
+IQ-native -> Hamiltonian/EBM, halting, spectral depth, concept mapper
+```
+
+Mamba-3-specific recurrence parameters without a justified donor correspondence use the official initialization and are learned. Do not invent mappings for recurrence-only fields.
+
 ## Scaling path
 
 Keep the IQ recipient architecture fixed first:

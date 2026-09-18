@@ -1,247 +1,154 @@
-# IQ - Personal Multimodal LLM
+# IQ — Hybrid Reasoning LLM
 
-**A personal multimodal LLM using latest 2026 LLM architecture built on MOJO**
+IQ is an experimental language-model architecture for complex coding, long-context retrieval, and adaptive multi-step reasoning.
 
-## 🧠 Overview
+The production target is **not** the original Neutrino/Ising mock architecture. IQ v2 combines a transferred Transformer backbone with a Mamba-3 recurrent state path, sparse/global attention, adaptive recurrence, and a differentiable Hamiltonian executive controller.
 
-IQ is a cutting-edge personal multimodal Large Language Model built with the latest 2026 architectural innovations and implemented in Mojo SDK. This project combines advanced physics-based neural architectures with state-of-the-art optimization techniques to create a highly efficient and powerful personal AI system.
+## Architecture
 
-## 🚀 Key Features
-
-### 🌟 Novel Architecture
-- **NIF Sovereign Architecture**: Neutrino-Ising Field (NIF) architecture combining quantum mechanics and differential geometry
-- **Physics-Based Attention**: Riemannian manifold embeddings and Ising Hamiltonian gates
-- **Heterogeneous MoE**: Multi-expert routing with linguistic, physics, and diffusion experts
-- **Custom Transformer Blocks**: Advanced transformer architecture with physics integration
-
-### ⚡ Performance & Optimization
-- **Muon Optimization**: Orthonormal updates for stable training
-- **GaLore Projection**: Gradient low-rank projection for VRAM efficiency
-- **Muon Adapters**: Task-customized orthogonal adapter fusion for parameter-efficient fine-tuning
-- **CUDA-Q Integration**: Remote quantum computation on NVIDIA H200 clusters
-
-### 🎯 Multimodal Capabilities
-- **Text Processing**: Advanced natural language understanding and generation
-- **Spatial Reasoning**: Diffusion-based spatial and video consistency
-- **Quantum Logic**: Ising model integration for logical reasoning
-- **Manifold Learning**: Riemannian geometry for complex pattern recognition
-
-## 🏗️ Architecture
-
-### Core Components
-
-1. **Riemannian Manifold Embedding**
-   - Custom embedding on hyperbolic manifold surfaces
-   - Curvature-aware weight initialization
-   - Geometric distance computations
-
-2. **Neutrino Oscillation Block**
-   - Recurrent logic loops inspired by particle physics
-   - Mass eigenstate mixing matrices
-   - Oscillatory state transitions
-
-3. **Ising Hamiltonian Gate**
-   - Quantum spin system mapping
-   - Remote CUDA-Q execution
-   - Ground state optimization
-
-4. **Heterogeneous MoE Router**
-   - Three expert types: Linguistic, Physics, Diffusion
-   - Load balancing and expert selection
-   - Dynamic routing based on content
-
-### Technical Stack
-
-- **Language**: Mojo SDK v0.26.2+
-- **Quantum Backend**: CUDA-Q with NVIDIA H200, IBM Quantum, IonQ
-- **Remote Compute**: Thunder Compute integration
-- **Architecture**: Novel NIF Sovereign (non-transformer based)
-- **Optimization**: Muon, GaLore, Muon Adapters
-- **Data Sources**: GneissWeb 2026, The Stack v3
-- **Adapter Composition**: Stack, Fuse, Split patterns for task-customized fine-tuning
-
-## 📊 Performance
-
-### Model Specifications
-- **Parameters**: Custom NIF architecture (parameter-efficient via adapters)
-- **Hidden Dimension**: 4096
-- **Architecture Layers**: Riemannian embedding → Neutrino oscillation → Ising gate → Adapters
-- **Adapters**: 4 (Linguistic, Physics, Diffusion, Quantum)
-- **Bottleneck Dimension**: 64
-
-### Hardware Requirements
-- **GPU**: NVIDIA H200 (recommended)
-- **VRAM**: 192GB (optimal)
-- **Compute Capability**: 8.9+
-- **Quantum**: CUDA-Q compatible QPU
-
-### Efficiency Metrics
-- **VRAM Usage**: Optimized with GaLore projection
-- **Training Speed**: Muon optimization for stable convergence
-- **Inference**: Real-time with AdaLydia KV cache paging
-- **Energy**: Quantum-augmented computation for efficiency
-
-## 🛠️ Installation
-
-### Prerequisites
-```bash
-# Install Mojo SDK
-curl --proto '=https' --tlsv1.2 -sSf https://get.modular.com | sh
-mojo setup
-
-# Install CUDA-Q
-pip install cuda-quantum
-
-# Install dependencies
-pip install torch numpy scipy
+```text
+tokens
+  ↓
+embeddings + token position + reasoning-depth encoding
+  ↓
+┌──────────────── hybrid inner block ────────────────┐
+│ Mamba-3 recurrent state  ||  Transformer attention │
+│                              ├─ NSA inner blocks    │
+│                              └─ global anchors      │
+│                 ↓ bounded residual fusion           │
+│                    dense SwiGLU                     │
+│              executive-latent injection             │
+└─────────────────────────────────────────────────────┘
+  ↓
+compressed/global memory
+  ↓
+Differential Attention
+  ↓
+Hamiltonian/energy executive state
+  ↓
+adaptive halt / refine
+  ↓
+continuous concept path
+  ↓
+Concept Mapper → LM head
 ```
 
-### Setup
-```bash
-# Clone the repository
-git clone https://github.com/yourusername/IQ.git
-cd IQ
+### Why the hybrid
 
-# Set up environment
-source setup.sh
+- **Mamba-3** carries efficient long-horizon recurrent state.
+- **Transformer attention** remains the exact content-addressable path for identifiers, code dependencies, and needle-in-context retrieval.
+- **Native Sparse Attention** handles most token-level context efficiently.
+- **Periodic global attention** preserves high-recall access to the complete context.
+- **Differential Attention** is reserved for outer-loop executive reasoning.
+- **SwiGLU** is the dense inner FFN; routed heterogeneous MoE is introduced later in the outer path.
+- **Hamiltonian/EBM control** replaces the old fake Ising gate with a real scalar-energy recurrent controller.
 
-# Initialize model
-mojo initialize_model.mojo
+## Retained NIF ideas, redefined
+
+The useful ideas from the original NIF design are kept only where they have a defensible mathematical role:
+
+| Legacy idea | IQ v2 |
+| --- | --- |
+| Neutrino oscillation | Mamba-3 complex recurrent state dynamics |
+| Ising gate | differentiable port-Hamiltonian / EBM executive controller |
+| Riemannian manifold | optional hyperbolic executive/concept geometry |
+| Heterogeneous MoE | learned heterogeneous routed SwiGLU experts |
+| Muon | real matrix-gradient/update orthogonalization |
+| GaLore | optional memory-constrained optimizer mode |
+| Muon adapters | DoRA correction around transported weights |
+| CUDA-Q | isolated research backend; never required for production training/inference |
+
+IQ does **not** claim that ordinary language-model reasoning requires quantum hardware.
+
+## Weight transfer
+
+`iq_transfer/` is the canonical donor-independent transfer package.
+
+Current flow:
+
+```text
+donor checkpoint
+  → DonorInspector
+  → lazy operator catalog
+  → calibration activations
+  → functional shadows
+  → layer correspondence
+  → coordinate maps
+  → operator transport
+  → DoRA correction
+  → IQ adaptation
 ```
 
-## 🚀 Quick Start
+Phi-4 is the proof donor. The transfer engine is intentionally model-independent so larger dense, code-specialized, MoE, and future Mamba-3 donors can be added through inspectors rather than separate graft architectures.
 
-### Basic Usage
-```python
-from nif_sovereign import NIFCustomLLM, NIFConfig
+See:
 
-# Initialize model
-config = NIFConfig()
-model = NIFCustomLLM(config)
+- `SHADOW_TRANSFER.md`
+- `IQ_WEIGHT_TRANSFER_IMPLEMENTATION_PLAN.md`
+- `IQ_V2_IMPLEMENTATION_PLAN.md`
 
-# Generate text
-input_text = "Hello, I'm IQ, your personal multimodal LLM."
-output = model.generate(input_text)
-print(output)
-```
+## Training runtime
 
-### Training
-```python
-from nif_sovereign import NIFCustomTrainer
+Production training target:
 
-# Initialize trainer
-trainer = NIFCustomTrainer(config)
+- PyTorch autograd
+- NVIDIA Megatron-Core for distributed parallelism
+- Transformer Engine where numerically validated
+- upstream Mamba-3 reference implementation initially
+- Mojo custom kernels only after forward/backward/state parity
+- MAX for later production inference
+- BF16 reference training before FP8/MXFP8 promotion
 
-# Train model
-trainer.train_epoch(dataset, num_steps=1000)
-```
+The legacy Mojo NIF implementation remains only as migration source until each active path has a tested replacement.
 
-### Quantum Processing
-```python
-# Enable quantum processing
-config.enable_cuda_q = True
-config.thunder_compute_endpoint = "your-thunder-endpoint"
+## Agent runtime
 
-# Process with quantum gates
-output = model.quantum_forward(input_text)
-```
+`iq_harness/` provides the model-independent orchestration layer:
 
-## 📁 Project Structure
+- Agent Skills-compatible loading
+- tools and provider boundaries
+- manager/subagent delegation
+- handoffs
+- sessions
+- approvals
+- guardrails
+- tracing
 
-```
-IQ/
-├── nif_sovereign/           # Core NIF architecture
-│   ├── core/               # Core components
-│   ├── modules/            # Physics-based modules
-│   ├── adapters/           # Model adapters
-│   ├── optimization/       # Optimization algorithms
-│   ├── pipeline/           # Data processing
-│   └── verification/       # Hardware verification
-├── .windsurf/              # Behavioral guidelines
-├── docs/                   # Documentation
-├── examples/               # Usage examples
-├── tests/                  # Test suite
-└── README.md              # This file
-```
+The trainable IQ model will connect through `ModelBackend.generate()`.
 
-## 🧪 Testing
+## Engineering rules
 
-Run the comprehensive test suite:
-```bash
-# Basic functionality test
-mojo test_custom_llm_simple.mojo
+- no mock tensor paths on the active model
+- no constant energies or fake checkpoint loaders
+- no placeholder production credentials/resources
+- reference implementation before optimized kernels
+- deterministic checkpoint/resume
+- immutable tokenizer/data/donor manifests
+- every trainable parameter belongs to exactly one optimizer group
+- completed green work is committed and merged into `main`
 
-# Full test suite
-mojo run_tests.mojo
-```
+## Repository status
 
-## 📚 Documentation
+Implemented today:
 
-- [Architecture Overview](docs/architecture.md)
-- [API Reference](docs/api.md)
-- [Training Guide](docs/training.md)
-- [Quantum Integration](docs/quantum.md)
-- [Optimization Techniques](docs/optimization.md)
+- donor-independent Phi checkpoint inspection
+- lazy safetensors operator access
+- functional-shadow measurements
+- monotonic layer matching
+- coordinate-map/operator transport
+- scale-gate metrics
+- model-independent agent harness
 
-## 🤝 Contributing
+In migration:
 
-We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) for details.
+- real IQ v2 model/training packages
+- Mamba-3 + Transformer hybrid blocks
+- real Muon optimizer
+- DoRA correction
+- Hamiltonian/EBM controller
+- adaptive recurrent reasoning
+- code-focused FIM/MTP/MoE training
 
-### Development Setup
-```bash
-# Install development dependencies
-pip install -r requirements-dev.txt
+## License
 
-# Run pre-commit hooks
-pre-commit install
-
-# Run tests
-mojo test
-```
-
-## 📄 License
-
-This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENSE) file for details.
-
-## 🙏 Acknowledgments
-
-- **Modular**: For the amazing Mojo SDK
-- **NVIDIA**: For CUDA-Q and H200 support
-- **Google**: For Gemma 4 base model
-- **Thunder Compute**: For remote quantum execution
-- **Research Community**: For the foundational research in physics-based AI
-
-## 📈 Roadmap
-
-### v1.0 (Current)
-- ✅ Core NIF architecture
-- ✅ Physics-based attention
-- ✅ Heterogeneous MoE routing
-- ✅ CUDA-Q integration
-
-### v1.1 (Planned)
-- 🔄 Enhanced multimodal capabilities
-- 🔄 Improved quantum algorithms
-- 🔄 Distributed training
-- 🔄 Mobile deployment
-
-### v2.0 (Future)
-- 📋 Full AGI capabilities
-- 📋 Advanced reasoning
-- 📋 Creative applications
-- 📋 Scientific computing
-
-## 🌟 Stars
-
-If you find this project interesting or useful, please give it a star on GitHub!
-
-## 📞 Contact
-
-- **Project Lead**: [Your Name]
-- **Email**: [your.email@example.com]
-- **Twitter**: [@yourtwitter]
-- **Discord**: [Your Discord Server]
-
----
-
-**IQ - Where Physics Meets Intelligence** 🧠⚛️🚀
+See `LICENSE` and `PROPRIETARY_LICENSE.md` for repository licensing terms.
