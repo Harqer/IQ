@@ -1,7 +1,8 @@
+from .alignment import AlignmentError, ByteSpan, PairedSpanActivations, TokenByteSpan, align_token_activations_by_bytes, pool_activations_by_byte_spans
 from .mamba3_init import Mamba3BootstrapReport, Mamba3BootstrapWeights, Mamba3InitError, Mamba3Layout, TRANSFORMER_TO_MAMBA3, apply_mamba3_bootstrap
 from .plan import PlanError, TransportPlan
 from .provenance import ParameterProvenance, ProvenanceError, ProvenanceLedger
-from .capture import ActivationTap, CaptureError, TorchActivationCapture
+from .capture import ActivationTap, CaptureError, TorchActivationCapture, load_capture_records, save_capture_records
 from .checkpoint import SafetensorsSource
 from .donor import DonorConfig, DonorError, DonorInspector, LayerRef, MappingTensorSource, OperatorRef, TensorSource, ValidationReport
 from .manifest import CheckpointFile, DonorManifest, ManifestError, TensorInventoryItem, build_donor_manifest
@@ -13,6 +14,8 @@ from .transport import CoordinateMap, MapDiagnostics, TransportError, fit_ridge_
 
 __all__ = [
     "ActivationTap",
+    "AlignmentError",
+    "ByteSpan",
     "CaptureError",
     "CheckpointFile",
     "CoordinateMap",
@@ -27,12 +30,14 @@ __all__ = [
     "Mamba3BootstrapWeights",
     "Mamba3InitError",
     "Mamba3Layout",
+    "PairedSpanActivations",
     "ParameterProvenance",
     "PlanError",
     "ProvenanceError",
     "ProvenanceLedger",
     "TRANSFORMER_TO_MAMBA3",
     "TransportPlan",
+    "align_token_activations_by_bytes",
     "apply_mamba3_bootstrap",
     "MapDiagnostics",
     "MappingTensorSource",
@@ -44,6 +49,7 @@ __all__ = [
     "ShadowError",
     "SlotError",
     "TargetAssignment",
+    "TokenByteSpan",
     "TargetRegistry",
     "TargetSlot",
     "TensorInventoryItem",
@@ -56,8 +62,11 @@ __all__ = [
     "build_donor_manifest",
     "extract_shadow",
     "fit_ridge_coordinate_map",
+    "load_capture_records",
     "load_coordinate_map",
     "match_layers_monotonic",
+    "pool_activations_by_byte_spans",
+    "save_capture_records",
     "save_coordinate_map",
     "shadow_distance",
     "transport_linear",

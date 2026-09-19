@@ -115,3 +115,69 @@ class TorchActivationCapture:
     def clear(self) -> None:
         for values in self._records.values():
             values.clear()
+
+
+def save_capture_records(records: dict[str, tuple[Any, ...]], path: str) -> tuple[str, str]:
+    """Persist captured tensors as safetensors plus a deterministic JSON index."""
+    from pathlib import Path
+    import json
+
+    torch = _require_torch()
+    try:
+        from safetensors.torch import save_file
+    except ImportError as exc:
+        raise CaptureError("safetensors is required to persist activation capture artifacts") from exc
+
+    base = Path(path)
+    tensor_path = base.with_suffix(".safetensors")
+    metadata_path = base.with_suffix(".json")
+    flat: dict[str, Any] = {}
+    index: dict[str, list[str]] = {}
+    for tap_name in sorted(records):
+        values = records[tap_name]
+        if not values:
+            raise CaptureError(f"cannot persist empty activation tap {tap_name!r}")
+        keys: list[str] = []
+        for i, value in enumerate(values):
+            if not isinstance(value, torch.Tensor):
+                raise CaptureError(f"activation record {tap_name}[{i}] is not a torch tensor")
+            if not bool(torch.isfinite(value).all()):
+                raise CaptureError(f"activation record {tap_name}[{i}] contains non-finite values")
+            key = f"{tap_name}/{i:06d}"
+            flat[key] = value.detach().contiguous().cpu()
+            keys.append(key)
+        index[tap_name] = keys
+    if not flat:
+        raise CaptureError("cannot persist an empty capture record set")
+    save_file(flat, str(tensor_path))
+    metadata = {"schema_version": 1, "index": index}
+    metadata_path.write_text(json.dumps(metadata, sort_keys=True) + "\n", encoding="utf-8")
+    return str(tensor_path), str(metadata_path)
+
+
+def load_capture_records(path: str) -> dict[str, tuple[Any, ...]]:
+    from pathlib import Path
+    import json
+
+    _require_torch()
+    try:
+        from safetensors.torch import load_file
+    except ImportError as exc:
+        raise CaptureError("safetensors is required to load activation capture artifacts") from exc
+
+    base = Path(path)
+    tensor_path = base.with_suffix(".safetensors")
+    metadata_path = base.with_suffix(".json")
+    if not tensor_path.is_file() or not metadata_path.is_file():
+        raise CaptureError(f"activation capture artifact is incomplete: {base}")
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    if metadata.get("schema_version") != 1 or not isinstance(metadata.get("index"), dict):
+        raise CaptureError("unsupported or invalid activation capture metadata")
+    tensors = load_file(str(tensor_path), device="cpu")
+    expected = {key for keys in metadata["index"].values() for key in keys}
+    if set(tensors) != expected:
+        raise CaptureError("activation capture tensor/index mismatch")
+    return {
+        tap: tuple(tensors[key] for key in keys)
+        for tap, keys in sorted(metadata["index"].items())
+    }
