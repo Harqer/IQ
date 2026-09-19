@@ -1,3 +1,5 @@
+from .gqa_transport import GQAProjection, GQATransportError, fit_gqa_group_projection
+from .phi_pipeline import PhiDensePlanSpec, PhiLayerMapIds, PhiPipelineError, build_phi_dense_plan_spec, build_phi_dense_transport_plan
 from .executor import DonorRuntime, ExecutionError, TransportExecutionReport, execute_transport_plan
 from .apply import ApplyError, ParameterUpdate, apply_parameter_updates
 from .alignment import AlignmentError, ByteSpan, PairedSpanActivations, TokenByteSpan, align_token_activations_by_bytes, pool_activations_by_byte_spans
@@ -29,6 +31,8 @@ __all__ = [
     "DonorRuntime",
     "ExecutionError",
     "FunctionalShadow",
+    "GQAProjection",
+    "GQATransportError",
     "LayerRef",
     "ManifestError",
     "Mamba3BootstrapReport",
@@ -51,6 +55,9 @@ __all__ = [
     "MeasurementPlan",
     "OperatorRef",
     "Phi4Inspector",
+    "PhiDensePlanSpec",
+    "PhiLayerMapIds",
+    "PhiPipelineError",
     "SafetensorsSource",
     "ScaleGate",
     "ShadowError",
@@ -68,8 +75,11 @@ __all__ = [
     "TransportExecutionReport",
     "ValidationReport",
     "build_donor_manifest",
+    "build_phi_dense_plan_spec",
+    "build_phi_dense_transport_plan",
     "execute_transport_plan",
     "extract_shadow",
+    "fit_gqa_group_projection",
     "fit_ridge_coordinate_map",
     "load_capture_records",
     "load_coordinate_map",
