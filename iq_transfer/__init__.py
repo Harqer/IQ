@@ -1,3 +1,5 @@
+from .batches import BatchArtifactError, TokenBatchArtifact, load_token_batches, save_token_batches
+from .job import PhiTransferJobResult, TransferJobError, hash_tokenizer_files, load_transferred_iq_artifact, run_phi_dense_transfer, run_phi_dense_transfer_loaded
 from .capture_runner import ActivationBundle, CaptureRunnerError, PhiCaptureLayout, build_phi_layer_calibration_from_bundles, capture_iq_activations, capture_phi_activations, iq_capture_taps, load_local_phi_causal_lm, make_activation_pair, phi_capture_taps
 from .calibration import ActivationPair, CalibrationError, CalibrationManifest, CalibrationRecord, CalibrationSplit, LayerCorrespondence, PhiLayerCalibration, PhiLayerMapSolution, merge_coordinate_maps, solve_activation_pair, solve_layer_correspondence, solve_phi_layer_maps
 from .gqa_transport import GQAProjection, GQATransportError, fit_gqa_group_projection
@@ -24,6 +26,7 @@ __all__ = [
     "ActivationTap",
     "ApplyError",
     "AlignmentError",
+    "BatchArtifactError",
     "ByteSpan",
     "CalibrationError",
     "CalibrationManifest",
@@ -71,11 +74,13 @@ __all__ = [
     "PhiLayerMapIds",
     "PhiLayerMapSolution",
     "PhiPipelineError",
+    "PhiTransferJobResult",
     "SafetensorsSource",
     "ScaleGate",
     "ShadowError",
     "SlotError",
     "TargetAssignment",
+    "TokenBatchArtifact",
     "TokenByteSpan",
     "TargetRegistry",
     "TargetSlot",
@@ -84,6 +89,7 @@ __all__ = [
     "TorchActivationCapture",
     "TransferMethod",
     "TransferMetrics",
+    "TransferJobError",
     "TransportError",
     "TransportExecutionReport",
     "ValidationReport",
@@ -97,8 +103,11 @@ __all__ = [
     "extract_shadow",
     "fit_gqa_group_projection",
     "fit_ridge_coordinate_map",
+    "hash_tokenizer_files",
     "iq_capture_taps",
     "load_capture_records",
+    "load_token_batches",
+    "load_transferred_iq_artifact",
     "load_local_phi_causal_lm",
     "make_activation_pair",
     "load_coordinate_map",
@@ -106,7 +115,10 @@ __all__ = [
     "merge_coordinate_maps",
     "phi_capture_taps",
     "pool_activations_by_byte_spans",
+    "run_phi_dense_transfer",
+    "run_phi_dense_transfer_loaded",
     "save_capture_records",
+    "save_token_batches",
     "solve_activation_pair",
     "solve_layer_correspondence",
     "solve_phi_layer_maps",
