@@ -10,7 +10,7 @@ import shutil
 import tempfile
 
 import torch
-from safetensors.torch import load_file, save_file
+from safetensors.torch import load_model, save_model
 
 
 class CheckpointError(RuntimeError):
@@ -37,10 +37,6 @@ def _sha256(path: Path, chunk_size: int = 8 * 1024 * 1024) -> str:
     return digest.hexdigest()
 
 
-def _cpu_model_state(model: torch.nn.Module) -> dict[str, torch.Tensor]:
-    return {key: value.detach().contiguous().cpu() for key, value in model.state_dict().items()}
-
-
 def save_checkpoint(
     path: str | Path,
     *,
@@ -61,7 +57,7 @@ def save_checkpoint(
     destination.parent.mkdir(parents=True, exist_ok=True)
     temp = Path(tempfile.mkdtemp(prefix=f".{destination.name}.tmp-", dir=destination.parent))
     try:
-        save_file(_cpu_model_state(model), str(temp / "model.safetensors"))
+        save_model(model, str(temp / "model.safetensors"), force_contiguous=True)
         torch.save(optimizer.state_dict(), temp / "optimizer.pt")
         training_state = {
             "scheduler": scheduler.state_dict() if scheduler is not None else None,
@@ -136,8 +132,12 @@ def load_checkpoint(
         if not file_path.is_file() or _sha256(file_path) != digest:
             raise CheckpointError(f"checkpoint payload hash mismatch: {name}")
 
-    model_state = load_file(str(source / "model.safetensors"), device=str(map_location))
-    missing, unexpected = model.load_state_dict(model_state, strict=False)
+    missing, unexpected = load_model(
+        model,
+        str(source / "model.safetensors"),
+        strict=True,
+        device=str(map_location),
+    )
     if missing or unexpected:
         raise CheckpointError(f"model state mismatch: missing={missing}, unexpected={unexpected}")
 
