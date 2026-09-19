@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Mapping, Protocol, Sequence
 import json
@@ -19,12 +19,17 @@ class DonorConfig:
     num_hidden_layers: int
     num_attention_heads: int
     num_key_value_heads: int
+    vocab_size: int | None = None
+    dtype: str | None = None
 
     @property
     def head_dim(self) -> int:
         if self.hidden_size % self.num_attention_heads != 0:
             raise DonorError("hidden_size must be divisible by num_attention_heads")
         return self.hidden_size // self.num_attention_heads
+
+    def to_mapping(self) -> dict[str, Any]:
+        return asdict(self)
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any]) -> "DonorConfig":
@@ -46,12 +51,34 @@ class DonorConfig:
             num_hidden_layers=int(data["num_hidden_layers"]),
             num_attention_heads=int(data["num_attention_heads"]),
             num_key_value_heads=int(data["num_key_value_heads"]),
+            vocab_size=int(data["vocab_size"]) if data.get("vocab_size") is not None else None,
+            dtype=str(data.get("torch_dtype")) if data.get("torch_dtype") is not None else None,
         )
 
     @classmethod
     def from_json(cls, path: str | Path) -> "DonorConfig":
         with Path(path).open("r", encoding="utf-8") as handle:
             return cls.from_mapping(json.load(handle))
+
+
+@dataclass(frozen=True)
+class LayerRef:
+    index: int
+    path: str
+
+
+@dataclass(frozen=True)
+class ValidationReport:
+    errors: tuple[str, ...] = ()
+    warnings: tuple[str, ...] = ()
+
+    @property
+    def ok(self) -> bool:
+        return not self.errors
+
+    def require_ok(self) -> None:
+        if self.errors:
+            raise DonorError("; ".join(self.errors))
 
 
 @dataclass(frozen=True)
@@ -99,5 +126,11 @@ class MappingTensorSource:
 class DonorInspector(Protocol):
     config: DonorConfig
 
+    def layers(self) -> tuple[LayerRef, ...]:
+        ...
+
     def operators(self, source: TensorSource) -> tuple[OperatorRef, ...]:
+        ...
+
+    def validate_checkpoint(self, source: TensorSource) -> ValidationReport:
         ...
