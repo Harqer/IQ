@@ -1,3 +1,4 @@
+from .calibration import ActivationPair, CalibrationError, CalibrationManifest, CalibrationRecord, CalibrationSplit, LayerCorrespondence, PhiLayerCalibration, PhiLayerMapSolution, merge_coordinate_maps, solve_activation_pair, solve_layer_correspondence, solve_phi_layer_maps
 from .gqa_transport import GQAProjection, GQATransportError, fit_gqa_group_projection
 from .phi_pipeline import PhiDensePlanSpec, PhiLayerMapIds, PhiPipelineError, build_phi_dense_plan_spec, build_phi_dense_transport_plan
 from .executor import DonorRuntime, ExecutionError, TransportExecutionReport, execute_transport_plan
@@ -17,10 +18,15 @@ from .slots import SlotError, TargetAssignment, TargetRegistry, TargetSlot, Tran
 from .transport import CoordinateMap, MapDiagnostics, TransportError, fit_ridge_coordinate_map, load_coordinate_map, save_coordinate_map, transport_linear
 
 __all__ = [
+    "ActivationPair",
     "ActivationTap",
     "ApplyError",
     "AlignmentError",
     "ByteSpan",
+    "CalibrationError",
+    "CalibrationManifest",
+    "CalibrationRecord",
+    "CalibrationSplit",
     "CaptureError",
     "CheckpointFile",
     "CoordinateMap",
@@ -33,6 +39,7 @@ __all__ = [
     "FunctionalShadow",
     "GQAProjection",
     "GQATransportError",
+    "LayerCorrespondence",
     "LayerRef",
     "ManifestError",
     "Mamba3BootstrapReport",
@@ -56,7 +63,9 @@ __all__ = [
     "OperatorRef",
     "Phi4Inspector",
     "PhiDensePlanSpec",
+    "PhiLayerCalibration",
     "PhiLayerMapIds",
+    "PhiLayerMapSolution",
     "PhiPipelineError",
     "SafetensorsSource",
     "ScaleGate",
@@ -84,8 +93,12 @@ __all__ = [
     "load_capture_records",
     "load_coordinate_map",
     "match_layers_monotonic",
+    "merge_coordinate_maps",
     "pool_activations_by_byte_spans",
     "save_capture_records",
+    "solve_activation_pair",
+    "solve_layer_correspondence",
+    "solve_phi_layer_maps",
     "save_coordinate_map",
     "shadow_distance",
     "transport_linear",
