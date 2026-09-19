@@ -11,6 +11,13 @@ from iq_transfer import (
     CoordinateMap,
     DonorError,
     ManifestError,
+    Mamba3BootstrapWeights,
+    Mamba3InitError,
+    Mamba3Layout,
+    ParameterProvenance,
+    PlanError,
+    ProvenanceError,
+    ProvenanceLedger,
     MappingTensorSource,
     MeasurementPlan,
     Phi4Inspector,
@@ -20,8 +27,10 @@ from iq_transfer import (
     TargetRegistry,
     TargetSlot,
     TorchActivationCapture,
+    TransportPlan,
     TransferMethod,
     TransferMetrics,
+    apply_mamba3_bootstrap,
     build_donor_manifest,
     extract_shadow,
     fit_ridge_coordinate_map,
@@ -223,6 +232,93 @@ class TransferTests(unittest.TestCase):
         self.assertEqual(len(capture.records()["hidden"]), before)
         with self.assertRaises(CaptureError):
             TorchActivationCapture(model, [ActivationTap("x", "missing")]).__enter__()
+
+    def test_transport_plan_is_deterministic_and_rejects_unknown_donors(self):
+        assignment = TargetAssignment(
+            target_module_path="blocks.0.attn.q_proj",
+            target_slot=TargetSlot.ATTN_Q,
+            target_shape=(8, 8),
+            transfer_method=TransferMethod.OPERATOR_TRANSPORT,
+            source_donor_id="phi",
+            source_layer=0,
+            source_operator="attn.q",
+            input_map_id="resid-0",
+            output_map_id="q-0",
+        )
+        plan = TransportPlan(
+            plan_id="phi-iq-v1",
+            donor_fingerprints=(("phi", "abc123"),),
+            assignments=(assignment,),
+            calibration_manifest_hash="cal123",
+            iq_config_hash="cfg123",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "plan.json"
+            plan.write_json(path)
+            loaded = TransportPlan.from_json(path)
+        self.assertEqual(plan.fingerprint, loaded.fingerprint)
+        with self.assertRaises(PlanError):
+            TransportPlan(
+                plan_id="bad",
+                donor_fingerprints=(("other", "x"),),
+                assignments=(assignment,),
+                calibration_manifest_hash="cal",
+                iq_config_hash="cfg",
+            )
+
+    def test_provenance_ledger_round_trip_and_duplicate_rejection(self):
+        record = ParameterProvenance(
+            target_parameter="blocks.0.attn.q_proj.weight",
+            target_slot=TargetSlot.ATTN_Q,
+            transfer_method=TransferMethod.OPERATOR_TRANSPORT,
+            training_phase_introduced="T1",
+            source_donor_id="phi",
+            source_tensor="model.layers.0.self_attn.qkv_proj.weight",
+            source_slice="q",
+            map_ids=("resid-0", "q-0"),
+        )
+        ledger = ProvenanceLedger([record])
+        with self.assertRaises(ProvenanceError):
+            ledger.add(record)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "provenance.json"
+            ledger.write_json(path)
+            loaded = ProvenanceLedger.from_json(path)
+        self.assertEqual(loaded.get(record.target_parameter), record)
+
+    def test_mamba3_layout_matches_upstream_packing_and_preserves_native_slices(self):
+        layout = Mamba3Layout(d_model=8, d_state=4, expand=2, headdim=4, ngroups=1, rope_fraction=0.5)
+        self.assertEqual(layout.split_sizes, (16, 16, 4, 4, 4, 4, 4, 1))
+        native_in = np.full(layout.in_proj_shape, 7.0)
+        native_out = np.full(layout.out_proj_shape, 8.0)
+        bootstrap = Mamba3BootstrapWeights(
+            x=np.full((16, 8), 1.0),
+            B=np.full((4, 8), 2.0),
+            C=np.full((4, 8), 3.0),
+            out_proj=np.full(layout.out_proj_shape, 4.0),
+        )
+        new_in, new_out, report = apply_mamba3_bootstrap(native_in, native_out, layout, bootstrap)
+        slices = layout.slices()
+        self.assertTrue(np.all(new_in[slices["z"], :] == 7.0))
+        self.assertTrue(np.all(new_in[slices["x"], :] == 1.0))
+        self.assertTrue(np.all(new_in[slices["B"], :] == 2.0))
+        self.assertTrue(np.all(new_in[slices["C"], :] == 3.0))
+        self.assertTrue(np.all(new_in[slices["dd_dt"], :] == 7.0))
+        self.assertTrue(np.all(new_out == 4.0))
+        self.assertEqual(report.written_slices, ("x", "B", "C", "out_proj"))
+
+    def test_mamba3_bootstrap_rejects_wrong_shapes(self):
+        layout = Mamba3Layout(d_model=8, d_state=4, expand=2, headdim=4)
+        native_in = np.zeros(layout.in_proj_shape)
+        native_out = np.zeros(layout.out_proj_shape)
+        bad = Mamba3BootstrapWeights(
+            x=np.zeros((15, 8)),
+            B=np.zeros((4, 8)),
+            C=np.zeros((4, 8)),
+            out_proj=np.zeros(layout.out_proj_shape),
+        )
+        with self.assertRaises(Mamba3InitError):
+            apply_mamba3_bootstrap(native_in, native_out, layout, bad)
 
     def test_scale_gate(self):
         gate = ScaleGate(min_retention=0.8, max_compute_ratio=0.5)

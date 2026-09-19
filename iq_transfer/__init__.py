@@ -1,3 +1,6 @@
+from .mamba3_init import Mamba3BootstrapReport, Mamba3BootstrapWeights, Mamba3InitError, Mamba3Layout, TRANSFORMER_TO_MAMBA3, apply_mamba3_bootstrap
+from .plan import PlanError, TransportPlan
+from .provenance import ParameterProvenance, ProvenanceError, ProvenanceLedger
 from .capture import ActivationTap, CaptureError, TorchActivationCapture
 from .checkpoint import SafetensorsSource
 from .donor import DonorConfig, DonorError, DonorInspector, LayerRef, MappingTensorSource, OperatorRef, TensorSource, ValidationReport
@@ -20,6 +23,17 @@ __all__ = [
     "FunctionalShadow",
     "LayerRef",
     "ManifestError",
+    "Mamba3BootstrapReport",
+    "Mamba3BootstrapWeights",
+    "Mamba3InitError",
+    "Mamba3Layout",
+    "ParameterProvenance",
+    "PlanError",
+    "ProvenanceError",
+    "ProvenanceLedger",
+    "TRANSFORMER_TO_MAMBA3",
+    "TransportPlan",
+    "apply_mamba3_bootstrap",
     "MapDiagnostics",
     "MappingTensorSource",
     "MeasurementPlan",
