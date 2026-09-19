@@ -67,3 +67,57 @@ class DoRALinear(nn.Module):
         self.base.weight.copy_(self.effective_weight())
         self.base.weight.requires_grad_(True)
         return self.base
+
+
+def _resolve_parent_module(model: nn.Module, path: str) -> tuple[nn.Module, str]:
+    parts = path.split(".")
+    if not parts or any(not part for part in parts):
+        raise ValueError(f"invalid module path: {path!r}")
+    current: nn.Module = model
+    for part in parts[:-1]:
+        if part.isdigit():
+            current = current[int(part)]
+        else:
+            child = getattr(current, part, None)
+            if not isinstance(child, nn.Module):
+                raise ValueError(f"module path {path!r} cannot resolve {part!r}")
+            current = child
+    return current, parts[-1]
+
+
+def install_dora(
+    model: nn.Module,
+    module_paths: list[str] | tuple[str, ...],
+    *,
+    rank: int,
+    alpha: float | None = None,
+    dropout: float = 0.0,
+    freeze_base: bool = True,
+) -> tuple[str, ...]:
+    if not module_paths:
+        raise ValueError("at least one module path is required")
+    if len(module_paths) != len(set(module_paths)):
+        raise ValueError("DoRA module paths must be unique")
+
+    staged: list[tuple[nn.Module, str, DoRALinear]] = []
+    for path in module_paths:
+        parent, name = _resolve_parent_module(model, path)
+        child = getattr(parent, name, None)
+        if not isinstance(child, nn.Linear):
+            raise ValueError(f"DoRA target is not nn.Linear: {path!r}")
+        staged.append(
+            (
+                parent,
+                name,
+                DoRALinear(
+                    child,
+                    rank,
+                    alpha=alpha,
+                    dropout=dropout,
+                    freeze_base=freeze_base,
+                ),
+            )
+        )
+    for parent, name, replacement in staged:
+        setattr(parent, name, replacement)
+    return tuple(module_paths)
