@@ -1,3 +1,4 @@
+from .capture_runner import ActivationBundle, CaptureRunnerError, PhiCaptureLayout, build_phi_layer_calibration_from_bundles, capture_iq_activations, capture_phi_activations, iq_capture_taps, load_local_phi_causal_lm, make_activation_pair, phi_capture_taps
 from .calibration import ActivationPair, CalibrationError, CalibrationManifest, CalibrationRecord, CalibrationSplit, LayerCorrespondence, PhiLayerCalibration, PhiLayerMapSolution, merge_coordinate_maps, solve_activation_pair, solve_layer_correspondence, solve_phi_layer_maps
 from .gqa_transport import GQAProjection, GQATransportError, fit_gqa_group_projection
 from .phi_pipeline import PhiDensePlanSpec, PhiLayerMapIds, PhiPipelineError, build_phi_dense_plan_spec, build_phi_dense_transport_plan
@@ -18,6 +19,7 @@ from .slots import SlotError, TargetAssignment, TargetRegistry, TargetSlot, Tran
 from .transport import CoordinateMap, MapDiagnostics, TransportError, fit_ridge_coordinate_map, load_coordinate_map, save_coordinate_map, transport_linear
 
 __all__ = [
+    "ActivationBundle",
     "ActivationPair",
     "ActivationTap",
     "ApplyError",
@@ -28,6 +30,7 @@ __all__ = [
     "CalibrationRecord",
     "CalibrationSplit",
     "CaptureError",
+    "CaptureRunnerError",
     "CheckpointFile",
     "CoordinateMap",
     "DonorConfig",
@@ -62,6 +65,7 @@ __all__ = [
     "MeasurementPlan",
     "OperatorRef",
     "Phi4Inspector",
+    "PhiCaptureLayout",
     "PhiDensePlanSpec",
     "PhiLayerCalibration",
     "PhiLayerMapIds",
@@ -84,16 +88,23 @@ __all__ = [
     "TransportExecutionReport",
     "ValidationReport",
     "build_donor_manifest",
+    "build_phi_layer_calibration_from_bundles",
     "build_phi_dense_plan_spec",
     "build_phi_dense_transport_plan",
     "execute_transport_plan",
+    "capture_iq_activations",
+    "capture_phi_activations",
     "extract_shadow",
     "fit_gqa_group_projection",
     "fit_ridge_coordinate_map",
+    "iq_capture_taps",
     "load_capture_records",
+    "load_local_phi_causal_lm",
+    "make_activation_pair",
     "load_coordinate_map",
     "match_layers_monotonic",
     "merge_coordinate_maps",
+    "phi_capture_taps",
     "pool_activations_by_byte_spans",
     "save_capture_records",
     "solve_activation_pair",
