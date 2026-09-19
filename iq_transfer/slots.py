@@ -72,7 +72,13 @@ class TargetAssignment:
             if not self.source_donor_id or not self.source_operator:
                 raise SlotError(f"{self.transfer_method.value} requires source_donor_id and source_operator")
         if self.transfer_method is TransferMethod.OPERATOR_TRANSPORT:
-            if not self.input_map_id or not self.output_map_id:
+            if self.target_slot is TargetSlot.EMBEDDING:
+                if not self.output_map_id:
+                    raise SlotError("embedding operator_transport requires output_map_id")
+            elif self.target_slot is TargetSlot.LM_HEAD:
+                if not self.input_map_id:
+                    raise SlotError("LM-head operator_transport requires input_map_id")
+            elif not self.input_map_id or not self.output_map_id:
                 raise SlotError("operator_transport requires input_map_id and output_map_id")
         if self.transfer_method is TransferMethod.RECIPIENT_NATIVE and any(
             value is not None
