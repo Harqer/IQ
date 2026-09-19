@@ -1,3 +1,4 @@
+from .executor import DonorRuntime, ExecutionError, TransportExecutionReport, execute_transport_plan
 from .apply import ApplyError, ParameterUpdate, apply_parameter_updates
 from .alignment import AlignmentError, ByteSpan, PairedSpanActivations, TokenByteSpan, align_token_activations_by_bytes, pool_activations_by_byte_spans
 from .mamba3_init import Mamba3BootstrapReport, Mamba3BootstrapWeights, Mamba3InitError, Mamba3Layout, TRANSFORMER_TO_MAMBA3, apply_mamba3_bootstrap
@@ -25,6 +26,8 @@ __all__ = [
     "DonorError",
     "DonorInspector",
     "DonorManifest",
+    "DonorRuntime",
+    "ExecutionError",
     "FunctionalShadow",
     "LayerRef",
     "ManifestError",
@@ -62,8 +65,10 @@ __all__ = [
     "TransferMethod",
     "TransferMetrics",
     "TransportError",
+    "TransportExecutionReport",
     "ValidationReport",
     "build_donor_manifest",
+    "execute_transport_plan",
     "extract_shadow",
     "fit_ridge_coordinate_map",
     "load_capture_records",
