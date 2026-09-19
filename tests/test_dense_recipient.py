@@ -6,7 +6,7 @@ from pathlib import Path
 
 import torch
 
-from iq_model import DoRALinear, IQForCausalLM, IQModelConfig
+from iq_model import DoRALinear, IQForCausalLM, IQModelConfig, install_dora
 from iq_training import load_checkpoint, save_checkpoint
 from iq_transfer import ApplyError, ParameterUpdate, apply_parameter_updates
 
@@ -62,6 +62,14 @@ class DenseRecipientTests(unittest.TestCase):
         merged = dora.merge_into_base_()
         actual = merged(x)
         self.assertTrue(torch.allclose(actual, expected, atol=1e-6, rtol=1e-5))
+
+    def test_install_dora_replaces_selected_linear_only(self):
+        model = IQForCausalLM(self.config())
+        installed = install_dora(model, ["blocks.0.attn.q_proj", "blocks.0.mlp.up_proj"], rank=2)
+        self.assertEqual(installed, ("blocks.0.attn.q_proj", "blocks.0.mlp.up_proj"))
+        self.assertIsInstance(model.blocks[0].attn.q_proj, DoRALinear)
+        self.assertIsInstance(model.blocks[0].mlp.up_proj, DoRALinear)
+        self.assertIsInstance(model.blocks[0].attn.k_proj, torch.nn.Linear)
 
     def test_parameter_updates_validate_atomically(self):
         model = IQForCausalLM(self.config())
@@ -120,6 +128,41 @@ class DenseRecipientTests(unittest.TestCase):
             self.assertEqual(metadata.step, 1)
             self.assertEqual(extra["tag"], "unit")
             self.assertTrue(torch.equal(baseline_loss, resumed_loss))
+
+
+    def test_checkpoint_supports_tied_embeddings(self):
+        torch.manual_seed(4)
+        cfg = IQModelConfig(
+            vocab_size=37,
+            hidden_size=16,
+            num_hidden_layers=1,
+            num_attention_heads=4,
+            num_key_value_heads=2,
+            intermediate_size=32,
+            max_position_embeddings=16,
+            tie_word_embeddings=True,
+        )
+        model = IQForCausalLM(cfg)
+        optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "tied"
+            save_checkpoint(
+                path,
+                model=model,
+                optimizer=optimizer,
+                model_config_hash=cfg.fingerprint,
+                step=0,
+                consumed_tokens=0,
+            )
+            restored = IQForCausalLM(cfg)
+            restored_optimizer = torch.optim.AdamW(restored.parameters(), lr=1e-3)
+            load_checkpoint(
+                path,
+                model=restored,
+                optimizer=restored_optimizer,
+                expected_model_config_hash=cfg.fingerprint,
+            )
+        self.assertIs(restored.embed_tokens.weight, restored.lm_head.weight)
 
 
 if __name__ == "__main__":
