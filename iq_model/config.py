@@ -70,6 +70,31 @@ class IQModelConfig:
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
 
+    @classmethod
+    def from_dict(cls, data: dict[str, object]) -> "IQModelConfig":
+        try:
+            return cls(**data)
+        except TypeError as exc:
+            raise IQConfigError(f"invalid IQ model config: {exc}") from exc
+
+    @classmethod
+    def from_json(cls, path: str) -> "IQModelConfig":
+        from pathlib import Path
+        try:
+            data = json.loads(Path(path).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise IQConfigError(f"invalid IQ model config file: {path}") from exc
+        if not isinstance(data, dict):
+            raise IQConfigError("IQ model config JSON must contain an object")
+        return cls.from_dict(data)
+
+    def write_json(self, path: str) -> None:
+        from pathlib import Path
+        Path(path).write_text(
+            json.dumps(self.to_dict(), sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+
     @property
     def fingerprint(self) -> str:
         payload = json.dumps(self.to_dict(), sort_keys=True, separators=(",", ":")).encode("utf-8")
