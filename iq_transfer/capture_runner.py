@@ -179,6 +179,11 @@ def _prepare_batch(
         if not isinstance(position_ids, torch.Tensor) or position_ids.shape != input_ids.shape:
             raise CaptureRunnerError("position_ids must match input_ids shape")
         kwargs["position_ids"] = position_ids.to(device)
+    if "document_ids" in batch:
+        document_ids = batch["document_ids"]
+        if not isinstance(document_ids, torch.Tensor) or document_ids.shape != input_ids.shape:
+            raise CaptureRunnerError("document_ids must match input_ids shape")
+        kwargs["document_ids"] = document_ids.to(device)
     return kwargs, mask
 
 
@@ -223,12 +228,15 @@ def _run_capture(
     model.eval()
     with TorchActivationCapture(model, taps) as capture, torch.no_grad():
         for batch in batch_list:
-            kwargs, mask = _prepare_batch(batch, device, allow_padding=phi)
+            kwargs, mask = _prepare_batch(batch, device, allow_padding=True)
             masks.append(mask)
             if phi:
+                if "document_ids" in kwargs:
+                    raise CaptureRunnerError(
+                        "Phi calibration batches must not use packed document_ids"
+                    )
                 model(**kwargs, use_cache=False)
             else:
-                kwargs.pop("attention_mask", None)
                 model(**kwargs)
     return capture.records(), masks
 
