@@ -72,6 +72,19 @@ class TrainingTests(unittest.TestCase):
         self.assertEqual(metrics.tokens, 10)
         self.assertFalse(torch.equal(before, model.blocks[0].attn.q_proj.weight))
 
+        masked_metrics = train_step(
+            model,
+            optimizer,
+            [
+                {
+                    "input_ids": torch.tensor([[1, 2, 3, 4, 5]]),
+                    "attention_mask": torch.tensor([[1, 1, 1, 0, 0]]),
+                    "document_ids": torch.tensor([[0, 0, 0, 1, 1]]),
+                }
+            ],
+        )
+        self.assertEqual(masked_metrics.tokens, 3)
+
         with self.assertRaises(TrainingError):
             train_step(
                 model,

@@ -46,6 +46,70 @@ class DenseRecipientTests(unittest.TestCase):
             logits_b = model(b).logits
         self.assertTrue(torch.allclose(logits_a[:, :4], logits_b[:, :4], atol=1e-6, rtol=1e-5))
 
+    def test_padding_and_packed_document_attention_are_isolated(self):
+        torch.manual_seed(11)
+        model = IQForCausalLM(self.config()).eval()
+
+        a = torch.tensor([[1, 2, 3, 4, 5, 6]])
+        b = torch.tensor([[9, 8, 7, 4, 5, 6]])
+        docs = torch.tensor([[0, 0, 0, 1, 1, 1]])
+        with torch.no_grad():
+            logits_a = model(a, document_ids=docs).logits
+            logits_b = model(b, document_ids=docs).logits
+        self.assertTrue(
+            torch.allclose(
+                logits_a[:, 3:],
+                logits_b[:, 3:],
+                atol=1e-6,
+                rtol=1e-5,
+            )
+        )
+
+        padded_a = torch.tensor([[1, 2, 3, 4]])
+        padded_b = torch.tensor([[1, 2, 9, 8]])
+        mask = torch.tensor([[1, 1, 0, 0]])
+        with torch.no_grad():
+            valid_a = model(
+                padded_a,
+                attention_mask=mask,
+            ).logits[:, :2]
+            valid_b = model(
+                padded_b,
+                attention_mask=mask,
+            ).logits[:, :2]
+        self.assertTrue(
+            torch.allclose(
+                valid_a,
+                valid_b,
+                atol=1e-6,
+                rtol=1e-5,
+            )
+        )
+
+        labels = padded_a.clone()
+        loss = model(
+            padded_a,
+            labels=labels,
+            attention_mask=mask,
+        ).loss
+        manual = torch.nn.functional.cross_entropy(
+            model(
+                padded_a,
+                attention_mask=mask,
+            ).logits[:, :1].reshape(
+                -1,
+                self.config().vocab_size,
+            ),
+            labels[:, 1:2].reshape(-1),
+        )
+        self.assertTrue(
+            torch.allclose(loss, manual, atol=1e-6, rtol=1e-5)
+        )
+
+        bad_docs = torch.tensor([[0, 0, 1, 0, 0, 0]])
+        with self.assertRaises(ValueError):
+            model(a, document_ids=bad_docs)
+
     def test_dora_zero_delta_preserves_base_and_merge_parity(self):
         torch.manual_seed(2)
         base = torch.nn.Linear(8, 6, bias=False)

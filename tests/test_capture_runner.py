@@ -128,16 +128,16 @@ class CaptureRunnerTests(unittest.TestCase):
         self.assertEqual(calibration.attn_in.source_fit.shape, (4, 8))
         self.assertEqual(calibration.attn_in.target_fit.shape, (4, 8))
 
-        with self.assertRaises(CaptureRunnerError):
-            capture_iq_activations(
-                iq,
-                [
-                    {
-                        "input_ids": torch.tensor([[1, 2, 0]]),
-                        "attention_mask": torch.tensor([[1, 1, 0]]),
-                    }
-                ],
-            )
+        padded = capture_iq_activations(
+            iq,
+            [
+                {
+                    "input_ids": torch.tensor([[1, 2, 0]]),
+                    "attention_mask": torch.tensor([[1, 1, 0]]),
+                }
+            ],
+        )
+        self.assertEqual(padded.sample_count, 2)
 
 
 if __name__ == "__main__":

@@ -33,7 +33,7 @@ def _require_torch():
 
 def _validate_batches(batches: Sequence[Mapping[str, Any]]) -> None:
     torch = _require_torch()
-    allowed = {"input_ids", "attention_mask", "position_ids"}
+    allowed = {"input_ids", "attention_mask", "position_ids", "document_ids"}
     for index, batch in enumerate(batches):
         unknown = sorted(set(batch) - allowed)
         if unknown:
@@ -43,7 +43,7 @@ def _validate_batches(batches: Sequence[Mapping[str, Any]]) -> None:
             raise BatchArtifactError(f"batch {index} input_ids must be a rank-2 tensor")
         if ids.dtype not in (torch.int32, torch.int64):
             raise BatchArtifactError(f"batch {index} input_ids must be integer typed")
-        for optional in ("attention_mask", "position_ids"):
+        for optional in ("attention_mask", "position_ids", "document_ids"):
             value = batch.get(optional)
             if value is None:
                 continue
@@ -117,7 +117,7 @@ def load_token_batches(path: str | Path) -> TokenBatchArtifact:
             raise BatchArtifactError(f"batch {i} field list is invalid")
         batch: dict[str, Any] = {}
         for name in names:
-            if name not in {"input_ids", "attention_mask", "position_ids"}:
+            if name not in {"input_ids", "attention_mask", "position_ids", "document_ids"}:
                 raise BatchArtifactError(f"batch {i} contains unsupported field {name!r}")
             key = f"batch/{i:06d}/{name}"
             expected.add(key)
