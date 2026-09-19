@@ -1,19 +1,33 @@
 from __future__ import annotations
 
+import tempfile
 import unittest
+from pathlib import Path
 import numpy as np
 
 from iq_transfer import (
+    ActivationTap,
+    CaptureError,
     CoordinateMap,
     DonorError,
+    ManifestError,
     MappingTensorSource,
     MeasurementPlan,
     Phi4Inspector,
     ScaleGate,
+    SlotError,
+    TargetAssignment,
+    TargetRegistry,
+    TargetSlot,
+    TorchActivationCapture,
+    TransferMethod,
     TransferMetrics,
+    build_donor_manifest,
     extract_shadow,
     fit_ridge_coordinate_map,
+    load_coordinate_map,
     match_layers_monotonic,
+    save_coordinate_map,
     shadow_distance,
     transport_linear,
 )
@@ -29,6 +43,8 @@ class TransferTests(unittest.TestCase):
             "num_hidden_layers": 2,
             "num_attention_heads": 4,
             "num_key_value_heads": 2,
+            "vocab_size": 32,
+            "torch_dtype": "float32",
         }
 
     def phi_source(self):
@@ -50,6 +66,8 @@ class TransferTests(unittest.TestCase):
         self.assertEqual(refs[0].shape, (8, 8))
         self.assertEqual(refs[1].shape, (4, 8))
         self.assertEqual(refs[4].shape, (12, 8))
+        self.assertEqual([layer.index for layer in inspector.layers()], [0, 1])
+        self.assertTrue(inspector.validate_checkpoint(self.phi_source()).ok)
 
     def test_phi4_rejects_wrong_checkpoint_shape(self):
         source = self.phi_source()
@@ -58,6 +76,51 @@ class TransferTests(unittest.TestCase):
         inspector = Phi4Inspector.from_config_mapping(self.phi_config())
         with self.assertRaises(DonorError):
             inspector.operators(MappingTensorSource(broken))
+        self.assertFalse(inspector.validate_checkpoint(MappingTensorSource(broken)).ok)
+
+    def test_manifest_is_deterministic_and_fails_closed_without_checkpoint_files(self):
+        inspector = Phi4Inspector.from_config_mapping(self.phi_config())
+        source = self.phi_source()
+        kwargs = dict(
+            donor_id="phi-test",
+            checkpoint_revision="deadbeef",
+            tokenizer_hash="tok123",
+            license="MIT-test-only",
+            operator_layout_version="phi3-fused-v1",
+            source_uri="memory://phi-test",
+        )
+        with self.assertRaises(ManifestError):
+            build_donor_manifest(inspector.config, source, **kwargs)
+        a = build_donor_manifest(inspector.config, source, allow_metadata_only=True, **kwargs)
+        b = build_donor_manifest(inspector.config, source, allow_metadata_only=True, **kwargs)
+        self.assertEqual(a.fingerprint, b.fingerprint)
+        self.assertEqual(a.vocab_size, 32)
+        self.assertEqual(len(a.tensors), 8)
+
+    def test_target_registry_prevents_multiple_owners(self):
+        assignment = TargetAssignment(
+            target_module_path="blocks.0.attn.q_proj",
+            target_slot=TargetSlot.ATTN_Q,
+            target_shape=(8, 8),
+            transfer_method=TransferMethod.OPERATOR_TRANSPORT,
+            source_donor_id="phi",
+            source_layer=0,
+            source_operator="attn.q",
+            input_map_id="resid-0",
+            output_map_id="q-0",
+        )
+        registry = TargetRegistry([assignment])
+        self.assertIs(registry.get("blocks.0.attn.q_proj", TargetSlot.ATTN_Q), assignment)
+        with self.assertRaises(SlotError):
+            registry.add(assignment)
+        with self.assertRaises(SlotError):
+            TargetAssignment(
+                target_module_path="exec.energy",
+                target_slot=TargetSlot.RESIDUAL,
+                target_shape=(8, 8),
+                transfer_method=TransferMethod.RECIPIENT_NATIVE,
+                source_donor_id="phi",
+            )
 
     def test_shadow_is_architecture_width_independent(self):
         rng = np.random.default_rng(2)
@@ -84,13 +147,38 @@ class TransferTests(unittest.TestCase):
         self.assertEqual(mapping[0], 0)
         self.assertEqual(mapping[1], 3)
 
-    def test_ridge_map_recovers_paired_coordinates(self):
+    def test_ridge_map_recovers_paired_coordinates_and_reports_diagnostics(self):
         rng = np.random.default_rng(4)
         xs = rng.normal(size=(80, 6))
         p = rng.normal(size=(6, 4))
         xt = xs @ p
-        learned = fit_ridge_coordinate_map(xs, xt, ridge=1e-6)
+        learned = fit_ridge_coordinate_map(
+            xs[:60],
+            xt[:60],
+            ridge=1e-6,
+            source_space="phi.residual.0",
+            target_space="iq.residual.0",
+            validation_source=xs[60:],
+            validation_target=xt[60:],
+        )
         self.assertTrue(np.allclose(xs @ learned.matrix, xt, atol=1e-4))
+        self.assertEqual(learned.source_space, "phi.residual.0")
+        self.assertIsNotNone(learned.diagnostics)
+        self.assertLess(learned.diagnostics.validation_rmse, 1e-4)
+
+    def test_coordinate_map_artifact_round_trip(self):
+        try:
+            import safetensors  # noqa: F401
+        except ImportError:
+            self.skipTest("safetensors not installed")
+        coordinate_map = CoordinateMap(np.eye(3), 1e-3, "source", "target")
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp) / "map"
+            save_coordinate_map(coordinate_map, base)
+            loaded = load_coordinate_map(base)
+            self.assertTrue(np.array_equal(loaded.matrix, coordinate_map.matrix))
+            self.assertEqual(loaded.source_space, "source")
+            self.assertEqual(loaded.target_space, "target")
 
     def test_transport_linear_preserves_function(self):
         rng = np.random.default_rng(5)
@@ -107,6 +195,34 @@ class TransferTests(unittest.TestCase):
         y_expected = (x_s @ ws.T) @ pout
         y_actual = x_t @ wt.T
         self.assertTrue(np.allclose(y_actual, y_expected, atol=1e-9))
+
+    def test_torch_activation_capture_is_real_and_removes_hooks(self):
+        try:
+            import torch
+            from torch import nn
+        except ImportError:
+            self.skipTest("PyTorch not installed")
+
+        class Model(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.layers = nn.ModuleList([nn.Linear(3, 4), nn.Linear(4, 2)])
+
+            def forward(self, x):
+                return self.layers[1](torch.relu(self.layers[0](x)))
+
+        model = Model()
+        tap = ActivationTap("hidden", "layers.0", "output")
+        capture = TorchActivationCapture(model, [tap])
+        with capture:
+            _ = model(torch.ones(2, 3))
+        records = capture.records()
+        self.assertEqual(records["hidden"][0].shape, (2, 4))
+        before = len(records["hidden"])
+        _ = model(torch.ones(2, 3))
+        self.assertEqual(len(capture.records()["hidden"]), before)
+        with self.assertRaises(CaptureError):
+            TorchActivationCapture(model, [ActivationTap("x", "missing")]).__enter__()
 
     def test_scale_gate(self):
         gate = ScaleGate(min_retention=0.8, max_compute_ratio=0.5)

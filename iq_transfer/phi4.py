@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .donor import DonorConfig, DonorError, OperatorRef, TensorSource
+from .donor import DonorConfig, DonorError, LayerRef, OperatorRef, TensorSource, ValidationReport
 
 
 class Phi4Inspector:
@@ -20,6 +20,16 @@ class Phi4Inspector:
     @classmethod
     def from_config_mapping(cls, data):
         return cls(DonorConfig.from_mapping(data))
+
+    def layers(self) -> tuple[LayerRef, ...]:
+        return tuple(LayerRef(i, f"model.layers.{i}") for i in range(self.config.num_hidden_layers))
+
+    def validate_checkpoint(self, source: TensorSource) -> ValidationReport:
+        try:
+            self.operators(source)
+        except DonorError as exc:
+            return ValidationReport(errors=(str(exc),))
+        return ValidationReport()
 
     def operators(self, source: TensorSource) -> tuple[OperatorRef, ...]:
         refs: list[OperatorRef] = []

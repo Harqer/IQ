@@ -17,6 +17,7 @@ class SafetensorsSource:
 
         index_path = self.model_dir / "model.safetensors.index.json"
         single_path = self.model_dir / "model.safetensors"
+        self._index_path: Path | None = None
         if index_path.exists():
             with index_path.open("r", encoding="utf-8") as handle:
                 index = json.load(handle)
@@ -24,6 +25,7 @@ class SafetensorsSource:
             if not isinstance(weight_map, dict) or not weight_map:
                 raise DonorError("invalid safetensors index: missing weight_map")
             self._weight_map = {str(k): str(v) for k, v in weight_map.items()}
+            self._index_path = index_path
         elif single_path.exists():
             self._weight_map = self._scan_single(single_path)
         else:
@@ -44,6 +46,12 @@ class SafetensorsSource:
 
     def keys(self) -> tuple[str, ...]:
         return tuple(self._weight_map)
+
+    def checkpoint_files(self) -> tuple[Path, ...]:
+        files = {self.model_dir / shard for shard in self._weight_map.values()}
+        if self._index_path is not None:
+            files.add(self._index_path)
+        return tuple(sorted(files, key=lambda p: p.name))
 
     def _path(self, key: str) -> Path:
         try:
