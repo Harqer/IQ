@@ -1,3 +1,6 @@
+from .calibration import CalibrationError, CalibrationManifest, CalibrationSample, build_calibration_manifest
+from .dense_plan import DenseLayerMapIds, DensePlanError, build_phi_dense_transport_plan
+from .phi_snapshot import LocalPhiSnapshot, PhiSnapshotError, load_local_phi_transformers, open_local_phi_snapshot, tokenizer_asset_hash
 from .executor import DonorRuntime, ExecutionError, TransportExecutionReport, execute_transport_plan
 from .apply import ApplyError, ParameterUpdate, apply_parameter_updates
 from .alignment import AlignmentError, ByteSpan, PairedSpanActivations, TokenByteSpan, align_token_activations_by_bytes, pool_activations_by_byte_spans
@@ -19,9 +22,14 @@ __all__ = [
     "ApplyError",
     "AlignmentError",
     "ByteSpan",
+    "CalibrationError",
+    "CalibrationManifest",
+    "CalibrationSample",
     "CaptureError",
     "CheckpointFile",
     "CoordinateMap",
+    "DenseLayerMapIds",
+    "DensePlanError",
     "DonorConfig",
     "DonorError",
     "DonorInspector",
@@ -30,6 +38,7 @@ __all__ = [
     "ExecutionError",
     "FunctionalShadow",
     "LayerRef",
+    "LocalPhiSnapshot",
     "ManifestError",
     "Mamba3BootstrapReport",
     "Mamba3BootstrapWeights",
@@ -51,6 +60,7 @@ __all__ = [
     "MeasurementPlan",
     "OperatorRef",
     "Phi4Inspector",
+    "PhiSnapshotError",
     "SafetensorsSource",
     "ScaleGate",
     "ShadowError",
@@ -67,16 +77,21 @@ __all__ = [
     "TransportError",
     "TransportExecutionReport",
     "ValidationReport",
+    "build_calibration_manifest",
     "build_donor_manifest",
+    "build_phi_dense_transport_plan",
     "execute_transport_plan",
     "extract_shadow",
     "fit_ridge_coordinate_map",
     "load_capture_records",
+    "load_local_phi_transformers",
     "load_coordinate_map",
     "match_layers_monotonic",
+    "open_local_phi_snapshot",
     "pool_activations_by_byte_spans",
     "save_capture_records",
     "save_coordinate_map",
     "shadow_distance",
+    "tokenizer_asset_hash",
     "transport_linear",
 ]
