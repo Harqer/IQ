@@ -7,6 +7,8 @@ import numpy as np
 
 from iq_transfer import (
     ActivationTap,
+    AlignmentError,
+    ByteSpan,
     CaptureError,
     CoordinateMap,
     DonorError,
@@ -25,17 +27,21 @@ from iq_transfer import (
     SlotError,
     TargetAssignment,
     TargetRegistry,
+    TokenByteSpan,
     TargetSlot,
     TorchActivationCapture,
     TransportPlan,
     TransferMethod,
     TransferMetrics,
+    align_token_activations_by_bytes,
     apply_mamba3_bootstrap,
     build_donor_manifest,
     extract_shadow,
     fit_ridge_coordinate_map,
+    load_capture_records,
     load_coordinate_map,
     match_layers_monotonic,
+    save_capture_records,
     save_coordinate_map,
     shadow_distance,
     transport_linear,
@@ -319,6 +325,48 @@ class TransferTests(unittest.TestCase):
         )
         with self.assertRaises(Mamba3InitError):
             apply_mamba3_bootstrap(native_in, native_out, layout, bad)
+
+    def test_cross_tokenizer_byte_alignment_uses_overlap_weighting(self):
+        source = np.array([[1.0], [3.0]])
+        source_spans = [TokenByteSpan(0, 0, 2), TokenByteSpan(1, 2, 4)]
+        target = np.array([[0.0], [8.0 / 3.0]])
+        target_spans = [TokenByteSpan(0, 0, 1), TokenByteSpan(1, 1, 4)]
+        canonical = [ByteSpan(0, 4, "statement")]
+        aligned = align_token_activations_by_bytes(source, source_spans, target, target_spans, canonical)
+        self.assertTrue(np.allclose(aligned.source, [[2.0]]))
+        self.assertTrue(np.allclose(aligned.target, [[2.0]]))
+        with self.assertRaises(AlignmentError):
+            align_token_activations_by_bytes(
+                source, source_spans, target[:1], [TokenByteSpan(0, 0, 1)], [ByteSpan(0, 4)]
+            )
+
+    def test_activation_capture_artifact_round_trip(self):
+        try:
+            import torch
+            from torch import nn
+            import safetensors  # noqa: F401
+        except ImportError:
+            self.skipTest("PyTorch/safetensors not installed")
+
+        model = nn.Linear(3, 2)
+        # Capture from an explicit child module path.
+        class Wrapper(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.proj = model
+
+            def forward(self, x):
+                return self.proj(x)
+
+        wrapper = Wrapper()
+        capture = TorchActivationCapture(wrapper, [ActivationTap("out", "proj")])
+        with capture:
+            _ = wrapper(torch.ones(2, 3))
+        with tempfile.TemporaryDirectory() as tmp:
+            base = str(Path(tmp) / "capture")
+            save_capture_records(capture.records(), base)
+            loaded = load_capture_records(base)
+        self.assertTrue(torch.equal(loaded["out"][0], capture.records()["out"][0]))
 
     def test_scale_gate(self):
         gate = ScaleGate(min_retention=0.8, max_compute_ratio=0.5)
