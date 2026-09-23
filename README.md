@@ -101,6 +101,14 @@ bash scripts/install_model_runtime.sh
 
 This installs Torch first, then builds the exact pinned Mamba-3 source revision with `--no-build-isolation`, and verifies that the CUDA MIMO kernel is available. The verifier fails rather than switching IQ to SISO.
 
+Before promoting Mamba-3 inference on the H200 training/decode target, run:
+
+```bash
+python scripts/verify_mamba3_mimo_h200.py
+```
+
+That gate exercises the full 4096-wide rank-4 BF16 MIMO block, backward gradients, pure recurrent decode, and mixed prefill+decode parity. A failure blocks deployment; it does not change the architecture to SISO.
+
 - PyTorch autograd
 - NVIDIA Megatron-Core for distributed parallelism
 - Transformer Engine where numerically validated
