@@ -109,6 +109,10 @@ def require_mamba3_mimo_runtime(
     *,
     require_pinned_source: bool = True,
 ) -> Mamba3MIMORuntimeInfo:
+    if device is not None and device.type != "cuda":
+        raise Mamba3MIMORuntimeError(
+            "IQ Mamba-3 MIMO requires a CUDA target device; no CPU/SISO fallback is permitted"
+        )
     info = inspect_mamba3_mimo_runtime(device)
     if not info.cuda_available:
         raise Mamba3MIMORuntimeError(
