@@ -148,7 +148,7 @@ Never transplanted:
 - reasoning-depth spectral parameters
 - hyperbolic executive geometry parameters
 - concept mapper
-- NSA selection/compression parameters
+- compressed-context memory/indexer parameters
 - Differential Attention lambda/second-stream-only parameters
 - Mamba-3 recurrence-specific parameters without a justified source mapping
 
@@ -352,7 +352,7 @@ Capture corresponding target spaces plus:
 
 - Mamba-3 x/B/C projections
 - Mamba recurrent state summaries
-- NSA branch outputs
+- compressed-context service outputs
 - global attention output
 - executive state/energy once those modules exist
 
@@ -476,7 +476,7 @@ When token spaces differ, use the cross-tokenizer policy and do not compare logi
 
 ## 12. Transformer -> Mamba-3 bootstrap
 
-The IQ Mamba-3 branch is a sidecar to attention, so bootstrap must preserve the Transformer path.
+Mamba-3 MIMO becomes the primary recurrent reasoning/state path after bootstrap. The dense Transformer remains the retention teacher and exact context/comparison path during transition.
 
 The official Mamba-3 projection packs:
 
@@ -550,25 +550,41 @@ L_mamba =
 
 Increase the Mamba residual gate only after held-out block-output and model-level retention gates pass.
 
-## 13. NSA initialization
+## 13. DeepSeek V4/V4.1-style compressed context initialization
 
-NSA retains transported Q/K/V/O projections.
+The routed context service follows the newer DeepSeek compressed-attention direction: sliding-window local attention plus compressed long-range KV memory and learned sparse indexing.
+
+Keep the dense transported Transformer path as the teacher/exact-comparison path during transition.
+
+Compatible initialization:
+
+- transport/retain query projections where the target query space is compatible;
+- transport/retain output projection structure where compatible;
+- fit a dedicated donor-residual -> shared compressed-KV map from calibration activations;
+- initialize the sliding-window branch from the dense attention teacher where shapes permit.
 
 Recipient-native parameters:
 
-- compression projections
-- block/token selection scoring
-- compressed-memory construction
-- sparse indexing metadata
+- compressed-KV constructor/compressor;
+- learned sparse indexer and top-k selection projections;
+- heavily compressed/global memory constructor;
+- attention-sink parameters;
+- hierarchical indexer parameters, if enabled;
+- cross-layer index-cache/reuse policy, if enabled.
 
-Bootstrap NSA against the donor/full-attention branch:
+Do **not** average donor K and V or copy them row-wise into a shared K=V compressed memory. Fit the compressed memory representation functionally from paired activations.
 
-- output distillation
-- attention-mass coverage diagnostics
-- exact causal-mask tests
-- long-context retrieval evaluation
+Train against the dense donor/recipient teacher using:
 
-Do not train a dense fallback and call it NSA.
+- context-service output distillation;
+- selected-context recall against dense attention mass;
+- long-range retrieval loss;
+- causal visibility invariants for compressed entries;
+- indexer top-k recall/overlap;
+- compression reconstruction loss;
+- exact pairwise/few-shot control tasks that must route to `DENSE`.
+
+Hierarchical indexing and cross-layer selection reuse are performance optimizations, not excuses to change behavior. Promote them only after they preserve retrieval quality and improve measured throughput/latency.
 
 ## 14. Periodic global attention
 
@@ -577,7 +593,7 @@ Global anchor blocks retain a direct transported Transformer attention path.
 Default cadence:
 
 ```text
-3 NSA-hybrid blocks : 1 global-hybrid block
+compressed-context blocks with periodic dense/global anchors
 ```
 
 The cadence remains a config, not a hardcoded architectural constant.
@@ -700,7 +716,7 @@ Initial policy:
 
 ```text
 Phi -> dense base
-Mamba bootstrap -> Mamba sidecar
+Mamba bootstrap -> Mamba-3 MIMO primary recurrent path
 Mellum -> code DoRA + MoE + MTP
 IQ-native -> executive/energy/halting/concept modules
 ```
@@ -767,7 +783,7 @@ Keep base mostly frozen.
 
 Exit: donor-retention and adaptation-compute gates pass.
 
-### T3 — Mamba-3 sidecar bootstrap
+### T3 — Mamba-3 MIMO primary-path bootstrap
 
 - initialize x/B/C/out from attention transport
 - official initialization for recurrence-only parameters
@@ -777,10 +793,10 @@ Exit: donor-retention and adaptation-compute gates pass.
 
 Exit: hybrid retains exact retrieval while reducing long-horizon state/compute cost relative to the dense baseline.
 
-### T4 — NSA + global anchors
+### T4 — compressed context service + dense/global anchors
 
 - keep transported attention projections
-- train NSA selection/compression
+- train compressed-KV construction and learned sparse indexing
 - retain periodic global attention
 - benchmark attention cadence
 

@@ -12,7 +12,7 @@ tokens
 embeddings + token position + reasoning-depth encoding
   ↓
 context state ───────────────► Context Router
-  │                            OFF / NSA / DENSE
+  │                            OFF / COMPRESSED / DENSE
   │                                  │
   │                          retrieved/comparison
   │                               context
@@ -39,7 +39,7 @@ context state ───────────────► Context Router
 
 - **Mamba-3 MIMO (rank 4)** is the primary recurrent state/reasoning path; MIMO is not optional and IQ has no silent SISO fallback.
 - **Transformer attention** remains the exact content-addressable context/comparison path for identifiers, code dependencies, few-shot induction, and needle-in-context retrieval.
-- **Native Sparse Attention** handles most token-level context efficiently.
+- **DeepSeek V4-family CSA/HCA compressed context attention** handles long-range context: a local sliding window plus compressed KV memory with learned sparse indexing; dense attention is reserved for strict pairwise/few-shot comparison.
 - **Periodic global attention** preserves high-recall access to the complete context.
 - **Differential Attention** is reserved for outer-loop executive reasoning.
 - **SwiGLU** is the dense inner FFN; routed heterogeneous MoE is introduced later in the outer path.
