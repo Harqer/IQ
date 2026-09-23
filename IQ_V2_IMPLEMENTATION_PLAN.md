@@ -60,6 +60,7 @@ min_outer_steps: 1
 mamba3_state_size: 128
 mamba3_head_dim: 64
 mamba3_mimo_rank: 4
+mamba3_chunk_size_bf16: 16
 global_attention_period: 4
 hybrid_fusion: parallel_gated_residual
 executive_geometry: euclidean
@@ -215,40 +216,46 @@ IQ v2 is explicitly a **Mamba-3 + Transformer hybrid**. Mamba-3 is never treated
 - periodic global attention: explicit full-context anchor blocks for high-recall retrieval.
 - Differential Attention: outer-loop controller attention over compressed/global memory, not a replacement for token-level attention.
 
-The default topology is parallel fusion within each inner block plus a periodic global Transformer anchor:
+The production topology is **Mamba-dominant**. Transformer attention is a context/comparison service invoked where explicit token addressing is useful; it is not an equal always-on reasoning branch.
 
 ```text
-x
- -> RMSNorm
- -> +----------------------+-------------------------+
-    | Mamba-3 state path   | Transformer path        |
-    | complex/MIMO SSM     | NSA or global attention |
-    +----------------------+-------------------------+
-                    |
-             bounded residual fusion
-                    |
-                 residual
-                    |
-                RMSNorm
-                    |
-              dense SwiGLU
-                    |
-        executive-latent injection
+token/residual state
+        |
+        +------------------------------+
+        |                              |
+        |                    Context Router
+        |                    OFF / NSA / DENSE
+        |                              |
+        |                     retrieved/comparison
+        |                          context c
+        |                              |
+        +------------> x + W_c c + W_z z_exec
+                               |
+                               v
+                         Mamba-3 MIMO
+                    recurrent state evolution
+                               |
+                            residual
+                               |
+                            SwiGLU
+                               |
+                         next block/state
 ```
 
-Every fourth block is a global-attention anchor by default; the three intervening blocks use NSA. The ratio is configurable and must be evaluated on code dependency retrieval, multi-needle recall, long-context perplexity, KV-memory use, recurrent-state memory, and tokens/sec.
+Periodic global-attention anchors remain as a safety floor so router errors cannot permanently remove exact addressable memory. The anchor cadence is configurable and evaluated jointly with event-driven OFF/NSA/DENSE routing.
 
-Use independent bounded residual gates rather than a zero-sum mixer:
+The context injection is bounded but not zero-sum:
 
 ```text
-m = Mamba3(norm(x))
-a = Attention(norm(x))
-y = x + alpha_m * m + alpha_a * a
-alpha_m = alpha_m_max * sigmoid(g_m)
-alpha_a = alpha_a_max * sigmoid(g_a)
+c = ContextService(norm(x), mode)
+x_ctx = x + alpha_c * W_c c
+m = Mamba3_MIMO(norm(x_ctx))
+y = x_ctx + alpha_m * m
 ```
 
-For the first Phi transport stage, `alpha_a` initializes to preserve the transported attention path and `alpha_m` initializes near zero. When a compatible Mamba-3 donor is available, the Mamba path can be donor-initialized and its gate can start at a nonzero calibrated value.
+The Transformer service retrieves, compares, or induces over explicit context; **Mamba-3 MIMO integrates that evidence and performs the recurrent state evolution**. This makes the intended division of labor structural rather than relying on training to discover it accidentally.
+
+During the first Phi transport stage, the dense Transformer recipient remains the retention/control model. Hybridization then distills its useful context behavior into the context service while Mamba-3 MIMO is trained as the primary state path. There is no SISO fallback.
 
 ### Mamba-3 recurrent state path
 
@@ -256,14 +263,16 @@ Use the published Mamba-3 block semantics rather than a hand-written "linear pro
 
 - expressive SSM discretization
 - complex-valued state update
-- MIMO mode where supported
+- **MIMO is mandatory in the production IQ architecture**; default rank is 4
 - recurrent state carried across decode tokens
 - BF16 reference implementation first
 - state parameters kept at the precision required for stable recurrence
 - exact state reset/continuation semantics covered by tests
 - chunked training must produce the same state transition as the reference unchunked path within tolerance
 
-The production implementation may wrap the upstream Mamba-3 kernel initially; custom Triton/Mojo kernels are permitted only after forward/backward/state parity.
+The production implementation wraps the pinned upstream Mamba-3 implementation initially. IQ always instantiates it with `is_mimo=True`; there is no SISO fallback or feature flag that changes the trained architecture. If the MIMO/TileLang kernel is unavailable, startup fails explicitly. For BF16 rank-4 training, use the upstream recommended chunk size `64 / mimo_rank = 16`.
+
+Pin the upstream source revision in the production environment. Mamba-3 incremental decode is promoted only after full-sequence vs step/state parity succeeds on the target H200 runtime; failure blocks decode deployment rather than switching to SISO. Custom Triton/Mojo kernels are permitted only after forward/backward/state parity and throughput tests beat or match the pinned upstream MIMO path.
 
 ### Transformer token-retrieval path
 
@@ -907,14 +916,16 @@ Exit: Phi->IQ transported model trains and evaluates end-to-end without recurren
 
 ### Phase 2 — Mamba-3 + Transformer hybrid execution
 
-1. integrate the reference Mamba-3 state path with exact recurrent-state semantics
-2. implement parallel bounded residual fusion
-3. NSA reference implementation for ordinary Transformer branches
-4. periodic global-attention anchor blocks
-5. optimized sparse/state kernels only after reference parity
-6. outer Differential Attention
-7. compressed global memory
-8. evaluate attention-anchor frequency (for example 8:1, 4:1, 3:1, 2:1 Mamba-heavy/sparse blocks to global anchors) on long-context coding and needle retrieval
+1. integrate the pinned Mamba-3 **MIMO** state path with exact recurrent-state semantics; rank-4 MIMO is the production baseline, not an ablation behind a Boolean flag
+2. verify MIMO forward/backward, chunk/state continuation, and H200 decode-step parity with no SISO fallback
+3. implement the Mamba-dominant context-service hybrid so attention retrieves/compares context and Mamba performs state evolution/reasoning
+4. implement bounded context injection/fusion without allowing an always-on Transformer branch to bypass Mamba reasoning
+5. NSA reference implementation for routed context retrieval
+6. periodic mandatory global-attention anchors as a safety floor
+7. optimized sparse/state kernels only after reference parity
+8. outer Differential Attention for noisy/competing retrieved context
+9. compressed global memory
+10. evaluate attention-anchor frequency (for example 8:1, 6:1, 4:1) plus event-driven OFF/NSA/DENSE routing on long-context coding, few-shot induction, and needle retrieval
 
 Exit: Mamba state continuation, sparse attention, global retrieval, and fusion are numerically correct; the hybrid meets the donor-retention gate and demonstrates the intended memory/throughput tradeoff.
 
