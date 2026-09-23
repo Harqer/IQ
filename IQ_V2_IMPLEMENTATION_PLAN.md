@@ -245,7 +245,7 @@ token/residual state
                          next block/state
 ```
 
-Periodic global-attention anchors remain as a safety floor so router errors cannot permanently remove exact addressable memory. The anchor cadence is configurable and evaluated jointly with event-driven OFF/NSA/DENSE routing.
+Periodic dense/global-attention anchors remain as a safety floor so router errors cannot permanently remove exact addressable memory. The anchor cadence is configurable and evaluated jointly with event-driven OFF / COMPRESSED / DENSE routing.
 
 The context injection is bounded but not zero-sum:
 
@@ -936,7 +936,7 @@ Exit: Phi->IQ transported model trains and evaluates end-to-end without recurren
 7. optimized compressed-attention/state kernels only after reference parity
 8. outer Differential Attention for noisy/competing retrieved context
 9. evaluate hierarchical index search and cross-layer index reuse only after baseline parity
-10. evaluate attention-anchor frequency (for example 8:1, 6:1, 4:1) plus event-driven OFF/NSA/DENSE routing on long-context coding, few-shot induction, and needle retrieval
+10. evaluate anchor frequency plus event-driven OFF / COMPRESSED / DENSE routing on long-context coding, few-shot induction, pairwise comparison, and needle retrieval
 
 Exit: Mamba state continuation, sparse attention, global retrieval, and fusion are numerically correct; the hybrid meets the donor-retention gate and demonstrates the intended memory/throughput tradeoff.
 
