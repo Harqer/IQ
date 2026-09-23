@@ -216,40 +216,46 @@ IQ v2 is explicitly a **Mamba-3 + Transformer hybrid**. Mamba-3 is never treated
 - periodic global attention: explicit full-context anchor blocks for high-recall retrieval.
 - Differential Attention: outer-loop controller attention over compressed/global memory, not a replacement for token-level attention.
 
-The default topology is parallel fusion within each inner block plus a periodic global Transformer anchor:
+The production topology is **Mamba-dominant**. Transformer attention is a context/comparison service invoked where explicit token addressing is useful; it is not an equal always-on reasoning branch.
 
 ```text
-x
- -> RMSNorm
- -> +----------------------+-------------------------+
-    | Mamba-3 state path   | Transformer path        |
-    | complex/MIMO SSM     | NSA or global attention |
-    +----------------------+-------------------------+
-                    |
-             bounded residual fusion
-                    |
-                 residual
-                    |
-                RMSNorm
-                    |
-              dense SwiGLU
-                    |
-        executive-latent injection
+token/residual state
+        |
+        +------------------------------+
+        |                              |
+        |                    Context Router
+        |                    OFF / NSA / DENSE
+        |                              |
+        |                     retrieved/comparison
+        |                          context c
+        |                              |
+        +------------> x + W_c c + W_z z_exec
+                               |
+                               v
+                         Mamba-3 MIMO
+                    recurrent state evolution
+                               |
+                            residual
+                               |
+                            SwiGLU
+                               |
+                         next block/state
 ```
 
-Every fourth block is a global-attention anchor by default; the three intervening blocks use NSA. The ratio is configurable and must be evaluated on code dependency retrieval, multi-needle recall, long-context perplexity, KV-memory use, recurrent-state memory, and tokens/sec.
+Periodic global-attention anchors remain as a safety floor so router errors cannot permanently remove exact addressable memory. The anchor cadence is configurable and evaluated jointly with event-driven OFF/NSA/DENSE routing.
 
-Use independent bounded residual gates rather than a zero-sum mixer:
+The context injection is bounded but not zero-sum:
 
 ```text
-m = Mamba3(norm(x))
-a = Attention(norm(x))
-y = x + alpha_m * m + alpha_a * a
-alpha_m = alpha_m_max * sigmoid(g_m)
-alpha_a = alpha_a_max * sigmoid(g_a)
+c = ContextService(norm(x), mode)
+x_ctx = x + alpha_c * W_c c
+m = Mamba3_MIMO(norm(x_ctx))
+y = x_ctx + alpha_m * m
 ```
 
-For the first Phi transport stage, `alpha_a` initializes to preserve the transported attention path and `alpha_m` initializes near zero. When a compatible Mamba-3 donor is available, the Mamba path can be donor-initialized and its gate can start at a nonzero calibrated value.
+The Transformer service retrieves, compares, or induces over explicit context; **Mamba-3 MIMO integrates that evidence and performs the recurrent state evolution**. This makes the intended division of labor structural rather than relying on training to discover it accidentally.
+
+During the first Phi transport stage, the dense Transformer recipient remains the retention/control model. Hybridization then distills its useful context behavior into the context service while Mamba-3 MIMO is trained as the primary state path. There is no SISO fallback.
 
 ### Mamba-3 recurrent state path
 
