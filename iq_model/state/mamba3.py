@@ -3,13 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from importlib import metadata
 import json
-from pathlib import Path
 from typing import Any
 
 import torch
 from torch import nn
-
-from ..config import IQModelConfig
 
 
 MAMBA3_UPSTREAM_COMMIT = "e9594ce1c732d97440f0332fdc43170a2294dbfa"
@@ -17,6 +14,59 @@ MAMBA3_UPSTREAM_COMMIT = "e9594ce1c732d97440f0332fdc43170a2294dbfa"
 
 class Mamba3MIMORuntimeError(RuntimeError):
     pass
+
+
+@dataclass(frozen=True)
+class Mamba3MIMOConfig:
+    d_model: int
+    num_layers: int
+    d_state: int = 128
+    headdim: int = 64
+    mimo_rank: int = 4
+    expand: float = 2.0
+    rope_fraction: float = 0.5
+    chunk_size: int = 16
+    outproj_norm: bool = False
+
+    def __post_init__(self) -> None:
+        ints = {
+            "d_model": self.d_model,
+            "num_layers": self.num_layers,
+            "d_state": self.d_state,
+            "headdim": self.headdim,
+            "mimo_rank": self.mimo_rank,
+            "chunk_size": self.chunk_size,
+        }
+        bad = [name for name, value in ints.items() if int(value) <= 0]
+        if bad:
+            raise ValueError(f"positive Mamba-3 fields required: {', '.join(bad)}")
+        if self.mimo_rank < 2:
+            raise ValueError("IQ requires Mamba-3 MIMO; mimo_rank must be >= 2")
+        if self.expand <= 0:
+            raise ValueError("Mamba-3 expand must be positive")
+        d_inner = int(self.expand * self.d_model)
+        if d_inner % self.headdim != 0:
+            raise ValueError("Mamba-3 inner width must be divisible by headdim")
+        if self.rope_fraction not in (0.5, 1.0):
+            raise ValueError("Mamba-3 rope_fraction must be 0.5 or 1.0")
+
+    @property
+    def d_inner(self) -> int:
+        return int(self.expand * self.d_model)
+
+    @classmethod
+    def production_4096x32(cls) -> "Mamba3MIMOConfig":
+        return cls(
+            d_model=4096,
+            num_layers=32,
+            d_state=128,
+            headdim=64,
+            mimo_rank=4,
+            expand=2.0,
+            rope_fraction=0.5,
+            chunk_size=16,
+            outproj_norm=False,
+        )
 
 
 @dataclass(frozen=True)
@@ -76,7 +126,9 @@ def _installed_source_commit() -> str | None:
     return str(commit) if commit else None
 
 
-def inspect_mamba3_mimo_runtime(device: torch.device | None = None) -> Mamba3MIMORuntimeInfo:
+def inspect_mamba3_mimo_runtime(
+    device: torch.device | None = None,
+) -> Mamba3MIMORuntimeInfo:
     version: str | None = None
     mimo_available = False
     try:
@@ -140,16 +192,16 @@ class Mamba3MIMOState(nn.Module):
 
     def __init__(
         self,
-        config: IQModelConfig,
+        config: Mamba3MIMOConfig,
         *,
         layer_idx: int,
         dtype: torch.dtype = torch.bfloat16,
         device: torch.device | str | None = None,
     ) -> None:
         super().__init__()
-        if layer_idx < 0 or layer_idx >= config.num_hidden_layers:
+        if layer_idx < 0 or layer_idx >= config.num_layers:
             raise ValueError(
-                f"layer_idx must be in [0, {config.num_hidden_layers}), got {layer_idx}"
+                f"layer_idx must be in [0, {config.num_layers}), got {layer_idx}"
             )
 
         device_obj = torch.device(device) if device is not None else (
@@ -170,29 +222,29 @@ class Mamba3MIMOState(nn.Module):
             )
 
         expected_chunk = recommended_mamba3_chunk_size(
-            mimo_rank=config.mamba3_mimo_rank,
+            mimo_rank=config.mimo_rank,
             dtype=dtype,
         )
-        if config.mamba3_chunk_size != expected_chunk:
+        if config.chunk_size != expected_chunk:
             raise Mamba3MIMORuntimeError(
                 "IQ Mamba-3 chunk_size must match the upstream MIMO recommendation for "
-                f"dtype/rank: configured={config.mamba3_chunk_size}, expected={expected_chunk}"
+                f"dtype/rank: configured={config.chunk_size}, expected={expected_chunk}"
             )
 
         self.config = config
         self.layer_idx = layer_idx
         self.core = Mamba3(
-            d_model=config.hidden_size,
-            d_state=config.mamba3_state_size,
-            expand=config.mamba3_expand,
-            headdim=config.mamba3_head_dim,
-            rope_fraction=config.mamba3_rope_fraction,
-            is_outproj_norm=config.mamba3_outproj_norm,
+            d_model=config.d_model,
+            d_state=config.d_state,
+            expand=config.expand,
+            headdim=config.headdim,
+            rope_fraction=config.rope_fraction,
+            is_outproj_norm=config.outproj_norm,
             is_mimo=True,
-            mimo_rank=config.mamba3_mimo_rank,
-            chunk_size=config.mamba3_chunk_size,
+            mimo_rank=config.mimo_rank,
+            chunk_size=config.chunk_size,
             layer_idx=layer_idx,
-            n_layer=config.num_hidden_layers,
+            n_layer=config.num_layers,
             device=device_obj,
             dtype=dtype,
         )
@@ -201,7 +253,7 @@ class Mamba3MIMOState(nn.Module):
             raise Mamba3MIMORuntimeError(
                 "upstream Mamba-3 did not construct in MIMO mode"
             )
-        if int(getattr(self.core, "mimo_rank", -1)) != config.mamba3_mimo_rank:
+        if int(getattr(self.core, "mimo_rank", -1)) != config.mimo_rank:
             raise Mamba3MIMORuntimeError(
                 "upstream Mamba-3 MIMO rank does not match IQ config"
             )
@@ -213,10 +265,10 @@ class Mamba3MIMOState(nn.Module):
         cu_seqlens: torch.Tensor | None = None,
         inference_params: Any | None = None,
     ) -> torch.Tensor:
-        if hidden_states.ndim != 3 or hidden_states.shape[-1] != self.config.hidden_size:
+        if hidden_states.ndim != 3 or hidden_states.shape[-1] != self.config.d_model:
             raise ValueError(
                 "Mamba-3 hidden_states must have shape "
-                f"[batch, sequence, {self.config.hidden_size}]"
+                f"[batch, sequence, {self.config.d_model}]"
             )
         if hidden_states.device.type != "cuda":
             raise Mamba3MIMORuntimeError(
