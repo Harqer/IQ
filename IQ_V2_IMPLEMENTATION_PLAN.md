@@ -79,7 +79,10 @@ iq_model/
   position.py
   norm.py
   attention/
-    nsa.py
+    sliding_window.py
+    compressed_sparse.py
+    compressed_memory.py
+    sparse_indexer.py
     differential.py
     global_attention.py
     global_memory.py
@@ -212,7 +215,7 @@ IQ v2 is explicitly a **Mamba-3 + Transformer hybrid**. Mamba-3 is never treated
 
 - Mamba-3: linear-time recurrent state propagation, long-horizon state tracking, and constant-size decode state.
 - Transformer attention: exact content-addressable retrieval, induction, code-symbol lookup, and needle-in-context recall.
-- NSA: efficient local/selected/compressed token addressing on ordinary inner blocks.
+- DeepSeek V4/V4.1-style context attention: local sliding-window attention plus compressed long-range KV memory selected by a learned sparse indexer.
 - periodic global attention: explicit full-context anchor blocks for high-recall retrieval.
 - Differential Attention: outer-loop controller attention over compressed/global memory, not a replacement for token-level attention.
 
@@ -224,7 +227,7 @@ token/residual state
         +------------------------------+
         |                              |
         |                    Context Router
-        |                    OFF / NSA / DENSE
+        |                    OFF / COMPRESSED / DENSE
         |                              |
         |                     retrieved/comparison
         |                          context c
@@ -274,28 +277,36 @@ The production implementation wraps the pinned upstream Mamba-3 implementation i
 
 Pin the upstream source revision in the production environment. Mamba-3 incremental decode is promoted only after full-sequence vs step/state parity succeeds on the target H200 runtime; failure blocks decode deployment rather than switching to SISO. Custom Triton/Mojo kernels are permitted only after forward/backward/state parity and throughput tests beat or match the pinned upstream MIMO path.
 
-### Transformer token-retrieval path
+### Transformer context/comparison service
 
-Ordinary inner blocks use Native Sparse Attention. Periodic anchor blocks use explicit global Transformer attention. Both share the same positional interface and causal semantics. The global path is not removed even if Mamba long-context metrics improve; it is the model's exact addressable-memory mechanism.
+IQ's routed Transformer service follows the newer DeepSeek V4/V4.1 compressed-attention direction and is used only where explicit context addressing or pairwise comparison improves the Mamba-3 MIMO reasoning path.
 
-### Native Sparse Attention
+The service exposes three execution modes:
 
-Implement three real paths:
+1. `OFF`: no Transformer context call; Mamba-3 MIMO continues recurrent reasoning from its state.
+2. `COMPRESSED`: local sliding-window attention plus compressed long-range KV memory. A learned indexer selects the most relevant compressed entries for each query; heavily compressed global memory can be used as a lower-frequency anchor.
+3. `DENSE`: exact dense/global attention for operations that materially benefit from explicit pairwise token comparison, strict few-shot induction, ambiguous symbol resolution, or diagnostic fallback.
 
-1. local causal blocks/window
-2. compressed/global summary blocks
-3. selected high-value blocks/tokens
+The compressed mode follows the DeepSeek V4 family decomposition:
+
+- sliding-window branch for recent fine-grained dependencies;
+- compressed KV entries for distant context;
+- learned sparse indexer / top-k selection over compressed entries;
+- shared compressed memory representation suitable for efficient decode;
+- attention sink support where it improves stability;
+- optional hierarchical index search and cross-layer selection reuse only after measured quality/throughput parity.
 
 Required behavior:
 
-- causal masking is exact
-- selection indices are deterministic under fixed seeds
-- no dense `N x N` fallback in the production sparse path
-- reference dense-equivalent tests on small sequences
-- attention statistics expose local/compressed/selected utilization
-- optimized kernel must match the reference within dtype-specific tolerances
+- causal masking is exact;
+- compressed entries become visible only after their source span is causally complete;
+- selection indices are deterministic under fixed seeds;
+- no dense `N x N` computation hidden inside `COMPRESSED`;
+- dense reference comparisons on small sequences;
+- retrieval statistics expose window/compressed/dense utilization, indexer recall, selected-entry overlap, and compression ratios;
+- optimized kernels must match the reference within dtype-specific tolerances.
 
-Q/K/V/O transported from the donor initialize the compatible projections. NSA-specific compression/selection parameters are new trainable parameters.
+Do not naively copy donor K/V into a shared compressed-KV space. Transport compatible query/output operators, then learn/fit the compressed KV constructor and indexer from calibration activations and dense-teacher behavior. The dense donor/recipient attention path remains the transfer teacher and exact-comparison path.
 
 ### Outer/global execution path
 
@@ -550,7 +561,7 @@ Never directly transplant donor weights into the Hamiltonian controller.
 Initially freeze transported base and train:
 
 - DoRA corrections
-- NSA-specific parameters
+- compressed-memory, sliding-window, and learned-indexer parameters
 - executive latent injection
 - Differential Attention second stream/lambda
 - Hamiltonian controller
@@ -799,7 +810,7 @@ Never reward merely producing tool calls or verbose reasoning.
 - inner/outer step histogram
 - accuracy vs executed recurrent steps
 - premature-halt rate
-- NSA branch utilization
+- context-service mode/window/compressed-memory utilization
 - MoE expert load entropy/capacity
 - concept-mapper gain vs direct head
 
@@ -860,7 +871,7 @@ Record at minimum:
 - recurrent depth histogram
 - halt probability and convergence deltas
 - energy distributions for positive/negative trajectories
-- NSA sparsity/selection metrics
+- compressed-attention indexer recall/top-k overlap/compression metrics
 - MoE load/capacity/router entropy
 - shadow/transport retention metrics
 
@@ -920,11 +931,11 @@ Exit: Phi->IQ transported model trains and evaluates end-to-end without recurren
 2. verify MIMO forward/backward, chunk/state continuation, and H200 decode-step parity with no SISO fallback
 3. implement the Mamba-dominant context-service hybrid so attention retrieves/compares context and Mamba performs state evolution/reasoning
 4. implement bounded context injection/fusion without allowing an always-on Transformer branch to bypass Mamba reasoning
-5. NSA reference implementation for routed context retrieval
-6. periodic mandatory global-attention anchors as a safety floor
-7. optimized sparse/state kernels only after reference parity
+5. implement a DeepSeek V4/V4.1-style compressed context service: sliding window + compressed KV memory + learned top-k indexer
+6. add heavily compressed/global memory anchors and periodic mandatory dense/global attention as a safety floor
+7. optimized compressed-attention/state kernels only after reference parity
 8. outer Differential Attention for noisy/competing retrieved context
-9. compressed global memory
+9. evaluate hierarchical index search and cross-layer index reuse only after baseline parity
 10. evaluate attention-anchor frequency (for example 8:1, 6:1, 4:1) plus event-driven OFF/NSA/DENSE routing on long-context coding, few-shot induction, and needle retrieval
 
 Exit: Mamba state continuation, sparse attention, global retrieval, and fusion are numerically correct; the hybrid meets the donor-retention gate and demonstrates the intended memory/throughput tradeoff.
