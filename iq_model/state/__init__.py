@@ -1,5 +1,6 @@
 from .mamba3 import (
     MAMBA3_UPSTREAM_COMMIT,
+    Mamba3MIMOConfig,
     Mamba3MIMOState,
     Mamba3MIMORuntimeError,
     Mamba3MIMORuntimeInfo,
@@ -10,6 +11,7 @@ from .mamba3 import (
 
 __all__ = [
     "MAMBA3_UPSTREAM_COMMIT",
+    "Mamba3MIMOConfig",
     "Mamba3MIMOState",
     "Mamba3MIMORuntimeError",
     "Mamba3MIMORuntimeInfo",
