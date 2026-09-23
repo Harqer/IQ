@@ -279,12 +279,12 @@ Pin the upstream source revision in the production environment. Mamba-3 incremen
 
 ### Transformer context/comparison service
 
-IQ's routed Transformer service follows the newer DeepSeek V4/V4.1 compressed-attention direction and is used only where explicit context addressing or pairwise comparison improves the Mamba-3 MIMO reasoning path.
+IQ's routed Transformer service follows the newer DeepSeek V4-family **Compressed Sparse Attention (CSA) / Heavily Compressed Attention (HCA)** direction, using the V4.1 kernel family where compatible and is used only where explicit context addressing or pairwise comparison improves the Mamba-3 MIMO reasoning path.
 
 The service exposes three execution modes:
 
 1. `OFF`: no Transformer context call; Mamba-3 MIMO continues recurrent reasoning from its state.
-2. `COMPRESSED`: local sliding-window attention plus compressed long-range KV memory. A learned indexer selects the most relevant compressed entries for each query; heavily compressed global memory can be used as a lower-frequency anchor.
+2. `COMPRESSED`: local sliding-window attention plus CSA compressed long-range KV memory. A learned DSA-lineage indexer selects the most relevant compressed entries for each query; HCA-style heavily compressed global memory supplies a lower-frequency long-range anchor.
 3. `DENSE`: exact dense/global attention for operations that materially benefit from explicit pairwise token comparison, strict few-shot induction, ambiguous symbol resolution, or diagnostic fallback.
 
 The compressed mode follows the DeepSeek V4 family decomposition:
