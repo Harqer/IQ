@@ -158,8 +158,6 @@ def inspect_mamba3_mimo_runtime(
 
 def require_mamba3_mimo_runtime(
     device: torch.device | None = None,
-    *,
-    require_pinned_source: bool = True,
 ) -> Mamba3MIMORuntimeInfo:
     if device is not None and device.type != "cuda":
         raise Mamba3MIMORuntimeError(
@@ -175,7 +173,7 @@ def require_mamba3_mimo_runtime(
             "Mamba-3 MIMO kernel is unavailable. Install the pinned state-spaces/mamba "
             "source with TileLang support; IQ will not silently fall back to SISO."
         )
-    if require_pinned_source and info.source_commit != MAMBA3_UPSTREAM_COMMIT:
+    if info.source_commit != MAMBA3_UPSTREAM_COMMIT:
         raise Mamba3MIMORuntimeError(
             "Mamba-3 source revision is not the pinned IQ production revision: "
             f"installed={info.source_commit!r}, required={MAMBA3_UPSTREAM_COMMIT}"
