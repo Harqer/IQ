@@ -552,7 +552,7 @@ Increase the Mamba residual gate only after held-out block-output and model-leve
 
 ## 13. DeepSeek V4/V4.1-style compressed context initialization
 
-The routed context service is **not** initialized as Native Sparse Attention. It follows the newer DeepSeek compressed-attention direction: sliding-window local attention plus compressed long-range KV memory and learned sparse indexing.
+The routed context service follows the newer DeepSeek compressed-attention direction: sliding-window local attention plus compressed long-range KV memory and learned sparse indexing.
 
 Keep the dense transported Transformer path as the teacher/exact-comparison path during transition.
 
