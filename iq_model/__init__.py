@@ -1,5 +1,6 @@
 from .state import (
     MAMBA3_UPSTREAM_COMMIT,
+    Mamba3MIMOConfig,
     Mamba3MIMOState,
     Mamba3MIMORuntimeError,
     Mamba3MIMORuntimeInfo,
@@ -17,6 +18,7 @@ from .outputs import CausalLMOutput
 __all__ = [
     "CausalLMOutput",
     "MAMBA3_UPSTREAM_COMMIT",
+    "Mamba3MIMOConfig",
     "Mamba3MIMOState",
     "Mamba3MIMORuntimeError",
     "Mamba3MIMORuntimeInfo",
