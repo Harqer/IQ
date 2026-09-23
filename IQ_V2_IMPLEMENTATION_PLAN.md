@@ -60,6 +60,7 @@ min_outer_steps: 1
 mamba3_state_size: 128
 mamba3_head_dim: 64
 mamba3_mimo_rank: 4
+mamba3_chunk_size_bf16: 16
 global_attention_period: 4
 hybrid_fusion: parallel_gated_residual
 executive_geometry: euclidean
@@ -256,14 +257,16 @@ Use the published Mamba-3 block semantics rather than a hand-written "linear pro
 
 - expressive SSM discretization
 - complex-valued state update
-- MIMO mode where supported
+- **MIMO is mandatory in the production IQ architecture**; default rank is 4
 - recurrent state carried across decode tokens
 - BF16 reference implementation first
 - state parameters kept at the precision required for stable recurrence
 - exact state reset/continuation semantics covered by tests
 - chunked training must produce the same state transition as the reference unchunked path within tolerance
 
-The production implementation may wrap the upstream Mamba-3 kernel initially; custom Triton/Mojo kernels are permitted only after forward/backward/state parity.
+The production implementation wraps the pinned upstream Mamba-3 implementation initially. IQ always instantiates it with `is_mimo=True`; there is no SISO fallback or feature flag that changes the trained architecture. If the MIMO/TileLang kernel is unavailable, startup fails explicitly. For BF16 rank-4 training, use the upstream recommended chunk size `64 / mimo_rank = 16`.
+
+Pin the upstream source revision in the production environment. Mamba-3 incremental decode is promoted only after full-sequence vs step/state parity succeeds on the target H200 runtime; failure blocks decode deployment rather than switching to SISO. Custom Triton/Mojo kernels are permitted only after forward/backward/state parity and throughput tests beat or match the pinned upstream MIMO path.
 
 ### Transformer token-retrieval path
 
@@ -907,14 +910,16 @@ Exit: Phi->IQ transported model trains and evaluates end-to-end without recurren
 
 ### Phase 2 — Mamba-3 + Transformer hybrid execution
 
-1. integrate the reference Mamba-3 state path with exact recurrent-state semantics
-2. implement parallel bounded residual fusion
-3. NSA reference implementation for ordinary Transformer branches
-4. periodic global-attention anchor blocks
-5. optimized sparse/state kernels only after reference parity
-6. outer Differential Attention
-7. compressed global memory
-8. evaluate attention-anchor frequency (for example 8:1, 4:1, 3:1, 2:1 Mamba-heavy/sparse blocks to global anchors) on long-context coding and needle retrieval
+1. integrate the pinned Mamba-3 **MIMO** state path with exact recurrent-state semantics; rank-4 MIMO is the production baseline, not an ablation behind a Boolean flag
+2. verify MIMO forward/backward, chunk/state continuation, and H200 decode-step parity with no SISO fallback
+3. implement the Mamba-dominant context-service hybrid so attention retrieves/compares context and Mamba performs state evolution/reasoning
+4. implement bounded context injection/fusion without allowing an always-on Transformer branch to bypass Mamba reasoning
+5. NSA reference implementation for routed context retrieval
+6. periodic mandatory global-attention anchors as a safety floor
+7. optimized sparse/state kernels only after reference parity
+8. outer Differential Attention for noisy/competing retrieved context
+9. compressed global memory
+10. evaluate attention-anchor frequency (for example 8:1, 6:1, 4:1) plus event-driven OFF/NSA/DENSE routing on long-context coding, few-shot induction, and needle retrieval
 
 Exit: Mamba state continuation, sparse attention, global retrieval, and fusion are numerically correct; the hybrid meets the donor-retention gate and demonstrates the intended memory/throughput tradeoff.
 
