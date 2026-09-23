@@ -62,12 +62,12 @@ def _installed_source_commit() -> str | None:
     except metadata.PackageNotFoundError:
         return None
 
-    direct_url = Path(dist._path) / "direct_url.json"  # type: ignore[attr-defined]
-    if not direct_url.is_file():
+    direct_url_text = dist.read_text("direct_url.json")
+    if not direct_url_text:
         return None
     try:
-        data = json.loads(direct_url.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        data = json.loads(direct_url_text)
+    except json.JSONDecodeError:
         return None
     vcs = data.get("vcs_info")
     if not isinstance(vcs, dict):
@@ -141,7 +141,6 @@ class Mamba3MIMOState(nn.Module):
         layer_idx: int,
         dtype: torch.dtype = torch.bfloat16,
         device: torch.device | str | None = None,
-        verify_runtime: bool = True,
     ) -> None:
         super().__init__()
         if layer_idx < 0 or layer_idx >= config.num_hidden_layers:
@@ -152,8 +151,7 @@ class Mamba3MIMOState(nn.Module):
         device_obj = torch.device(device) if device is not None else (
             torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
         )
-        if verify_runtime:
-            require_mamba3_mimo_runtime(device_obj)
+        require_mamba3_mimo_runtime(device_obj)
 
         try:
             from mamba_ssm import Mamba3
