@@ -1,3 +1,4 @@
 -r requirements-transfer.txt
 torch>=2.10
 transformers==5.17.0
+mamba-ssm @ git+https://github.com/state-spaces/mamba.git@e9594ce1c732d97440f0332fdc43170a2294dbfa
