@@ -93,6 +93,14 @@ See:
 
 Production training target:
 
+Install the model runtime with:
+
+```bash
+bash scripts/install_model_runtime.sh
+```
+
+This installs Torch first, then builds the exact pinned Mamba-3 source revision with `--no-build-isolation`, and verifies that the CUDA MIMO kernel is available. The verifier fails rather than switching IQ to SISO.
+
 - PyTorch autograd
 - NVIDIA Megatron-Core for distributed parallelism
 - Transformer Engine where numerically validated
