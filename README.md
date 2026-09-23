@@ -2,7 +2,7 @@
 
 IQ is an experimental language-model architecture for complex coding, long-context retrieval, and adaptive multi-step reasoning.
 
-The production target is **not** the original Neutrino/Ising mock architecture. IQ v2 combines a transferred Transformer backbone with a Mamba-3 recurrent state path, sparse/global attention, adaptive recurrence, and a differentiable Hamiltonian executive controller.
+The production target is **not** the original Neutrino/Ising mock architecture. IQ v2 uses Mamba-3 MIMO as the recurrent reasoning/state-evolution path, with Transformer attention retained as a routed context/comparison service, plus adaptive recurrence and a differentiable Hamiltonian executive controller.
 
 ## Architecture
 
@@ -11,32 +11,34 @@ tokens
   ↓
 embeddings + token position + reasoning-depth encoding
   ↓
-┌──────────────── hybrid inner block ────────────────┐
-│ Mamba-3 recurrent state  ||  Transformer attention │
-│                              ├─ NSA inner blocks    │
-│                              └─ global anchors      │
-│                 ↓ bounded residual fusion           │
-│                    dense SwiGLU                     │
-│              executive-latent injection             │
-└─────────────────────────────────────────────────────┘
-  ↓
-compressed/global memory
-  ↓
-Differential Attention
-  ↓
-Hamiltonian/energy executive state
-  ↓
-adaptive halt / refine
-  ↓
-continuous concept path
-  ↓
-Concept Mapper → LM head
+context state ───────────────► Context Router
+  │                            OFF / NSA / DENSE
+  │                                  │
+  │                          retrieved/comparison
+  │                               context
+  └──────────────────────┬───────────┘
+                         ↓
+                  Mamba-3 MIMO
+                recurrent reasoning
+                 / state evolution
+                         ↓
+                      SwiGLU
+                         ↓
+                executive-latent input
+                         ↓
+              Hamiltonian/energy control
+                         ↓
+                 adaptive halt/refine
+                         ↓
+                  Concept Mapper
+                         ↓
+                      LM head
 ```
 
 ### Why the hybrid
 
-- **Mamba-3** carries efficient long-horizon recurrent state.
-- **Transformer attention** remains the exact content-addressable path for identifiers, code dependencies, and needle-in-context retrieval.
+- **Mamba-3 MIMO (rank 4)** is the primary recurrent state/reasoning path; MIMO is not optional and IQ has no silent SISO fallback.
+- **Transformer attention** remains the exact content-addressable context/comparison path for identifiers, code dependencies, few-shot induction, and needle-in-context retrieval.
 - **Native Sparse Attention** handles most token-level context efficiently.
 - **Periodic global attention** preserves high-recall access to the complete context.
 - **Differential Attention** is reserved for outer-loop executive reasoning.
@@ -94,7 +96,7 @@ Production training target:
 - PyTorch autograd
 - NVIDIA Megatron-Core for distributed parallelism
 - Transformer Engine where numerically validated
-- upstream Mamba-3 reference implementation initially
+- pinned upstream Mamba-3 MIMO implementation; missing MIMO/TileLang capability is a hard startup error
 - Mojo custom kernels only after forward/backward/state parity
 - MAX for later production inference
 - BF16 reference training before FP8/MXFP8 promotion
@@ -142,7 +144,7 @@ Implemented today:
 In migration:
 
 - real IQ v2 model/training packages
-- Mamba-3 + Transformer hybrid blocks
+- Mamba-3 MIMO reasoning blocks + routed Transformer context service
 - real Muon optimizer
 - DoRA correction
 - Hamiltonian/EBM controller
