@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Iterable
+from hashlib import sha256
+from typing import Iterable, Mapping
+import json
 
 
 class ArchitectureError(ValueError):
@@ -101,3 +103,29 @@ class HybridSchedule:
 
     def to_tokens(self) -> tuple[str, ...]:
         return tuple(layer.value for layer in self.layers)
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": 1,
+            "layers": list(self.to_tokens()),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, object]) -> "HybridSchedule":
+        if int(data.get("schema_version", -1)) != 1:
+            raise ArchitectureError(
+                f"unsupported hybrid-schedule schema: {data.get('schema_version')!r}"
+            )
+        layers = data.get("layers")
+        if not isinstance(layers, list) or not layers:
+            raise ArchitectureError("hybrid-schedule layers must be a non-empty list")
+        return cls.from_tokens(str(layer) for layer in layers)
+
+    @property
+    def fingerprint(self) -> str:
+        payload = json.dumps(
+            self.to_dict(),
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return sha256(payload).hexdigest()
