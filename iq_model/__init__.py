@@ -1,4 +1,4 @@
-from .hybrid import HybridCausalLMOutput, HybridModelError, IQHybridConfig, IQHybridForCausalLM, Mamba3ResidualLayer, DenseContextResidualLayer, MambaPackedLayout, pack_mamba_varlen, unpack_mamba_varlen
+from .hybrid import CompressedContextResidualLayer, HybridCausalLMOutput, HybridModelError, IQHybridConfig, IQHybridForCausalLM, Mamba3ResidualLayer, DenseContextResidualLayer, MambaPackedLayout, pack_mamba_varlen, unpack_mamba_varlen
 from .objectives import MTPConfig, MTPConfigError, MTPDepthOutput, MTPOutput, MTPPredictionBlock, MultiTokenPrediction
 from .mlp import MoEConfigError, MoEOutput, RoutedMoEConfig, RoutedSwiGLUMoE, RoutedSwiGLUMoELayer, SwiGLU, SwiGLUExpert
 from .architecture import ArchitectureError, HybridLayerType, HybridSchedule
@@ -30,6 +30,7 @@ from .outputs import CausalLMOutput
 __all__ = [
     "ArchitectureError",
     "CausalLMOutput",
+    "CompressedContextResidualLayer",
     "CompressedContextConfig",
     "CompressedContextError",
     "CompressedSparseContextAttention",
