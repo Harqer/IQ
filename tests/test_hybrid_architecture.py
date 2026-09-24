@@ -45,6 +45,9 @@ class HybridArchitectureTests(unittest.TestCase):
             schedule.layers[-1],
             HybridLayerType.EXECUTIVE,
         )
+        restored = HybridSchedule.from_dict(schedule.to_dict())
+        self.assertEqual(restored, schedule)
+        self.assertEqual(restored.fingerprint, schedule.fingerprint)
 
         with self.assertRaises(ArchitectureError):
             HybridSchedule.parse("M A C H")
