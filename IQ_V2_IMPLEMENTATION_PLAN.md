@@ -288,9 +288,10 @@ During the first Phi transport stage, `IQForCausalLM` remains the dense Transfor
 
 Use the published Mamba-3 block semantics rather than a hand-written "linear projection" approximation:
 
-- expressive SSM discretization
-- complex-valued state update
-- **MIMO is mandatory in the production IQ architecture**; default rank is 4
+- exponential-trapezoidal SSM discretization and its native input-dependent recurrence parameters;
+- complex-valued/data-dependent rotary state update;
+- native B/C normalization, gating, skip, and state-update parameterization from the pinned upstream implementation;
+- **MIMO is mandatory in the production IQ architecture**; default rank is 4;
 - recurrent state carried across decode tokens
 - BF16 reference implementation first
 - state parameters kept at the precision required for stable recurrence
