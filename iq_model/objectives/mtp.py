@@ -184,8 +184,17 @@ class MultiTokenPrediction(nn.Module):
                 raise ValueError("labels must be integer token ids")
 
         batch_size, sequence_length = input_ids.shape
-        if sequence_length < 3:
-            raise ValueError("MTP requires sequence length >= 3")
+        required_length = self.mtp_config.num_prediction_layers + 2
+        if sequence_length < required_length:
+            raise ValueError(
+                "sequence is too short for configured MTP depth: "
+                f"requires at least {required_length} tokens, got {sequence_length}"
+            )
+        if input_ids.numel() and (
+            int(input_ids.min()) < 0
+            or int(input_ids.max()) >= self.model_config.vocab_size
+        ):
+            raise ValueError("input_ids contain token ids outside vocabulary")
 
         prepared = prepare_causal_attention(
             batch_size=batch_size,
