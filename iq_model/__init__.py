@@ -1,3 +1,4 @@
+from .objectives import MTPConfig, MTPConfigError, MTPDepthOutput, MTPOutput, MTPPredictionBlock, MultiTokenPrediction
 from .mlp import MoEConfigError, MoEOutput, RoutedMoEConfig, RoutedSwiGLUMoE, RoutedSwiGLUMoELayer, SwiGLU, SwiGLUExpert
 from .architecture import ArchitectureError, HybridLayerType, HybridSchedule
 from .state import (
@@ -25,6 +26,12 @@ __all__ = [
     "HybridLayerType",
     "HybridSchedule",
     "MAMBA3_UPSTREAM_COMMIT",
+    "MTPConfig",
+    "MTPConfigError",
+    "MTPDepthOutput",
+    "MTPOutput",
+    "MTPPredictionBlock",
+    "MultiTokenPrediction",
     "MoEConfigError",
     "MoEOutput",
     "Mamba3MIMOConfig",
