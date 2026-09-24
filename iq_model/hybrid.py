@@ -469,10 +469,10 @@ class CompressedContextResidualLayer(nn.Module):
 
 
 class IQHybridForCausalLM(nn.Module):
-    """Executable heterogeneous Mamba-3 / MoE / dense-attention backbone.
+    """Executable heterogeneous Mamba-3 / MoE / CSA / HCA / dense-attention backbone.
 
-    CSA, HCA, and executive layers deliberately fail construction until their
-    exact reference implementations are present. They are never substituted by
+    Executive layers still fail construction until the exact Hamiltonian
+    reference is present. Unsupported layer types are never substituted by
     dense attention or another layer type.
     """
 
