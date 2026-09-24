@@ -272,7 +272,7 @@ class Mamba3ResidualLayer(nn.Module):
         self.norm = RMSNorm(
             model_config.hidden_size,
             model_config.rms_norm_eps,
-        )
+        ).to(device=device, dtype=dtype)
         self.mamba = Mamba3MIMOState(
             mamba_config,
             layer_idx=mamba_layer_idx,
