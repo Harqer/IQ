@@ -67,13 +67,19 @@ class CompressedContextAttentionTests(unittest.TestCase):
             loss.backward(retain_graph=True)
             self.assertIsNotNone(x.grad)
             self.assertTrue(torch.isfinite(x.grad).all())
-            parameter_grads = [
-                p.grad for p in attention.parameters() if p.requires_grad
+            core_parameters = [
+                attention.q_a_proj.weight,
+                attention.q_b_proj.weight,
+                attention.kv_proj.weight,
+                attention.output.weight,
+                attention.output.out_proj.weight,
             ]
-            self.assertTrue(parameter_grads)
-            self.assertTrue(
-                all(g is not None and torch.isfinite(g).all() for g in parameter_grads)
-            )
+            for parameter in core_parameters:
+                self.assertIsNotNone(parameter.grad)
+                self.assertTrue(torch.isfinite(parameter.grad).all())
+            # CSA's hard top-k indexer is intentionally trained by a separate
+            # dense-teacher/indexer objective; LM loss does not differentiate
+            # through the discrete selected indices.
             x.grad.zero_()
 
     def test_packed_documents_are_isolated(self):
