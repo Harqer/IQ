@@ -69,6 +69,10 @@ class CompressedAttentionConfig:
             raise CompressedAttentionError(
                 "rope_head_dim cannot exceed head_dim"
             )
+        if self.rope_head_dim > self.index_head_dim:
+            raise CompressedAttentionError(
+                "rope_head_dim cannot exceed index_head_dim"
+            )
         if self.num_attention_heads % self.o_groups:
             raise CompressedAttentionError(
                 "num_attention_heads must be divisible by o_groups"
@@ -398,47 +402,6 @@ def _segments(
     return tuple(result)
 
 
-class _BaseCompressor(nn.Module):
-    def __init__(
-        self,
-        config: CompressedAttentionConfig,
-        *,
-        compress_rate: int,
-        projected_width: int,
-    ) -> None:
-        super().__init__()
-        self.config = config
-        self.compress_rate = int(compress_rate)
-        self.head_dim = config.head_dim
-        self.kv_proj = nn.Linear(
-            config.hidden_size,
-            projected_width,
-            bias=False,
-        )
-        self.gate_proj = nn.Linear(
-            config.hidden_size,
-            projected_width,
-            bias=False,
-        )
-        self.position_bias = nn.Parameter(
-            torch.empty(
-                self.compress_rate,
-                projected_width,
-            )
-        )
-        self.kv_norm = RMSNorm(
-            config.head_dim,
-            config.rms_norm_eps,
-        )
-        self.rotary = InterleavedPartialRotaryEmbedding(
-            config.rope_head_dim,
-            config.max_position_embeddings
-            if hasattr(config, "max_position_embeddings")
-            else 1,
-            config.compress_rope_theta,
-        )
-
-
 def _compress_hca(
     kv: torch.Tensor,
     gate: torch.Tensor,
@@ -567,7 +530,7 @@ class HCACompressor(nn.Module):
             bias=False,
         )
         self.position_bias = nn.Parameter(
-            torch.empty(
+            torch.zeros(
                 self.compress_rate,
                 config.head_dim,
             )
@@ -633,7 +596,7 @@ class LightningIndexer(nn.Module):
             bias=False,
         )
         self.position_bias = nn.Parameter(
-            torch.empty(
+            torch.zeros(
                 self.compress_rate,
                 2 * config.index_head_dim,
             )
@@ -653,7 +616,7 @@ class LightningIndexer(nn.Module):
             bias=False,
         )
         self.rotary = InterleavedPartialRotaryEmbedding(
-            min(config.rope_head_dim, config.index_head_dim),
+            config.rope_head_dim,
             max_position_embeddings,
             config.compress_rope_theta,
         )
@@ -775,7 +738,7 @@ class CSACompressor(nn.Module):
             bias=False,
         )
         self.position_bias = nn.Parameter(
-            torch.empty(
+            torch.zeros(
                 self.compress_rate,
                 2 * config.head_dim,
             )
@@ -970,7 +933,7 @@ class CompressedContextAttention(nn.Module):
             bias=False,
         )
         self.sinks = nn.Parameter(
-            torch.empty(config.num_attention_heads)
+            torch.zeros(config.num_attention_heads)
         )
         self.compressor = (
             CSACompressor(
@@ -1126,22 +1089,15 @@ class CompressedContextAttention(nn.Module):
                 )
             else:
                 assert indices is not None
-                selected = torch.zeros(
-                    (
-                        1,
-                        sequence,
-                        compressed_len,
-                    ),
-                    dtype=torch.bool,
-                    device=hidden_states.device,
-                )
                 valid = indices >= 0
                 safe = indices.clamp_min(0)
-                selected.scatter_(
-                    -1,
-                    safe,
-                    valid,
-                )
+                selected = (
+                    F.one_hot(
+                        safe,
+                        num_classes=compressed_len,
+                    ).to(torch.bool)
+                    & valid.unsqueeze(-1)
+                ).any(dim=-2)
                 mask[
                     :,
                     :,
@@ -1192,6 +1148,7 @@ class CompressedContextAttention(nn.Module):
         self,
         hidden_states: torch.Tensor,
         *,
+        position_ids: torch.Tensor | None = None,
         attention_mask: torch.Tensor | None = None,
         document_ids: torch.Tensor | None = None,
     ) -> torch.Tensor:
@@ -1211,8 +1168,36 @@ class CompressedContextAttention(nn.Module):
             document_ids=document_ids,
             device=hidden_states.device,
         )
+        if position_ids is not None:
+            if position_ids.shape != (batch, sequence):
+                raise CompressedAttentionError(
+                    "position_ids shape does not match hidden states"
+                )
+            if position_ids.dtype not in (torch.int32, torch.int64):
+                raise CompressedAttentionError(
+                    "position_ids must be integer typed"
+                )
+            positions_all = position_ids.to(hidden_states.device)
+        else:
+            positions_all = None
+
         output = torch.zeros_like(hidden_states)
         for segment in segments:
+            if positions_all is not None:
+                supplied = positions_all[
+                    segment.batch_index,
+                    segment.start : segment.end,
+                ]
+                expected = torch.arange(
+                    segment.length,
+                    device=hidden_states.device,
+                    dtype=supplied.dtype,
+                )
+                if not torch.equal(supplied, expected):
+                    raise CompressedAttentionError(
+                        "stateless CSA/HCA reference requires each packed segment "
+                        "to use contiguous zero-based position_ids"
+                    )
             states = hidden_states[
                 segment.batch_index : segment.batch_index + 1,
                 segment.start : segment.end,
