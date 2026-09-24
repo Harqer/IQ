@@ -171,7 +171,8 @@ Implemented today:
 - pretraining wrapper combining NTP/MTP/MoE auxiliary objectives with checkpointed coefficients
 - real-batch H200 hybrid forward/backward and cross-document-isolation gate
 - QK-normalized RoPE dense-context anchor
-- leading RoPE plus trailing partial/inverse RoPE reference primitives
+- DeepSeek V4-style CSA/HCA full-sequence PyTorch reference with sliding-window branch, learned Lightning indexer, shared K=V MQA, sinks, grouped low-rank output, and packed-document isolation
+- leading RoPE plus interleaved trailing partial/inverse RoPE reference primitives
 - scale-gate metrics
 - model-independent agent harness
 
