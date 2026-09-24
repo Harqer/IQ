@@ -165,6 +165,7 @@ Implemented today:
 - mandatory rank-4 Mamba-3 MIMO runtime wrapper and H200 parity gate
 - explicit heterogeneous `HybridSchedule` validation
 - routed/shared SwiGLU MoE `E` layer with top-k routing, load-balance/z losses, and no silent token drop
+- sequential shared-embedding/shared-head MTP prediction stack with packed-document-safe causal chaining
 - QK-normalized RoPE dense-context anchor
 - leading RoPE plus trailing partial/inverse RoPE reference primitives
 - scale-gate metrics

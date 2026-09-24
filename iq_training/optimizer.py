@@ -50,7 +50,7 @@ class OptimizerCoverage:
 def _is_muon_parameter(name: str, parameter: torch.nn.Parameter) -> bool:
     if parameter.ndim != 2:
         return False
-    if name == "embed_tokens.weight" or name == "lm_head.weight":
+    if name.endswith("embed_tokens.weight") or name.endswith("lm_head.weight"):
         return False
     if name.endswith(".magnitude"):
         return False

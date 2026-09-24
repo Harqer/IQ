@@ -673,7 +673,19 @@ Losses are phase-specific; do not enable every loss from step 1.
 
 - next-token cross entropy;
 - FIM formatting/data objective;
-- **multi-token prediction (MTP) as a first-class pretraining objective**, with its own shared-weight prediction layers/head configuration rather than an after-the-fact auxiliary linear probe.
+- **multi-token prediction (MTP) as a first-class pretraining objective**.
+
+IQ implements sequential DeepSeek-style MTP rather than independent parallel heads. At prediction depth `k`:
+
+```text
+h'_i^k = M_k [ RMSNorm(Emb(t_(i+k))) ; RMSNorm(h_i^(k-1)) ]
+h_i^k  = TRM_k(h'^k)_i
+P_(i+k+1)^k = SharedLMHead(h_i^k)
+```
+
+The token embedding and LM head are physically shared with the main model. Each depth has its own `enorm`, `hnorm`, `eh_proj`, additional Transformer prediction block, and post norm. The MTP loss is the mean of valid depth losses; its overall coefficient remains an explicit training-config value.
+
+Packed-document training invalidates any MTP chain edge that crosses a document boundary. MTP uses the original per-document token positions after shifting rather than recomputing positions from each sliced depth.
 
 ### Transfer alignment
 
