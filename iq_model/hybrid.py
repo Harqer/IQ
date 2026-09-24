@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from hashlib import sha256
+from typing import Mapping
 import json
 
 import torch
@@ -54,6 +55,56 @@ class IQHybridConfig:
             "mamba3": asdict(self.mamba3),
             "moe": asdict(self.moe),
         }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, object]) -> "IQHybridConfig":
+        if int(data.get("schema_version", -1)) != 1:
+            raise HybridModelError(
+                f"unsupported hybrid-model schema: {data.get('schema_version')!r}"
+            )
+        model = data.get("model")
+        schedule = data.get("schedule")
+        mamba3 = data.get("mamba3")
+        moe = data.get("moe")
+        if not isinstance(model, dict):
+            raise HybridModelError("hybrid config model must be an object")
+        if not isinstance(schedule, dict):
+            raise HybridModelError("hybrid config schedule must be an object")
+        if not isinstance(mamba3, dict):
+            raise HybridModelError("hybrid config mamba3 must be an object")
+        if not isinstance(moe, dict):
+            raise HybridModelError("hybrid config moe must be an object")
+        try:
+            return cls(
+                model=IQModelConfig.from_dict(model),
+                schedule=HybridSchedule.from_dict(schedule),
+                mamba3=Mamba3MIMOConfig(**mamba3),
+                moe=RoutedMoEConfig(**moe),
+            )
+        except (TypeError, ValueError) as exc:
+            raise HybridModelError(
+                f"invalid hybrid-model configuration: {exc}"
+            ) from exc
+
+    @classmethod
+    def from_json(cls, path: str) -> "IQHybridConfig":
+        from pathlib import Path
+        try:
+            data = json.loads(Path(path).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise HybridModelError(
+                f"invalid hybrid-model config file: {path}"
+            ) from exc
+        if not isinstance(data, dict):
+            raise HybridModelError("hybrid-model config JSON must contain an object")
+        return cls.from_dict(data)
+
+    def write_json(self, path: str) -> None:
+        from pathlib import Path
+        Path(path).write_text(
+            json.dumps(self.to_dict(), sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
 
     @property
     def fingerprint(self) -> str:
