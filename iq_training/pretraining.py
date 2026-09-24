@@ -111,6 +111,12 @@ class IQPretrainingModel(nn.Module):
             if mtp_config is not None
             else None
         )
+        if self.mtp is not None:
+            reference = main_model.embed_tokens.weight
+            self.mtp.to(
+                device=reference.device,
+                dtype=reference.dtype,
+            )
 
     @property
     def config(self):
