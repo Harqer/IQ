@@ -8,6 +8,8 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
+from ..norm import RMSNorm
+
 
 class MoEConfigError(ValueError):
     pass
@@ -229,3 +231,28 @@ class RoutedSwiGLUMoE(nn.Module):
             router_z_loss=router_z_loss,
             overflow_count=overflow_count,
         )
+
+
+class RoutedSwiGLUMoELayer(nn.Module):
+    """Pre-norm residual expert-compute layer for HybridLayerType.MOE."""
+
+    def __init__(
+        self,
+        config: RoutedMoEConfig,
+        *,
+        norm_eps: float = 1e-5,
+        residual_dropout: float = 0.0,
+    ) -> None:
+        super().__init__()
+        if norm_eps <= 0:
+            raise ValueError("norm_eps must be positive")
+        if not (0.0 <= residual_dropout < 1.0):
+            raise ValueError("residual_dropout must be in [0, 1)")
+        self.norm = RMSNorm(config.hidden_size, norm_eps)
+        self.moe = RoutedSwiGLUMoE(config)
+        self.residual_dropout = nn.Dropout(residual_dropout)
+
+    def forward(self, x: torch.Tensor) -> MoEOutput:
+        routed = self.moe(self.norm(x))
+        routed.hidden_states = x + self.residual_dropout(routed.hidden_states)
+        return routed
