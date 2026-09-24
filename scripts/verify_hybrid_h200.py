@@ -92,11 +92,13 @@ def _document_isolation_check(
     with torch.no_grad():
         baseline = model(
             original,
+            position_ids=batch.get("position_ids"),
             attention_mask=mask,
             document_ids=docs,
         ).logits
         changed = model(
             modified,
+            position_ids=batch.get("position_ids"),
             attention_mask=mask,
             document_ids=docs,
         ).logits
@@ -157,19 +159,27 @@ def main() -> None:
         raise AssertionError("MoE router-z loss is missing/non-finite")
 
     output.loss.backward()
-    missing: list[str] = []
+    missing_required: list[str] = []
     nonfinite: list[str] = []
+    routed_expert_gradients = 0
     for name, parameter in training_model.named_parameters():
         if not parameter.requires_grad:
             continue
         if parameter.grad is None:
-            missing.append(name)
-        elif not bool(torch.isfinite(parameter.grad).all()):
+            if ".moe.experts." in name:
+                continue
+            missing_required.append(name)
+            continue
+        if not bool(torch.isfinite(parameter.grad).all()):
             nonfinite.append(name)
-    if missing or nonfinite:
+        if ".moe.experts." in name:
+            routed_expert_gradients += 1
+    if routed_expert_gradients == 0:
+        missing_required.append("at least one routed MoE expert gradient")
+    if missing_required or nonfinite:
         raise AssertionError(
             "hybrid gradient failure: "
-            f"missing={missing}, nonfinite={nonfinite}"
+            f"missing_required={missing_required}, nonfinite={nonfinite}"
         )
 
     _document_isolation_check(model, batch)
