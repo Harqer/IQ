@@ -128,6 +128,17 @@ class TrainingTests(unittest.TestCase):
         )
         self.assertTrue(metrics.loss > 0)
 
+    def test_pretraining_rejects_unavailable_moe_auxiliary_loss(self):
+        model = IQPretrainingModel(
+            IQForCausalLM(self.config()),
+            PretrainingObjectiveConfig(
+                moe_load_balance_loss_weight=0.01,
+            ),
+        )
+        ids = torch.tensor([[1, 2, 3, 4, 5]])
+        with self.assertRaises(Exception):
+            model(ids, labels=ids)
+
     def test_pretraining_fingerprint_covers_mtp_and_objective_config(self):
         main_a = IQForCausalLM(self.config())
         main_b = IQForCausalLM(self.config())
@@ -146,8 +157,17 @@ class TrainingTests(unittest.TestCase):
             PretrainingObjectiveConfig(mtp_loss_weight=0.25),
             mtp_config=MTPConfig(num_prediction_layers=2),
         )
+        d = IQPretrainingModel(
+            IQForCausalLM(self.config()),
+            PretrainingObjectiveConfig(
+                mtp_loss_weight=0.25,
+                moe_router_z_loss_weight=0.001,
+            ),
+            mtp_config=MTPConfig(num_prediction_layers=1),
+        )
         self.assertNotEqual(a.fingerprint, b.fingerprint)
         self.assertNotEqual(a.fingerprint, c.fingerprint)
+        self.assertNotEqual(a.fingerprint, d.fingerprint)
 
     def test_mtp_pretraining_checkpoint_round_trip_preserves_shared_weights(self):
         torch.manual_seed(13)
