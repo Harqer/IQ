@@ -10,6 +10,7 @@ from iq_model import IQForCausalLM, IQModelConfig, MTPConfig, install_dora
 from iq_training import (
     IQPretrainingModel,
     OptimizerConfig,
+    PretrainingConfigError,
     PretrainingObjectiveConfig,
     TrainingError,
     TrainStepConfig,
@@ -136,7 +137,7 @@ class TrainingTests(unittest.TestCase):
             ),
         )
         ids = torch.tensor([[1, 2, 3, 4, 5]])
-        with self.assertRaises(Exception):
+        with self.assertRaises(PretrainingConfigError):
             model(ids, labels=ids)
 
     def test_pretraining_fingerprint_covers_mtp_and_objective_config(self):
