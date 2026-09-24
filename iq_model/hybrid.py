@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from hashlib import sha256
-from typing import Mapping
 import json
 
 import torch
@@ -14,7 +13,6 @@ from .attention import DenseContextAttention
 from .config import IQModelConfig
 from .mlp import MoEOutput, RoutedMoEConfig, RoutedSwiGLUMoELayer
 from .norm import RMSNorm
-from .objectives import MTPConfig, MTPOutput, MultiTokenPrediction
 from .state import Mamba3MIMOConfig, Mamba3MIMOState
 
 
@@ -28,7 +26,6 @@ class IQHybridConfig:
     schedule: HybridSchedule
     mamba3: Mamba3MIMOConfig
     moe: RoutedMoEConfig
-    mtp: MTPConfig
 
     def __post_init__(self) -> None:
         hidden = self.model.hidden_size
@@ -56,7 +53,6 @@ class IQHybridConfig:
             "schedule": self.schedule.to_dict(),
             "mamba3": asdict(self.mamba3),
             "moe": asdict(self.moe),
-            "mtp": asdict(self.mtp),
         }
 
     @property
@@ -86,15 +82,10 @@ class HybridCausalLMOutput:
     logits: torch.Tensor
     loss: torch.Tensor | None
     hidden_states: torch.Tensor | None
-    mtp_output: MTPOutput | None
     load_balance_loss: torch.Tensor | None
     router_z_loss: torch.Tensor | None
     expert_counts: tuple[torch.Tensor, ...]
     schedule_fingerprint: str
-
-    @property
-    def mtp_loss(self) -> torch.Tensor | None:
-        return None if self.mtp_output is None else self.mtp_output.loss
 
 
 def _valid_tokens(
@@ -444,13 +435,6 @@ class IQHybridForCausalLM(nn.Module):
         if config.model.tie_word_embeddings:
             self.lm_head.weight = self.embed_tokens.weight
 
-        self.mtp = MultiTokenPrediction(
-            config.model,
-            config.mtp,
-            shared_embedding=self.embed_tokens,
-            shared_head=self.lm_head,
-        ).to(device=device_obj, dtype=dtype)
-
     def forward(
         self,
         input_ids: torch.Tensor,
@@ -530,18 +514,6 @@ class IQHybridForCausalLM(nn.Module):
                 shift_labels.view(-1),
                 ignore_index=-100,
             )
-
-        mtp_output = None
-        if labels is not None:
-            mtp_output = self.mtp(
-                input_ids,
-                hidden,
-                labels=labels,
-                attention_mask=attention_mask,
-                position_ids=position_ids,
-                document_ids=document_ids,
-            )
-
         load_balance_loss = (
             torch.stack(
                 [output.load_balance_loss for output in moe_outputs]
@@ -560,7 +532,6 @@ class IQHybridForCausalLM(nn.Module):
             logits=logits,
             loss=language_loss,
             hidden_states=hidden if return_hidden_states else None,
-            mtp_output=mtp_output,
             load_balance_loss=load_balance_loss,
             router_z_loss=router_z_loss,
             expert_counts=tuple(
