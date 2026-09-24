@@ -2,6 +2,7 @@ from .compressed import (
     CompressedContextConfig,
     CompressedContextError,
     CompressedSparseContextAttention,
+    IndexerSegmentScores,
     GroupedLowRankOutput,
     HeavilyCompressedContextAttention,
 )
@@ -12,6 +13,7 @@ __all__ = [
     "CompressedContextConfig",
     "CompressedContextError",
     "CompressedSparseContextAttention",
+    "IndexerSegmentScores",
     "DenseContextAttention",
     "GroupedLowRankOutput",
     "GroupedQueryAttention",

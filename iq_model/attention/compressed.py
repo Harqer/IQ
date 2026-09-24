@@ -21,6 +21,15 @@ class CompressedContextError(RuntimeError):
 
 
 @dataclass(frozen=True)
+class IndexerSegmentScores:
+    batch_index: int
+    token_indices: torch.Tensor
+    scores: torch.Tensor
+    valid_mask: torch.Tensor
+    selected_indices: torch.Tensor
+
+
+@dataclass(frozen=True)
 class CompressedContextConfig:
     hidden_size: int
     num_attention_heads: int
@@ -382,12 +391,12 @@ class _V4CompressedContextAttention(nn.Module):
             head_dim=self.config.head_dim,
         )
 
-    def _index_selection(
+    def _index_scores(
         self,
         hidden: torch.Tensor,
         q_residual: torch.Tensor,
         positions: torch.Tensor,
-    ) -> torch.Tensor:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         if self.mode != "csa":
             raise CompressedContextError("index selection is CSA-only")
         assert self.index_kv_proj is not None
@@ -408,10 +417,10 @@ class _V4CompressedContextAttention(nn.Module):
         )
         length = hidden.shape[0]
         if compressed.shape[0] == 0:
-            return torch.full(
+            empty = hidden.new_zeros((length, 0), dtype=torch.float32)
+            return empty, torch.zeros(
                 (length, 0),
-                -1,
-                dtype=torch.long,
+                dtype=torch.bool,
                 device=hidden.device,
             )
 
@@ -435,18 +444,105 @@ class _V4CompressedContextAttention(nn.Module):
 
         visible = (torch.arange(length, device=hidden.device) + 1) // self.compress_rate
         entry = torch.arange(compressed.shape[0], device=hidden.device)
+        valid_mask = entry.unsqueeze(0) < visible.unsqueeze(1)
         index_scores = index_scores.masked_fill(
-            entry.unsqueeze(0) >= visible.unsqueeze(1),
+            ~valid_mask,
             float("-inf"),
         )
-        topk = min(self.config.index_topk, compressed.shape[0])
-        selected = index_scores.topk(topk, dim=-1).indices
-        invalid = selected >= visible.unsqueeze(1)
-        return torch.where(
-            invalid,
-            torch.full_like(selected, -1),
-            selected,
+        return index_scores, valid_mask
+
+    def _index_selection(
+        self,
+        hidden: torch.Tensor,
+        q_residual: torch.Tensor,
+        positions: torch.Tensor,
+    ) -> torch.Tensor:
+        index_scores, valid_mask = self._index_scores(
+            hidden,
+            q_residual,
+            positions,
         )
+        if index_scores.shape[-1] == 0:
+            return torch.full(
+                (hidden.shape[0], 0),
+                -1,
+                dtype=torch.long,
+                device=hidden.device,
+            )
+        topk = min(self.config.index_topk, index_scores.shape[-1])
+        selected = index_scores.topk(topk, dim=-1).indices
+        selected_valid = valid_mask.gather(1, selected)
+        return torch.where(
+            selected_valid,
+            selected,
+            torch.full_like(selected, -1),
+        )
+
+    def indexer_scores(
+        self,
+        x: torch.Tensor,
+        *,
+        position_ids: torch.Tensor | None = None,
+        attention_mask: torch.Tensor | None = None,
+        document_ids: torch.Tensor | None = None,
+    ) -> tuple[IndexerSegmentScores, ...]:
+        if self.mode != "csa":
+            raise CompressedContextError(
+                "Lightning indexer scores are available only for CSA"
+            )
+        if x.ndim != 3 or x.shape[-1] != self.config.hidden_size:
+            raise ValueError(
+                f"indexer input must have shape [batch, sequence, {self.config.hidden_size}]"
+            )
+        batch, sequence, _ = x.shape
+        prepared = prepare_causal_attention(
+            batch_size=batch,
+            sequence_length=sequence,
+            device=x.device,
+            position_ids=position_ids,
+            attention_mask=attention_mask,
+            document_ids=document_ids,
+        )
+        docs = (
+            document_ids.to(x.device)
+            if document_ids is not None
+            else None
+        )
+        result: list[IndexerSegmentScores] = []
+        for row in range(batch):
+            row_docs = docs[row] if docs is not None else None
+            for cols in _segments(prepared.valid_tokens[row], row_docs):
+                token_indices = torch.tensor(
+                    cols,
+                    dtype=torch.long,
+                    device=x.device,
+                )
+                hidden = x[row].index_select(0, token_indices)
+                positions = prepared.position_ids[row].index_select(
+                    0,
+                    token_indices,
+                )
+                q_residual = self.q_a_norm(self.q_a_proj(hidden))
+                scores, valid_mask = self._index_scores(
+                    hidden,
+                    q_residual,
+                    positions,
+                )
+                selected = self._index_selection(
+                    hidden,
+                    q_residual,
+                    positions,
+                )
+                result.append(
+                    IndexerSegmentScores(
+                        batch_index=row,
+                        token_indices=token_indices,
+                        scores=scores,
+                        valid_mask=valid_mask,
+                        selected_indices=selected,
+                    )
+                )
+        return tuple(result)
 
     def _attend_candidates(
         self,

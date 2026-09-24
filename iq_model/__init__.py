@@ -1,5 +1,6 @@
+from .residual import MHCConfig, MHCError, MHCHead, MHCWeights, ManifoldHyperConnection, expand_mhc_streams, sinkhorn_doubly_stochastic
 from .hybrid import CompressedContextResidualLayer, HybridCausalLMOutput, HybridModelError, IQHybridConfig, IQHybridForCausalLM, Mamba3ResidualLayer, DenseContextResidualLayer, MambaPackedLayout, pack_mamba_varlen, unpack_mamba_varlen
-from .objectives import MTPConfig, MTPConfigError, MTPDepthOutput, MTPOutput, MTPPredictionBlock, MultiTokenPrediction
+from .objectives import IndexerObjectiveError, MTPConfig, MTPConfigError, MTPDepthOutput, MTPOutput, MTPPredictionBlock, MultiTokenPrediction, lightning_indexer_kl_loss, lightning_indexer_topk_recall
 from .mlp import MoEConfigError, MoEOutput, RoutedMoEConfig, RoutedSwiGLUMoE, RoutedSwiGLUMoELayer, SwiGLU, SwiGLUExpert
 from .architecture import ArchitectureError, HybridLayerType, HybridSchedule
 from .state import (
@@ -17,6 +18,7 @@ from .attention import (
     CompressedContextConfig,
     CompressedContextError,
     CompressedSparseContextAttention,
+    IndexerSegmentScores,
     DenseContextAttention,
     GroupedLowRankOutput,
     GroupedQueryAttention,
@@ -30,6 +32,13 @@ from .outputs import CausalLMOutput
 __all__ = [
     "ArchitectureError",
     "CausalLMOutput",
+    "IndexerObjectiveError",
+    "IndexerSegmentScores",
+    "MHCConfig",
+    "MHCError",
+    "MHCHead",
+    "MHCWeights",
+    "ManifoldHyperConnection",
     "CompressedContextResidualLayer",
     "CompressedContextConfig",
     "CompressedContextError",
@@ -74,9 +83,13 @@ __all__ = [
     "RoutedSwiGLUMoELayer",
     "SwiGLU",
     "SwiGLUExpert",
+    "expand_mhc_streams",
     "inspect_mamba3_mimo_runtime",
+    "lightning_indexer_kl_loss",
+    "lightning_indexer_topk_recall",
     "pack_mamba_varlen",
     "recommended_mamba3_chunk_size",
+    "sinkhorn_doubly_stochastic",
     "unpack_mamba_varlen",
     "require_mamba3_mimo_runtime",
 ]
