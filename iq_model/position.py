@@ -45,6 +45,14 @@ def rotate_half(x: torch.Tensor) -> torch.Tensor:
     return torch.cat((-x2, x1), dim=-1)
 
 
+def rotate_interleaved_pairs(x: torch.Tensor) -> torch.Tensor:
+    if x.shape[-1] % 2:
+        raise ValueError("interleaved rotary slice must have an even final dimension")
+    x1 = x[..., 0::2]
+    x2 = x[..., 1::2]
+    return torch.stack((-x2, x1), dim=-1).flatten(-2)
+
+
 def apply_rotary_to_tensor(
     x: torch.Tensor,
     cos: torch.Tensor,
@@ -82,7 +90,8 @@ def apply_rotary_to_tensor(
         passthrough = x[..., rotary_dim:]
 
     sign = -1.0 if inverse else 1.0
-    rotated = (rotated * cos) + (sign * rotate_half(rotated) * sin)
+    rotate_fn = rotate_interleaved_pairs if rotary_at_end else rotate_half
+    rotated = (rotated * cos) + (sign * rotate_fn(rotated) * sin)
     if rotary_at_end:
         return torch.cat((passthrough, rotated), dim=-1)
     return torch.cat((rotated, passthrough), dim=-1)
