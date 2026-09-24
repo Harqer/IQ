@@ -42,3 +42,18 @@ class HeadRMSNorm(nn.Module):
         variance = x.float().pow(2).mean(dim=-1, keepdim=True)
         normalized = x.float() * torch.rsqrt(variance + self.eps)
         return (normalized * self.weight.float()).to(input_dtype)
+
+
+class UnweightedRMSNorm(nn.Module):
+    """RMS normalization without a learned scale, used by V4 query heads."""
+
+    def __init__(self, eps: float = 1e-6) -> None:
+        super().__init__()
+        if eps <= 0:
+            raise ValueError("eps must be positive")
+        self.eps = float(eps)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        input_dtype = x.dtype
+        variance = x.float().pow(2).mean(dim=-1, keepdim=True)
+        return (x.float() * torch.rsqrt(variance + self.eps)).to(input_dtype)

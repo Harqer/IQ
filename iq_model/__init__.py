@@ -1,4 +1,4 @@
-from .hybrid import HybridCausalLMOutput, HybridModelError, IQHybridConfig, IQHybridForCausalLM, Mamba3ResidualLayer, DenseContextResidualLayer, MambaPackedLayout, pack_mamba_varlen, unpack_mamba_varlen
+from .hybrid import CompressedContextResidualLayer, HybridCausalLMOutput, HybridModelError, IQHybridConfig, IQHybridForCausalLM, Mamba3ResidualLayer, DenseContextResidualLayer, MambaPackedLayout, pack_mamba_varlen, unpack_mamba_varlen
 from .objectives import MTPConfig, MTPConfigError, MTPDepthOutput, MTPOutput, MTPPredictionBlock, MultiTokenPrediction
 from .mlp import MoEConfigError, MoEOutput, RoutedMoEConfig, RoutedSwiGLUMoE, RoutedSwiGLUMoELayer, SwiGLU, SwiGLUExpert
 from .architecture import ArchitectureError, HybridLayerType, HybridSchedule
@@ -13,15 +13,27 @@ from .state import (
     require_mamba3_mimo_runtime,
 )
 from .adapters import DoRALinear, install_dora
-from .attention import DenseContextAttention, GroupedQueryAttention
+from .attention import (
+    CompressedContextConfig,
+    CompressedContextError,
+    CompressedSparseContextAttention,
+    DenseContextAttention,
+    GroupedLowRankOutput,
+    GroupedQueryAttention,
+    HeavilyCompressedContextAttention,
+)
 from .config import IQConfigError, IQModelConfig
 from .model import IQDecoderBlock, IQForCausalLM
-from .norm import HeadRMSNorm, RMSNorm
+from .norm import HeadRMSNorm, RMSNorm, UnweightedRMSNorm
 from .outputs import CausalLMOutput
 
 __all__ = [
     "ArchitectureError",
     "CausalLMOutput",
+    "CompressedContextResidualLayer",
+    "CompressedContextConfig",
+    "CompressedContextError",
+    "CompressedSparseContextAttention",
     "DenseContextAttention",
     "HeadRMSNorm",
     "HybridCausalLMOutput",
@@ -48,12 +60,15 @@ __all__ = [
     "Mamba3MIMORuntimeInfo",
     "DoRALinear",
     "install_dora",
+    "GroupedLowRankOutput",
     "GroupedQueryAttention",
+    "HeavilyCompressedContextAttention",
     "IQConfigError",
     "IQDecoderBlock",
     "IQForCausalLM",
     "IQModelConfig",
     "RMSNorm",
+    "UnweightedRMSNorm",
     "RoutedMoEConfig",
     "RoutedSwiGLUMoE",
     "RoutedSwiGLUMoELayer",

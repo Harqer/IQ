@@ -10,7 +10,12 @@ from torch import nn
 from torch.nn import functional as F
 
 from .architecture import HybridLayerType, HybridSchedule
-from .attention import DenseContextAttention
+from .attention import (
+    CompressedContextConfig,
+    CompressedSparseContextAttention,
+    DenseContextAttention,
+    HeavilyCompressedContextAttention,
+)
 from .config import IQModelConfig
 from .mlp import MoEOutput, RoutedMoEConfig, RoutedSwiGLUMoELayer
 from .norm import RMSNorm
@@ -27,6 +32,7 @@ class IQHybridConfig:
     schedule: HybridSchedule
     mamba3: Mamba3MIMOConfig
     moe: RoutedMoEConfig
+    compressed_context: CompressedContextConfig | None = None
 
     def __post_init__(self) -> None:
         hidden = self.model.hidden_size
@@ -46,6 +52,23 @@ class IQHybridConfig:
             )
         if self.schedule.count(HybridLayerType.MOE) == 0:
             raise HybridModelError("hybrid schedule requires at least one MoE layer")
+        compressed_layers = (
+            self.schedule.count(HybridLayerType.CSA)
+            + self.schedule.count(HybridLayerType.HCA)
+        )
+        if compressed_layers:
+            if self.compressed_context is None:
+                raise HybridModelError(
+                    "CSA/HCA schedule requires compressed_context configuration"
+                )
+            if self.compressed_context.hidden_size != hidden:
+                raise HybridModelError(
+                    "compressed_context hidden_size does not match model hidden_size"
+                )
+        elif self.compressed_context is not None:
+            raise HybridModelError(
+                "compressed_context config is present but the schedule has no CSA/HCA layers"
+            )
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -54,6 +77,11 @@ class IQHybridConfig:
             "schedule": self.schedule.to_dict(),
             "mamba3": asdict(self.mamba3),
             "moe": asdict(self.moe),
+            "compressed_context": (
+                asdict(self.compressed_context)
+                if self.compressed_context is not None
+                else None
+            ),
         }
 
     @classmethod
@@ -66,6 +94,7 @@ class IQHybridConfig:
         schedule = data.get("schedule")
         mamba3 = data.get("mamba3")
         moe = data.get("moe")
+        compressed_context = data.get("compressed_context")
         if not isinstance(model, dict):
             raise HybridModelError("hybrid config model must be an object")
         if not isinstance(schedule, dict):
@@ -74,12 +103,21 @@ class IQHybridConfig:
             raise HybridModelError("hybrid config mamba3 must be an object")
         if not isinstance(moe, dict):
             raise HybridModelError("hybrid config moe must be an object")
+        if compressed_context is not None and not isinstance(compressed_context, dict):
+            raise HybridModelError(
+                "hybrid config compressed_context must be an object or null"
+            )
         try:
             return cls(
                 model=IQModelConfig.from_dict(model),
                 schedule=HybridSchedule.from_dict(schedule),
                 mamba3=Mamba3MIMOConfig(**mamba3),
                 moe=RoutedMoEConfig(**moe),
+                compressed_context=(
+                    CompressedContextConfig(**compressed_context)
+                    if isinstance(compressed_context, dict)
+                    else None
+                ),
             )
         except (TypeError, ValueError) as exc:
             raise HybridModelError(
@@ -388,11 +426,53 @@ class DenseContextResidualLayer(nn.Module):
         )
 
 
-class IQHybridForCausalLM(nn.Module):
-    """Executable heterogeneous Mamba-3 / MoE / dense-attention backbone.
+class CompressedContextResidualLayer(nn.Module):
+    def __init__(
+        self,
+        model_config: IQModelConfig,
+        compressed_config: CompressedContextConfig,
+        *,
+        mode: HybridLayerType,
+    ) -> None:
+        super().__init__()
+        if mode not in {HybridLayerType.CSA, HybridLayerType.HCA}:
+            raise ValueError("compressed context mode must be CSA or HCA")
+        self.norm = RMSNorm(
+            model_config.hidden_size,
+            model_config.rms_norm_eps,
+        )
+        self.attention = (
+            CompressedSparseContextAttention(compressed_config)
+            if mode is HybridLayerType.CSA
+            else HeavilyCompressedContextAttention(compressed_config)
+        )
+        self.residual_dropout = nn.Dropout(
+            model_config.residual_dropout
+        )
 
-    CSA, HCA, and executive layers deliberately fail construction until their
-    exact reference implementations are present. They are never substituted by
+    def forward(
+        self,
+        x: torch.Tensor,
+        *,
+        position_ids: torch.Tensor | None,
+        attention_mask: torch.Tensor | None,
+        document_ids: torch.Tensor | None,
+    ) -> torch.Tensor:
+        return x + self.residual_dropout(
+            self.attention(
+                self.norm(x),
+                position_ids=position_ids,
+                attention_mask=attention_mask,
+                document_ids=document_ids,
+            )
+        )
+
+
+class IQHybridForCausalLM(nn.Module):
+    """Executable heterogeneous Mamba-3 / MoE / CSA / HCA / dense-attention backbone.
+
+    Executive layers still fail construction until the exact Hamiltonian
+    reference is present. Unsupported layer types are never substituted by
     dense attention or another layer type.
     """
 
@@ -415,11 +495,7 @@ class IQHybridForCausalLM(nn.Module):
         unsupported = tuple(
             layer
             for layer in config.schedule.layers
-            if layer in {
-                HybridLayerType.CSA,
-                HybridLayerType.HCA,
-                HybridLayerType.EXECUTIVE,
-            }
+            if layer is HybridLayerType.EXECUTIVE
         )
         if unsupported:
             names = ", ".join(layer.value for layer in unsupported)
@@ -455,6 +531,13 @@ class IQHybridForCausalLM(nn.Module):
             elif layer_type is HybridLayerType.DENSE_ATTENTION:
                 layer = DenseContextResidualLayer(
                     config.model,
+                ).to(device=device_obj, dtype=dtype)
+            elif layer_type in {HybridLayerType.CSA, HybridLayerType.HCA}:
+                assert config.compressed_context is not None
+                layer = CompressedContextResidualLayer(
+                    config.model,
+                    config.compressed_context,
+                    mode=layer_type,
                 ).to(device=device_obj, dtype=dtype)
             else:
                 raise HybridModelError(
@@ -528,7 +611,11 @@ class IQHybridForCausalLM(nn.Module):
                 moe_output = layer(x)
                 x = moe_output.hidden_states
                 moe_outputs.append(moe_output)
-            elif layer_type is HybridLayerType.DENSE_ATTENTION:
+            elif layer_type in {
+                HybridLayerType.DENSE_ATTENTION,
+                HybridLayerType.CSA,
+                HybridLayerType.HCA,
+            }:
                 x = layer(
                     x,
                     position_ids=position_ids,
