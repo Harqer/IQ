@@ -11,7 +11,6 @@ from iq_model import (
     IQHybridConfig,
     IQModelConfig,
     Mamba3MIMOConfig,
-    MTPConfig,
     RoutedMoEConfig,
     pack_mamba_varlen,
     unpack_mamba_varlen,
@@ -67,6 +66,9 @@ class HeterogeneousHybridRuntimeTests(unittest.TestCase):
         )
         self.assertEqual(len(config.fingerprint), 64)
         self.assertEqual(config.fingerprint, self.hybrid_config().fingerprint)
+        restored = IQHybridConfig.from_dict(config.to_dict())
+        self.assertEqual(restored.to_dict(), config.to_dict())
+        self.assertEqual(restored.fingerprint, config.fingerprint)
 
         with self.assertRaises(HybridModelError):
             IQHybridConfig(
