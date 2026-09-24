@@ -55,9 +55,6 @@ def lightning_indexer_kl_loss(
 
     student_log_probs = F.log_softmax(student[row_valid].float(), dim=-1)
     teacher_probs = F.softmax(teacher[row_valid].float(), dim=-1)
-    teacher_log_probs = torch.log(
-        teacher_probs.clamp_min(torch.finfo(teacher_probs.dtype).tiny)
-    )
     return (
         F.kl_div(
             student_log_probs,
