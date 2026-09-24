@@ -3,6 +3,7 @@ from .moe import (
     MoEOutput,
     RoutedMoEConfig,
     RoutedSwiGLUMoE,
+    RoutedSwiGLUMoELayer,
     SwiGLUExpert,
 )
 from .swiglu import SwiGLU
@@ -12,6 +13,7 @@ __all__ = [
     "MoEOutput",
     "RoutedMoEConfig",
     "RoutedSwiGLUMoE",
+    "RoutedSwiGLUMoELayer",
     "SwiGLU",
     "SwiGLUExpert",
 ]
