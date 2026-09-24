@@ -6,9 +6,11 @@ from pathlib import Path
 
 import torch
 
-from iq_model import IQForCausalLM, IQModelConfig, install_dora
+from iq_model import IQForCausalLM, IQModelConfig, MTPConfig, install_dora
 from iq_training import (
+    IQPretrainingModel,
     OptimizerConfig,
+    PretrainingObjectiveConfig,
     TrainingError,
     TrainStepConfig,
     build_optimizer,
@@ -92,6 +94,60 @@ class TrainingTests(unittest.TestCase):
                 batches[:1],
                 TrainStepConfig(gradient_accumulation_steps=2),
             )
+
+    def test_pretraining_wrapper_adds_mtp_loss_and_preserves_optimizer_semantics(self):
+        torch.manual_seed(12)
+        main = IQForCausalLM(self.config())
+        model = IQPretrainingModel(
+            main,
+            PretrainingObjectiveConfig(mtp_loss_weight=0.25),
+            mtp_config=MTPConfig(num_prediction_layers=1),
+        )
+        coverage = classify_parameters(model)
+        self.assertIn("main_model.embed_tokens.weight", coverage.adamw)
+        self.assertIn("main_model.lm_head.weight", coverage.adamw)
+        self.assertNotIn("main_model.embed_tokens.weight", coverage.muon)
+        self.assertNotIn("main_model.lm_head.weight", coverage.muon)
+        self.assertIn("mtp.layers.0.eh_proj.weight", coverage.muon)
+
+        ids = torch.tensor([[1, 2, 3, 4, 5]])
+        output = model(ids, labels=ids)
+        self.assertIsNotNone(output.ntp_loss)
+        self.assertIsNotNone(output.mtp_loss)
+        expected = output.ntp_loss + 0.25 * output.mtp_loss
+        self.assertTrue(torch.allclose(output.loss, expected))
+
+        optimizer = build_optimizer(
+            model,
+            OptimizerConfig(lr=1e-3, weight_decay=0.0),
+        )
+        metrics = train_step(
+            model,
+            optimizer,
+            [{"input_ids": ids}],
+        )
+        self.assertTrue(metrics.loss > 0)
+
+    def test_pretraining_fingerprint_covers_mtp_and_objective_config(self):
+        main_a = IQForCausalLM(self.config())
+        main_b = IQForCausalLM(self.config())
+        a = IQPretrainingModel(
+            main_a,
+            PretrainingObjectiveConfig(mtp_loss_weight=0.25),
+            mtp_config=MTPConfig(num_prediction_layers=1),
+        )
+        b = IQPretrainingModel(
+            main_b,
+            PretrainingObjectiveConfig(mtp_loss_weight=0.5),
+            mtp_config=MTPConfig(num_prediction_layers=1),
+        )
+        c = IQPretrainingModel(
+            IQForCausalLM(self.config()),
+            PretrainingObjectiveConfig(mtp_loss_weight=0.25),
+            mtp_config=MTPConfig(num_prediction_layers=2),
+        )
+        self.assertNotEqual(a.fingerprint, b.fingerprint)
+        self.assertNotEqual(a.fingerprint, c.fingerprint)
 
     def test_hybrid_optimizer_checkpoint_round_trip(self):
         torch.manual_seed(11)
