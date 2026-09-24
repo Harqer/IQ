@@ -164,8 +164,12 @@ Implemented today:
 - coordinate-map/operator transport + DoRA correction
 - mandatory rank-4 Mamba-3 MIMO runtime wrapper and H200 parity gate
 - explicit heterogeneous `HybridSchedule` validation
+- executable heterogeneous Mamba-3 MIMO / routed-MoE / dense-attention backbone for implemented layer types
+- packed/padded repository batches converted to Mamba-3 varlen `cu_seqlens` with document-state isolation
 - routed/shared SwiGLU MoE `E` layer with top-k routing, load-balance/z losses, and no silent token drop
 - sequential shared-embedding/shared-head MTP prediction stack with packed-document-safe causal chaining
+- pretraining wrapper combining NTP/MTP/MoE auxiliary objectives with checkpointed coefficients
+- real-batch H200 hybrid forward/backward and cross-document-isolation gate
 - QK-normalized RoPE dense-context anchor
 - leading RoPE plus trailing partial/inverse RoPE reference primitives
 - scale-gate metrics
@@ -173,10 +177,9 @@ Implemented today:
 
 Specified / next runtime integration:
 
-- full heterogeneous Mamba-3 MIMO / MoE / CSA / HCA / dense-attention backbone
+- complete heterogeneous schedule once CSA/HCA and executive layer runtimes are implemented
 - CSA/HCA compression, learned indexer, shared compressed KV, sinks, grouped output projection
 - exact mHC residual-topology reference + optimized kernel
-- first-class MTP prediction stack
 - Hamiltonian/EBM controller with PSD ring dissipation and energy-controlled discrete integration
 - adaptive recurrent reasoning and concept collapse
 - real Muon optimizer

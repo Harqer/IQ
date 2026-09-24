@@ -1,3 +1,4 @@
+from .hybrid import HybridCausalLMOutput, HybridModelError, IQHybridConfig, IQHybridForCausalLM, Mamba3ResidualLayer, DenseContextResidualLayer, MambaPackedLayout, pack_mamba_varlen, unpack_mamba_varlen
 from .objectives import MTPConfig, MTPConfigError, MTPDepthOutput, MTPOutput, MTPPredictionBlock, MultiTokenPrediction
 from .mlp import MoEConfigError, MoEOutput, RoutedMoEConfig, RoutedSwiGLUMoE, RoutedSwiGLUMoELayer, SwiGLU, SwiGLUExpert
 from .architecture import ArchitectureError, HybridLayerType, HybridSchedule
@@ -23,7 +24,14 @@ __all__ = [
     "CausalLMOutput",
     "DenseContextAttention",
     "HeadRMSNorm",
+    "HybridCausalLMOutput",
     "HybridLayerType",
+    "HybridModelError",
+    "IQHybridConfig",
+    "IQHybridForCausalLM",
+    "MambaPackedLayout",
+    "Mamba3ResidualLayer",
+    "DenseContextResidualLayer",
     "HybridSchedule",
     "MAMBA3_UPSTREAM_COMMIT",
     "MTPConfig",
@@ -52,6 +60,8 @@ __all__ = [
     "SwiGLU",
     "SwiGLUExpert",
     "inspect_mamba3_mimo_runtime",
+    "pack_mamba_varlen",
     "recommended_mamba3_chunk_size",
+    "unpack_mamba_varlen",
     "require_mamba3_mimo_runtime",
 ]
