@@ -157,23 +157,27 @@ The trainable IQ model will connect through `ModelBackend.generate()`.
 
 Implemented today:
 
-- donor-independent Phi checkpoint inspection
+- dense Phi-compatible Transformer control/teacher with packed/padded GQA
+- donor-independent Phi checkpoint inspection and executable transfer job
 - lazy safetensors operator access
-- functional-shadow measurements
-- monotonic layer matching
-- coordinate-map/operator transport
+- functional-shadow measurements and monotonic layer matching
+- coordinate-map/operator transport + DoRA correction
+- mandatory rank-4 Mamba-3 MIMO runtime wrapper and H200 parity gate
+- explicit heterogeneous `HybridSchedule` validation
+- QK-normalized RoPE dense-context anchor
+- leading RoPE plus trailing partial/inverse RoPE reference primitives
 - scale-gate metrics
 - model-independent agent harness
 
-In migration:
+Specified / next runtime integration:
 
-- real IQ v2 model/training packages
-- explicit heterogeneous Mamba-3 MIMO / MoE / CSA / HCA / dense-attention schedule
+- full heterogeneous Mamba-3 MIMO / MoE / CSA / HCA / dense-attention backbone
+- CSA/HCA compression, learned indexer, shared compressed KV, sinks, grouped output projection
+- exact mHC residual-topology reference + optimized kernel
+- first-class MTP prediction stack
+- Hamiltonian/EBM controller with PSD ring dissipation and energy-controlled discrete integration
+- adaptive recurrent reasoning and concept collapse
 - real Muon optimizer
-- DoRA correction
-- Hamiltonian/EBM controller
-- adaptive recurrent reasoning
-- QK-normalized RoPE context anchors and partial/inverse RoPE compressed attention
 - code-focused FIM/MTP/MoE training
 
 ## License
