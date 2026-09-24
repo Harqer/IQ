@@ -1,3 +1,4 @@
+from .mlp import MoEConfigError, MoEOutput, RoutedMoEConfig, RoutedSwiGLUMoE, RoutedSwiGLUMoELayer, SwiGLU, SwiGLUExpert
 from .architecture import ArchitectureError, HybridLayerType, HybridSchedule
 from .state import (
     MAMBA3_UPSTREAM_COMMIT,
@@ -24,6 +25,8 @@ __all__ = [
     "HybridLayerType",
     "HybridSchedule",
     "MAMBA3_UPSTREAM_COMMIT",
+    "MoEConfigError",
+    "MoEOutput",
     "Mamba3MIMOConfig",
     "Mamba3MIMOState",
     "Mamba3MIMORuntimeError",
@@ -36,6 +39,11 @@ __all__ = [
     "IQForCausalLM",
     "IQModelConfig",
     "RMSNorm",
+    "RoutedMoEConfig",
+    "RoutedSwiGLUMoE",
+    "RoutedSwiGLUMoELayer",
+    "SwiGLU",
+    "SwiGLUExpert",
     "inspect_mamba3_mimo_runtime",
     "recommended_mamba3_chunk_size",
     "require_mamba3_mimo_runtime",
