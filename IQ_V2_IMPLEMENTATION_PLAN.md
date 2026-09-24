@@ -39,16 +39,19 @@ This document replaces the old Gemma/NIF training assumptions. `SHADOW_TRANSFER.
 
 ## 2. Initial recipient scale
 
-Keep the first IQ recipient close to the current repository's intended scale so architecture effects are not confounded with parameter scaling.
+Keep the first dense Phi recipient close to the current repository's intended scale so transfer retention is measurable. The hybrid backbone is a separate heterogeneous schedule rather than a stack of identical Transformer blocks.
 
 ```yaml
 hidden_size: 4096
-num_blocks: 32
+dense_control_layers: 32
 num_attention_heads: 32
 num_kv_heads: 8
 head_dim: 128
 norm: rmsnorm
-activation: swiglu
+dense_attention_position: qk_rope
+dense_attention_qk_norm: per_head_rmsnorm
+compressed_attention_position: trailing_partial_rope_with_inverse_output
+expert_activation: swiglu
 initial_context: 32768
 max_context_target: 131072
 exec_latent_dim: 512
@@ -61,10 +64,13 @@ mamba3_state_size: 128
 mamba3_head_dim: 64
 mamba3_mimo_rank: 4
 mamba3_chunk_size_bf16: 16
-global_attention_period: 4
-hybrid_fusion: parallel_gated_residual
+mamba3_state_rotation: native_complex_data_dependent_rope
+hybrid_backbone: explicit_heterogeneous_schedule
 executive_geometry: euclidean
+mtp_shared_heads: 2
 ```
+
+The schedule itself is versioned model configuration. No code path infers an attention cadence from a single integer such as `global_attention_period`.
 
 These are implementation defaults, not immutable research constants. Changes require a config version bump and a reproducible ablation.
 
@@ -187,15 +193,39 @@ Transport policy:
 
 ## 5. Position and computation-depth encoding
 
-Use two independent coordinates.
+IQ has three distinct positional/state-rotation mechanisms plus an independent reasoning-depth coordinate. They must not be conflated.
 
-### Token position
+### Dense Transformer anchors: Q/K RoPE
 
-`xPos/RoPE-family` positional transform is applied only to Q/K. The implementation exposes a single positional interface so RoPE/xPos/YaRN can be selected without changing attention code.
+Dense/global Transformer context anchors use per-head Q/K RMS normalization followed by ordinary RoPE:
+
+```text
+q = RMSNorm_head(W_q x)
+k = RMSNorm_head(W_k x)
+q = RoPE(q, position)
+k = RoPE(k, position)
+```
+
+RoPE applies to Q/K only. It is not applied to the residual stream before Mamba.
+
+### CSA/HCA: normalized compressed KV + trailing partial RoPE
+
+Compressed context attention follows the DeepSeek V4-family positional rule:
+
+- normalize each query head and the shared compressed KV head before core attention;
+- apply RoPE only to the configured trailing rotary dimensions;
+- use the same relative-position convention for compressed entries;
+- apply the inverse position rotation to the rotary slice of the attention output before grouped output projection.
+
+The reference primitives live in `iq_model/position.py`; optimized CSA/HCA kernels must match them.
+
+### Mamba-3: native complex/data-dependent state rotation
+
+Mamba-3 owns its state-space rotation internally. Its complex-valued recurrence and data-dependent rotary state update remain inside the pinned upstream Mamba-3 implementation. IQ never applies Transformer Q/K RoPE to the Mamba input as a substitute for, or in addition to, Mamba-3's native state rotation.
 
 ### Reasoning depth
 
-Outer and inner recurrence receive a continuous spectral depth encoding independent of token position:
+Outer and inner recurrence receive a continuous spectral depth encoding independent of token position and Mamba token-time state:
 
 ```text
 s(r) = [sin(w_1 r), cos(w_1 r), ..., sin(w_k r), cos(w_k r)]
@@ -207,58 +237,48 @@ Optional state conditioning is bounded:
 w_i(z) = w_i0 * (1 + alpha * tanh(a_i^T z)), alpha <= configured maximum
 ```
 
-The spectral encoding is projected into the executive latent and/or residual stream through learned gated projections. Token position and reasoning depth are never conflated.
+Token position, Mamba token-time state, and reasoning-depth coordinates are separate state variables.
 
-## 6. Core block and hybrid execution
+## 6. Heterogeneous hybrid backbone
 
-IQ v2 is explicitly a **Mamba-3 + Transformer hybrid**. Mamba-3 is never treated as a replacement for attention. The two paths solve different memory problems:
+IQ does not use one universal `Transformer + Mamba + FFN` block. Sequence mixing, expert computation, context attention, and executive control are distinct physical layer types arranged by an explicit `HybridSchedule`.
 
-- Mamba-3: linear-time recurrent state propagation, long-horizon state tracking, and constant-size decode state.
-- Transformer attention: exact content-addressable retrieval, induction, code-symbol lookup, and needle-in-context recall.
-- DeepSeek V4/V4.1-style context attention: local sliding-window attention plus compressed long-range KV memory selected by a learned sparse indexer.
-- periodic global attention: explicit full-context anchor blocks for high-recall retrieval.
-- Differential Attention: outer-loop controller attention over compressed/global memory, not a replacement for token-level attention.
-
-The production topology is **Mamba-dominant**. Transformer attention is a context/comparison service invoked where explicit token addressing is useful; it is not an equal always-on reasoning branch.
+Canonical layer symbols:
 
 ```text
-token/residual state
-        |
-        +------------------------------+
-        |                              |
-        |                    Context Router
-        |                    OFF / COMPRESSED / DENSE
-        |                              |
-        |                     retrieved/comparison
-        |                          context c
-        |                              |
-        +------------> x + W_c c + W_z z_exec
-                               |
-                               v
-                         Mamba-3 MIMO
-                    recurrent state evolution
-                               |
-                            residual
-                               |
-                            SwiGLU
-                               |
-                         next block/state
+M = Mamba-3 MIMO recurrent sequence/state layer
+E = routed/shared SwiGLU MoE layer
+C = CSA compressed sparse context layer
+H = HCA heavily compressed context layer
+A = dense/global QK-normalized RoPE attention anchor
+X = Hamiltonian executive update
 ```
 
-Periodic dense/global-attention anchors remain as a safety floor so router errors cannot permanently remove exact addressable memory. The anchor cadence is configurable and evaluated jointly with event-driven OFF / COMPRESSED / DENSE routing.
-
-The context injection is bounded but not zero-sum:
+A schedule is written explicitly, for example:
 
 ```text
-c = ContextService(norm(x), mode)
-x_ctx = x + alpha_c * W_c c
-m = Mamba3_MIMO(norm(x_ctx))
-y = x_ctx + alpha_m * m
+M E
+M E
+M C E
+M E
+M H E
+M E
+M A E
+...
+X
 ```
 
-The Transformer service retrieves, compares, or induces over explicit context; **Mamba-3 MIMO integrates that evidence and performs the recurrent state evolution**. This makes the intended division of labor structural rather than relying on training to discover it accidentally.
+This is illustrative ordering, not a hardcoded ratio. Production configs store the complete layer sequence; `iq_model.architecture.HybridSchedule` validates that Mamba-3 remains the dominant sequence mixer and that executive control terminates the backbone when present.
 
-During the first Phi transport stage, the dense Transformer recipient remains the retention/control model. Hybridization then distills its useful context behavior into the context service while Mamba-3 MIMO is trained as the primary state path. There is no SISO fallback.
+The division of labor is structural:
+
+- **Mamba-3 MIMO** performs the dominant recurrent sequence processing/state evolution and later reasoning recurrence.
+- **MoE/SwiGLU layers** provide nonlinear/expert capacity as separate layers; there is no automatic SwiGLU appended after every Mamba layer.
+- **CSA/HCA** provide efficient explicit long-range context access.
+- **Dense attention anchors** provide exact pairwise comparison, induction, strict few-shot matching, and diagnostic fallback.
+- **Hamiltonian executive control** manages global reasoning state/halting; it is not another token mixer.
+
+During the first Phi transport stage, `IQForCausalLM` remains the dense Transformer retention/control model. The hybrid model is built separately so transfer evaluation is not confounded by changing the control architecture.
 
 ### Mamba-3 recurrent state path
 
@@ -316,34 +336,52 @@ Two attention maps are computed and combined using the differential parameteriza
 
 This module runs only in the outer refinement loop.
 
-## 7. Feed-forward and routing
+## 7. Expert computation and routing
 
-### Inner FFN
+SwiGLU remains the expert activation, but expert computation is a **scheduled layer type**, not an automatic sublayer attached to every Mamba or attention layer.
 
-Dense SwiGLU:
+### Dense transfer control
+
+The Phi proof keeps its dense SwiGLU:
 
 ```text
 SwiGLU(x) = W_down( SiLU(W_gate x) * (W_up x) )
 ```
 
-Transport gate/up/down independently through `iq_transfer`.
+This preserves donor-compatible gate/up/down transport.
 
-### Outer FFN
+### Hybrid production path
 
-Phase 1 uses a dense SwiGLU outer FFN to establish the Phi proof without confounding MoE routing.
+Hybrid `E` layers use routed SwiGLU experts plus a shared expert. The implementation must support:
 
-Phase 2 enables routed SwiGLU experts for the code-specialized/multi-donor stage. The implementation must support:
+- top-k expert routing;
+- at least one shared expert path;
+- expert capacity accounting;
+- token drop disabled unless an experiment explicitly changes overflow semantics;
+- load-balancing auxiliary loss;
+- router z-loss;
+- expert parallelism through Megatron-Core;
+- grouped GEMM/fused dispatch where supported;
+- explicit separation between Mamba/attention layer schedule and expert-layer schedule.
 
-- top-k expert routing
-- shared expert option
-- expert capacity accounting
-- token drop = disabled by default; overflow behavior explicit
-- load-balancing auxiliary loss
-- router z-loss
-- expert parallelism through Megatron-Core
-- grouped GEMM path where supported
+Mellum/code-MoE donors can initialize compatible experts/router through exact/operator/functional transport. Mamba-3 layers do not contain an IQ-added SwiGLU unless the explicit schedule places an `E` layer after them.
 
-Mellum/code-MoE donors can later initialize experts/router through exact/operator/functional transport depending on topology compatibility.
+### Residual topology: standard control and mHC target
+
+The dense Phi control keeps ordinary residual connections so donor retention remains interpretable.
+
+The hybrid architecture includes **Manifold-Constrained Hyper-Connections (mHC)** as the residual-topology target once its reference implementation is numerically validated. mHC expands the residual stream into multiple streams and constrains the residual mixing matrix to the Birkhoff polytope (doubly stochastic mixing). IQ does not approximate this with an unconstrained learned residual mixer.
+
+Implementation requirements before enabling mHC in training:
+
+- exact reference forward/backward implementation;
+- verified doubly-stochastic constraint tolerance;
+- identity/near-identity initialization;
+- memory-bandwidth profiling;
+- fused or recomputed projection only after reference parity;
+- standard-residual vs mHC ablation under equal active compute.
+
+mHC changes residual topology, not the role of Mamba, attention, or MoE in the heterogeneous schedule.
 
 ## 8. Recurrent control flow
 
@@ -388,8 +426,10 @@ Inference may physically exit early when all enabled criteria pass:
 
 ```text
 p_halt >= threshold
-relative_state_delta <= eps_state
-absolute_energy_delta <= eps_energy
+relative_reasoning_state_delta <= eps_reason
+relative_executive_state_delta <= eps_exec
+abs(work_adjusted_energy_residual) <= eps_energy
+predicted_value_of_more_context <= context_cost
 step >= min_steps
 ```
 
@@ -430,27 +470,42 @@ E_theta(z, c) -> scalar
 
 where `c` is compressed reasoning context.
 
-Port-Hamiltonian update:
+Continuous port-Hamiltonian dynamics:
 
 ```text
 g = grad_z E_theta(z, c)
-dz = (J_theta - R_theta) g + B_theta u
-z_next = z + dt * dz
+dz/dt = (J_theta - R_theta) g + B_theta u
 ```
 
-Structural constraints:
+Structural constraints are enforced by construction:
 
 ```text
-J = A - A^T
-R = L L^T + eps I
+J = J_ring + U V^T - V U^T
+J^T = -J
+
+R = B_ring^T diag(softplus(r_edge)) B_ring
+    + diag(softplus(r_self))
+R >= 0
 ```
+
+`B_ring` is the incidence matrix of the executive-state ring. This preserves both ring locality and positive-semidefinite dissipation; post-hoc masking of `L L^T` is not used because masking can destroy PSD structure.
+
+The continuous identity is:
+
+```text
+dE/dt = -g^T R g + g^T B u
+```
+
+so external context injection can legitimately increase energy. Halting therefore uses an input-work-adjusted energy residual rather than raw `abs(E_next - E)` alone.
+
+The production discrete integrator must preserve the intended stability property. Explicit Euler is only a diagnostic baseline because continuous-time dissipation does not imply finite-step Euler dissipation. Prefer a discrete-gradient/energy-controlled update or a bounded-step integrator with an explicit descent/stability check.
 
 Ring structure:
 
-- split `z` into 8 groups
-- primary learned interactions are self + nearest-neighbor + wraparound blocks
-- optional bounded low-rank long-range correction
-- masks enforce the ring topology at parameterization time
+- split `z` into 8 groups;
+- primary learned interactions are self + nearest-neighbor + wraparound edges;
+- optional bounded low-rank global skew correction;
+- all structure is parameterized directly rather than imposed by masking a dense matrix.
 
 Because backpropagation through `grad_z E` creates higher-order derivatives, keep the energy network small and isolated. Benchmark memory/throughput with `torch.func.grad`/autograd and activation checkpoint this controller if needed.
 
@@ -461,7 +516,9 @@ The energy model receives the actual recipient trajectory/state/output context. 
 Contrastive/ranking training uses successful vs failed/corrupted trajectories from the same task. Example objective:
 
 ```text
-L_energy = softplus(E_positive - E_negative + margin)
+L_rank = softplus((E_positive - E_negative + margin) / temperature)
+L_stationary = ||grad_z E_positive||^2
+L_gauge = mean_batch(E)^2
 ```
 
 Energy is also logged as a calibration signal for halting; halting does not rely on energy alone.
@@ -576,9 +633,9 @@ Losses are phase-specific; do not enable every loss from step 1.
 
 ### Base language/code
 
-- next-token cross entropy
-- FIM formatting/data objective
-- multi-token prediction heads
+- next-token cross entropy;
+- FIM formatting/data objective;
+- **multi-token prediction (MTP) as a first-class pretraining objective**, with its own shared-weight prediction layers/head configuration rather than an after-the-fact auxiliary linear probe.
 
 ### Transfer alignment
 
@@ -596,9 +653,11 @@ Losses are phase-specific; do not enable every loss from step 1.
 
 ### Energy
 
-- positive/negative trajectory ranking
-- energy calibration metrics
-- conservative/dissipative diagnostics
+- same-task positive/negative trajectory ranking;
+- successful-state stationarity penalty;
+- energy gauge/centering regularization;
+- conservative/dissipative diagnostics;
+- work-adjusted energy residual used for halting calibration.
 
 ### MoE
 
