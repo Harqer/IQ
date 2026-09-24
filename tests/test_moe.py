@@ -8,6 +8,7 @@ from iq_model import (
     MoEConfigError,
     RoutedMoEConfig,
     RoutedSwiGLUMoE,
+    RoutedSwiGLUMoELayer,
 )
 
 
@@ -117,6 +118,25 @@ class RoutedMoETests(unittest.TestCase):
             strict.router.weight.zero_()
         with self.assertRaises(RuntimeError):
             strict(x)
+
+    def test_scheduled_moe_layer_preserves_shape_and_residual_path(self):
+        torch.manual_seed(14)
+        config = RoutedMoEConfig(
+            hidden_size=8,
+            expert_intermediate_size=16,
+            num_experts=2,
+            top_k=2,
+            shared_expert_intermediate_size=8,
+        )
+        layer = RoutedSwiGLUMoELayer(config, norm_eps=1e-6)
+        x = torch.randn(2, 3, 8, requires_grad=True)
+        output = layer(x)
+        self.assertEqual(tuple(output.hidden_states.shape), tuple(x.shape))
+        self.assertFalse(torch.equal(output.hidden_states, x))
+        loss = output.hidden_states.mean() + 0.01 * output.load_balance_loss
+        loss.backward()
+        self.assertIsNotNone(x.grad)
+        self.assertTrue(torch.isfinite(x.grad).all())
 
     def test_invalid_config_is_rejected(self):
         with self.assertRaises(MoEConfigError):
