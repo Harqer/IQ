@@ -9,30 +9,35 @@ The production target is **not** the original Neutrino/Ising mock architecture. 
 ```text
 tokens
   ↓
-embeddings + token position + reasoning-depth encoding
+embeddings
   ↓
-context state ───────────────► Context Router
-  │                            OFF / COMPRESSED / DENSE
-  │                                  │
-  │                          retrieved/comparison
-  │                               context
-  └──────────────────────┬───────────┘
-                         ↓
-                  Mamba-3 MIMO
-                recurrent reasoning
-                 / state evolution
-                         ↓
-                      SwiGLU
-                         ↓
-                executive-latent input
-                         ↓
-              Hamiltonian/energy control
-                         ↓
-                 adaptive halt/refine
-                         ↓
-                  Concept Mapper
-                         ↓
-                      LM head
+explicit heterogeneous schedule
+  │
+  ├─ M = Mamba-3 MIMO
+  │      exponential-trapezoidal recurrence
+  │      complex/data-dependent state rotation
+  │      rank-4 MIMO state evolution
+  │
+  ├─ E = routed/shared SwiGLU MoE
+  │
+  ├─ C = CSA compressed context attention
+  │      Q/KV RMSNorm + trailing partial RoPE
+  │
+  ├─ H = HCA heavily compressed context attention
+  │
+  └─ A = dense context anchor
+         QK RMSNorm + RoPE
+         exact pairwise/few-shot comparison
+  ↓
+reasoning recurrence + executive state
+  ↓
+Hamiltonian/energy control
+  ↓
+adaptive halt/refine
+  ↓
+Concept Mapper
+  ↓
+MTP + LM head
 ```
 
 ### Why the hybrid
@@ -40,10 +45,13 @@ context state ───────────────► Context Router
 - **Mamba-3 MIMO (rank 4)** is the primary recurrent state/reasoning path; MIMO is not optional and IQ has no silent SISO fallback.
 - **Transformer attention** remains the exact content-addressable context/comparison path for identifiers, code dependencies, few-shot induction, and needle-in-context retrieval.
 - **DeepSeek V4-family CSA/HCA compressed context attention** handles long-range context: a local sliding window plus compressed KV memory with learned sparse indexing; dense attention is reserved for strict pairwise/few-shot comparison.
-- **Periodic global attention** preserves high-recall access to the complete context.
+- **Dense attention anchors** use per-head Q/K RMSNorm followed by RoPE for exact comparison/induction tasks.
+- **CSA/HCA** use normalized compressed KV states, trailing partial RoPE, and inverse output rotation; Mamba-3 keeps its own native state rotation internally.
+- **SwiGLU MoE** is a separate scheduled expert-compute layer, not an automatic FFN attached to every Mamba layer.
+- **mHC** is the target residual-topology experiment after exact reference parity; the Phi control keeps ordinary residuals.
+- **MTP** is a first-class pretraining objective/head stack rather than an after-the-fact probe.
 - **Differential Attention** is reserved for outer-loop executive reasoning.
-- **SwiGLU** is the dense inner FFN; routed heterogeneous MoE is introduced later in the outer path.
-- **Hamiltonian/EBM control** replaces the old fake Ising gate with a real scalar-energy recurrent controller.
+- **Hamiltonian/EBM control** replaces the old fake Ising gate with a real scalar-energy executive controller using PSD-preserving dissipation and energy-aware discrete integration.
 
 ## Retained NIF ideas, redefined
 
@@ -149,22 +157,27 @@ The trainable IQ model will connect through `ModelBackend.generate()`.
 
 Implemented today:
 
-- donor-independent Phi checkpoint inspection
+- dense Phi-compatible Transformer control/teacher with packed/padded GQA
+- donor-independent Phi checkpoint inspection and executable transfer job
 - lazy safetensors operator access
-- functional-shadow measurements
-- monotonic layer matching
-- coordinate-map/operator transport
+- functional-shadow measurements and monotonic layer matching
+- coordinate-map/operator transport + DoRA correction
+- mandatory rank-4 Mamba-3 MIMO runtime wrapper and H200 parity gate
+- explicit heterogeneous `HybridSchedule` validation
+- QK-normalized RoPE dense-context anchor
+- leading RoPE plus trailing partial/inverse RoPE reference primitives
 - scale-gate metrics
 - model-independent agent harness
 
-In migration:
+Specified / next runtime integration:
 
-- real IQ v2 model/training packages
-- Mamba-3 MIMO reasoning blocks + routed Transformer context service
+- full heterogeneous Mamba-3 MIMO / MoE / CSA / HCA / dense-attention backbone
+- CSA/HCA compression, learned indexer, shared compressed KV, sinks, grouped output projection
+- exact mHC residual-topology reference + optimized kernel
+- first-class MTP prediction stack
+- Hamiltonian/EBM controller with PSD ring dissipation and energy-controlled discrete integration
+- adaptive recurrent reasoning and concept collapse
 - real Muon optimizer
-- DoRA correction
-- Hamiltonian/EBM controller
-- adaptive recurrent reasoning
 - code-focused FIM/MTP/MoE training
 
 ## License

@@ -522,33 +522,29 @@ Do not clone Q/K/V weights into these fields.
 
 ### Mamba bootstrap training
 
-Initial fusion:
+The dense Phi recipient remains a **separate frozen teacher/control model**. IQ does not preserve transfer capability by keeping an always-on parallel attention branch inside every Mamba layer.
 
-```text
-alpha_attention = donor-preserving value
-alpha_mamba = near zero
-```
-
-Freeze or slow-train the transported Transformer branch.
+Construct the explicit heterogeneous hybrid schedule and align each new Mamba-3 layer against the teacher states corresponding to its schedule position.
 
 Train Mamba-3 to match:
 
-1. teacher attention block output;
+1. teacher intermediate residual states at schedule-aligned anchor points;
 2. downstream residual state;
 3. final donor logits;
-4. long-context state-continuation behavior.
+4. long-context chunk/state-continuation behavior;
+5. recurrence-state consistency across packed/chunked execution.
 
 Loss:
 
 ```text
 L_mamba =
-  lambda_block * MSE/normalized-cosine(block_mamba, block_teacher)
-+ lambda_resid * representation_loss
+  lambda_anchor * representation_loss(student_anchor, teacher_anchor)
 + lambda_kl * token_KL
 + lambda_state * chunk_continuation_loss
++ lambda_step * recurrent_step_consistency
 ```
 
-Increase the Mamba residual gate only after held-out block-output and model-level retention gates pass.
+Mamba-3's native B/C normalization, complex/data-dependent state rotation, exponential-trapezoidal recurrence, and MIMO factors remain native. The Transformer-derived Q/K/V/O correspondence seeds only the justified x/B/C/out projections; it does not redefine Mamba-3 semantics.
 
 ## 13. DeepSeek V4/V4.1-style compressed context initialization
 
@@ -559,12 +555,21 @@ Keep the dense transported Transformer path as the teacher/exact-comparison path
 Compatible initialization:
 
 - transport/retain query projections where the target query space is compatible;
-- transport/retain output projection structure where compatible;
+- transport/retain grouped output projection structure only where dimensions/semantics match;
+- initialize per-head Q/K or Q/compressed-KV RMSNorm scales to identity unless an exactly compatible donor exists;
 - fit a dedicated donor-residual -> shared compressed-KV map from calibration activations;
 - initialize the sliding-window branch from the dense attention teacher where shapes permit.
 
+Positional behavior is recipient-native:
+
+- dense anchors use Q/K RMSNorm followed by ordinary RoPE;
+- CSA/HCA use normalized query/compressed-KV states, trailing partial RoPE, and inverse rotary transformation on the output rotary slice;
+- Mamba-3 native state rotation is never replaced by Transformer RoPE.
+
 Recipient-native parameters:
 
+- Q/K or Q/compressed-KV normalization parameters when no exact donor equivalent exists;
+- partial-RoPE/inverse-output positional machinery;
 - compressed-KV constructor/compressor;
 - learned sparse indexer and top-k selection projections;
 - heavily compressed/global memory constructor;
@@ -694,9 +699,11 @@ donor router logits/assignments
 
 ### MTP
 
-If donor and IQ MTP head topology/tokenizer match, transport the projection/head.
+MTP is a first-class pretraining component rather than a single auxiliary linear probe.
 
-Otherwise transfer behavior through future-token logit distillation and train IQ's MTP head in the IQ lexical space.
+If donor and IQ MTP topology/tokenizer match, transport compatible normalization/projection/prediction-layer operators and shared lexical output space.
+
+If topology differs, align future-token hidden states/logits functionally and train the IQ MTP prediction layers in the IQ lexical space. Record each MTP prediction layer separately in provenance; do not collapse a multi-layer donor MTP module into one tensor.
 
 ### FIM
 
@@ -718,7 +725,7 @@ Initial policy:
 Phi -> dense base
 Mamba bootstrap -> Mamba-3 MIMO primary recurrent path
 Mellum -> code DoRA + MoE + MTP
-IQ-native -> executive/energy/halting/concept modules
+IQ-native -> Mamba recurrence-only parameters + QK/KV norms + CSA/HCA compression/indexing/partial-RoPE + mHC residual topology + executive/energy/halting/concept modules
 ```
 
 No naive parameter averaging.
@@ -785,25 +792,30 @@ Exit: donor-retention and adaptation-compute gates pass.
 
 ### T3 — Mamba-3 MIMO primary-path bootstrap
 
-- initialize x/B/C/out from attention transport
-- official initialization for recurrence-only parameters
-- block-level attention distillation
-- chunk/state continuation training
-- gradually open Mamba residual gates
+- instantiate the explicit heterogeneous schedule
+- initialize x/B/C/out from justified attention transport
+- preserve official initialization for recurrence-only parameters
+- align Mamba schedule anchors against the frozen dense teacher
+- run chunk/state continuation and recurrent-step consistency training
+- keep attention/MoE as separate scheduled layer types rather than parallel branches inside Mamba
 
 Exit: hybrid retains exact retrieval while reducing long-horizon state/compute cost relative to the dense baseline.
 
 ### T4 — compressed context service + dense/global anchors
 
-- keep transported attention projections
+- add per-head Q/K normalization to dense anchors
+- keep compatible transported dense query/output projections
 - train compressed-KV construction and learned sparse indexing
-- retain periodic global attention
-- benchmark attention cadence
+- implement CSA/HCA trailing partial RoPE and inverse output rotation
+- retain explicit dense/global attention anchors in the schedule
+- benchmark full heterogeneous schedules rather than one global-attention-period scalar
 
 Exit: long-context retrieval/code dependency suite remains within retention tolerance while memory/throughput improves.
 
-### T5 — outer Differential Attention + recurrence
+### T5 — residual topology + outer Differential Attention + recurrence
 
+- validate standard-residual hybrid first
+- implement mHC with an exact doubly-stochastic reference projection and measure memory/throughput
 - initialize Differential stream 1 from transferred global attention
 - add second stream/lambda
 - add adaptive outer/inner recurrence

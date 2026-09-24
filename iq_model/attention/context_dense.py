@@ -5,12 +5,18 @@ from torch import nn
 from torch.nn import functional as F
 
 from ..config import IQModelConfig
+from ..norm import HeadRMSNorm
 from ..position import RotaryEmbedding, apply_rotary
 from .masking import prepare_causal_attention
 
 
-class GroupedQueryAttention(nn.Module):
-    """Dense GQA used by the Phi-transfer control/teacher model."""
+class DenseContextAttention(nn.Module):
+    """Dense Transformer context anchor for the hybrid IQ backbone.
+
+    This is distinct from GroupedQueryAttention, which is retained as the
+    Phi-transfer control/teacher module. Hybrid dense anchors add per-head Q/K
+    RMS normalization before RoPE.
+    """
 
     def __init__(self, config: IQModelConfig) -> None:
         super().__init__()
@@ -21,6 +27,8 @@ class GroupedQueryAttention(nn.Module):
         self.k_proj = nn.Linear(config.hidden_size, kv_dim, bias=False)
         self.v_proj = nn.Linear(config.hidden_size, kv_dim, bias=False)
         self.o_proj = nn.Linear(q_dim, config.hidden_size, bias=False)
+        self.q_norm = HeadRMSNorm(config.head_dim, config.rms_norm_eps)
+        self.k_norm = HeadRMSNorm(config.head_dim, config.rms_norm_eps)
         self.rotary = RotaryEmbedding(
             config.rotary_dim,
             config.max_position_embeddings,
@@ -49,7 +57,7 @@ class GroupedQueryAttention(nn.Module):
     ) -> torch.Tensor:
         if x.ndim != 3 or x.shape[-1] != self.config.hidden_size:
             raise ValueError(
-                f"attention input must have shape [batch, sequence, {self.config.hidden_size}]"
+                f"context attention input must have shape [batch, sequence, {self.config.hidden_size}]"
             )
         b, t, _ = x.shape
         prepared = prepare_causal_attention(
@@ -61,8 +69,8 @@ class GroupedQueryAttention(nn.Module):
             document_ids=document_ids,
         )
 
-        q = self._shape_q(self.q_proj(x))
-        k = self._shape_kv(self.k_proj(x))
+        q = self.q_norm(self._shape_q(self.q_proj(x)))
+        k = self.k_norm(self._shape_kv(self.k_proj(x)))
         v = self._shape_kv(self.v_proj(x))
         cos, sin = self.rotary.cos_sin(
             prepared.position_ids,
