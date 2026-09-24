@@ -149,6 +149,59 @@ class TrainingTests(unittest.TestCase):
         self.assertNotEqual(a.fingerprint, b.fingerprint)
         self.assertNotEqual(a.fingerprint, c.fingerprint)
 
+    def test_mtp_pretraining_checkpoint_round_trip_preserves_shared_weights(self):
+        torch.manual_seed(13)
+        model = IQPretrainingModel(
+            IQForCausalLM(self.config()),
+            PretrainingObjectiveConfig(mtp_loss_weight=0.25),
+            mtp_config=MTPConfig(num_prediction_layers=1),
+        )
+        optimizer = build_optimizer(
+            model,
+            OptimizerConfig(lr=1e-3, weight_decay=0.0),
+        )
+        ids = torch.tensor([[1, 2, 3, 4, 5]])
+        train_step(model, optimizer, [{"input_ids": ids}])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "mtp"
+            save_checkpoint(
+                path,
+                model=model,
+                optimizer=optimizer,
+                model_config_hash=model.fingerprint,
+                step=1,
+                consumed_tokens=ids.numel(),
+            )
+            restored = IQPretrainingModel(
+                IQForCausalLM(self.config()),
+                PretrainingObjectiveConfig(mtp_loss_weight=0.25),
+                mtp_config=MTPConfig(num_prediction_layers=1),
+            )
+            restored_optimizer = build_optimizer(
+                restored,
+                OptimizerConfig(lr=1e-3, weight_decay=0.0),
+            )
+            metadata, _ = load_checkpoint(
+                path,
+                model=restored,
+                optimizer=restored_optimizer,
+                expected_model_config_hash=restored.fingerprint,
+            )
+        self.assertEqual(metadata.step, 1)
+        self.assertIs(
+            restored.mtp.embed_tokens,
+            restored.main_model.embed_tokens,
+        )
+        self.assertIs(
+            restored.mtp.shared_head,
+            restored.main_model.lm_head,
+        )
+        self.assertEqual(
+            optimizer.state_dict()["coverage"],
+            restored_optimizer.state_dict()["coverage"],
+        )
+
     def test_hybrid_optimizer_checkpoint_round_trip(self):
         torch.manual_seed(11)
         cfg = self.config()
