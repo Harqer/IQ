@@ -78,6 +78,7 @@ These are implementation defaults, not immutable research constants. Changes req
 
 ```text
 iq_model/
+  architecture.py
   config.py
   model.py
   outputs.py
@@ -85,6 +86,8 @@ iq_model/
   position.py
   norm.py
   attention/
+    context_dense.py
+    masking.py
     sliding_window.py
     compressed_sparse.py
     compressed_memory.py
@@ -95,7 +98,6 @@ iq_model/
     kernels.py
   state/
     mamba3.py
-    hybrid_fusion.py
   mlp/
     swiglu.py
     moe.py
@@ -109,6 +111,8 @@ iq_model/
     coconut.py
     soft_thinking.py
     concept_mapper.py
+  residual/
+    mhc.py
   energy/
     scalar_energy.py
     hamiltonian_ring.py
