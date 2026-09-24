@@ -317,6 +317,7 @@ The compressed mode follows the DeepSeek V4 family decomposition:
 - sliding-window branch for recent fine-grained dependencies;
 - compressed KV entries for distant context;
 - learned sparse indexer / top-k selection over compressed entries;
+- explicit dense-teacher KL warm-up on the pre-top-k indexer score surface; hard top-k remains the inference/training selection mechanism after warm-up;
 - shared compressed memory representation suitable for efficient decode;
 - attention sink support where it improves stability;
 - optional hierarchical index search and cross-layer selection reuse only after measured quality/throughput parity.
@@ -412,8 +413,8 @@ The hybrid architecture includes **Manifold-Constrained Hyper-Connections (mHC)*
 
 Implementation requirements before enabling mHC in training:
 
-- exact reference forward/backward implementation;
-- verified doubly-stochastic constraint tolerance;
+- exact reference forward/backward implementation (**implemented in `iq_model/residual/mhc.py`**);
+- verified doubly-stochastic constraint tolerance (**covered by reference tests**);
 - identity/near-identity initialization;
 - memory-bandwidth profiling;
 - fused or recomputed projection only after reference parity;
