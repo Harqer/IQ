@@ -25,16 +25,67 @@ class RotaryEmbedding(nn.Module):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         if position_ids.ndim != 2:
             raise ValueError("position_ids must have shape [batch, sequence]")
-        if position_ids.numel() and (int(position_ids.min()) < 0 or int(position_ids.max()) >= self.max_position_embeddings):
+        if position_ids.numel() and (
+            int(position_ids.min()) < 0
+            or int(position_ids.max()) >= self.max_position_embeddings
+        ):
             raise ValueError("position_ids exceed configured maximum")
-        freqs = position_ids.to(device=device, dtype=torch.float32).unsqueeze(-1) * self.inv_freq.to(device=device)
+        freqs = (
+            position_ids.to(device=device, dtype=torch.float32).unsqueeze(-1)
+            * self.inv_freq.to(device=device)
+        )
         angles = torch.cat((freqs, freqs), dim=-1)
         return angles.cos().to(dtype), angles.sin().to(dtype)
 
 
 def rotate_half(x: torch.Tensor) -> torch.Tensor:
+    if x.shape[-1] % 2:
+        raise ValueError("rotary slice must have an even final dimension")
     x1, x2 = x.chunk(2, dim=-1)
     return torch.cat((-x2, x1), dim=-1)
+
+
+def apply_rotary_to_tensor(
+    x: torch.Tensor,
+    cos: torch.Tensor,
+    sin: torch.Tensor,
+    rotary_dim: int,
+    *,
+    rotary_at_end: bool = False,
+    inverse: bool = False,
+) -> torch.Tensor:
+    """Apply RoPE to one attention tensor.
+
+    Dense Transformer anchors rotate the leading rotary dimensions.
+    CSA/HCA rotate the trailing partial-RoPE dimensions and can apply the
+    inverse rotation to the attention output.
+    """
+
+    if x.ndim != 4:
+        raise ValueError("x must have shape [batch, heads, sequence, head_dim]")
+    if rotary_dim <= 0 or rotary_dim % 2 or rotary_dim > x.shape[-1]:
+        raise ValueError("rotary_dim must be positive, even, and <= head_dim")
+    if cos.ndim != 3 or sin.ndim != 3 or cos.shape != sin.shape:
+        raise ValueError("cos and sin must have matching [batch, sequence, rotary_dim] shapes")
+    if cos.shape[-1] != rotary_dim:
+        raise ValueError("cos/sin final dimension must equal rotary_dim")
+    if cos.shape[0] != x.shape[0] or cos.shape[1] != x.shape[2]:
+        raise ValueError("cos/sin batch and sequence dimensions must match x")
+
+    cos = cos.unsqueeze(1)
+    sin = sin.unsqueeze(1)
+    if rotary_at_end:
+        passthrough = x[..., :-rotary_dim]
+        rotated = x[..., -rotary_dim:]
+    else:
+        rotated = x[..., :rotary_dim]
+        passthrough = x[..., rotary_dim:]
+
+    sign = -1.0 if inverse else 1.0
+    rotated = (rotated * cos) + (sign * rotate_half(rotated) * sin)
+    if rotary_at_end:
+        return torch.cat((passthrough, rotated), dim=-1)
+    return torch.cat((rotated, passthrough), dim=-1)
 
 
 def apply_rotary(
@@ -46,12 +97,38 @@ def apply_rotary(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     if q.ndim != 4 or k.ndim != 4:
         raise ValueError("q and k must have shape [batch, heads, sequence, head_dim]")
-    if rotary_dim > q.shape[-1] or rotary_dim > k.shape[-1]:
-        raise ValueError("rotary_dim exceeds attention head dimension")
-    cos = cos.unsqueeze(1)
-    sin = sin.unsqueeze(1)
-    q_rot, q_pass = q[..., :rotary_dim], q[..., rotary_dim:]
-    k_rot, k_pass = k[..., :rotary_dim], k[..., rotary_dim:]
-    q_rot = (q_rot * cos) + (rotate_half(q_rot) * sin)
-    k_rot = (k_rot * cos) + (rotate_half(k_rot) * sin)
-    return torch.cat((q_rot, q_pass), dim=-1), torch.cat((k_rot, k_pass), dim=-1)
+    return (
+        apply_rotary_to_tensor(q, cos, sin, rotary_dim),
+        apply_rotary_to_tensor(k, cos, sin, rotary_dim),
+    )
+
+
+def apply_partial_rotary_at_end(
+    x: torch.Tensor,
+    cos: torch.Tensor,
+    sin: torch.Tensor,
+    rotary_dim: int,
+) -> torch.Tensor:
+    return apply_rotary_to_tensor(
+        x,
+        cos,
+        sin,
+        rotary_dim,
+        rotary_at_end=True,
+    )
+
+
+def apply_inverse_partial_rotary_at_end(
+    x: torch.Tensor,
+    cos: torch.Tensor,
+    sin: torch.Tensor,
+    rotary_dim: int,
+) -> torch.Tensor:
+    return apply_rotary_to_tensor(
+        x,
+        cos,
+        sin,
+        rotary_dim,
+        rotary_at_end=True,
+        inverse=True,
+    )
