@@ -132,3 +132,93 @@ def apply_inverse_partial_rotary_at_end(
         rotary_at_end=True,
         inverse=True,
     )
+
+
+class InterleavedRotaryEmbedding(nn.Module):
+    """V4-style RoPE: one frequency per adjacent channel pair."""
+
+    def __init__(
+        self,
+        dim: int,
+        max_position_embeddings: int,
+        base: float = 10000.0,
+    ) -> None:
+        super().__init__()
+        if dim <= 0 or dim % 2:
+            raise ValueError("interleaved rotary dim must be a positive even integer")
+        if max_position_embeddings <= 0 or base <= 0:
+            raise ValueError("max_position_embeddings and base must be positive")
+        inv_freq = 1.0 / (
+            base ** (torch.arange(0, dim, 2, dtype=torch.float32) / dim)
+        )
+        self.dim = int(dim)
+        self.max_position_embeddings = int(max_position_embeddings)
+        self.register_buffer("inv_freq", inv_freq, persistent=False)
+
+    def cos_sin(
+        self,
+        position_ids: torch.Tensor,
+        *,
+        dtype: torch.dtype,
+        device: torch.device,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        if position_ids.ndim != 2:
+            raise ValueError("position_ids must have shape [batch, sequence]")
+        if position_ids.numel() and (
+            int(position_ids.min()) < 0
+            or int(position_ids.max()) >= self.max_position_embeddings
+        ):
+            raise ValueError("position_ids exceed configured maximum")
+        freqs = (
+            position_ids.to(device=device, dtype=torch.float32).unsqueeze(-1)
+            * self.inv_freq.to(device=device)
+        )
+        return freqs.cos().to(dtype), freqs.sin().to(dtype)
+
+
+def rotate_interleaved_pairs(x: torch.Tensor) -> torch.Tensor:
+    if x.shape[-1] % 2:
+        raise ValueError("interleaved rotary slice must have an even final dimension")
+    x_even = x[..., 0::2]
+    x_odd = x[..., 1::2]
+    return torch.stack((-x_odd, x_even), dim=-1).flatten(-2)
+
+
+def apply_v4_interleaved_rotary_at_end(
+    x: torch.Tensor,
+    cos: torch.Tensor,
+    sin: torch.Tensor,
+    rotary_dim: int,
+    *,
+    inverse: bool = False,
+) -> torch.Tensor:
+    """Apply DeepSeek-V4 interleaved RoPE to the trailing rotary slice.
+
+    cos/sin contain one value per adjacent channel pair, shape
+    [batch, sequence, rotary_dim/2].
+    """
+    if x.ndim != 4:
+        raise ValueError("x must have shape [batch, heads, sequence, head_dim]")
+    if rotary_dim <= 0 or rotary_dim % 2 or rotary_dim > x.shape[-1]:
+        raise ValueError("rotary_dim must be positive, even, and <= head_dim")
+    if cos.ndim != 3 or sin.ndim != 3 or cos.shape != sin.shape:
+        raise ValueError(
+            "cos and sin must have matching [batch, sequence, rotary_dim/2] shapes"
+        )
+    if cos.shape[-1] * 2 != rotary_dim:
+        raise ValueError("cos/sin final dimension must equal rotary_dim/2")
+    if cos.shape[0] != x.shape[0] or cos.shape[1] != x.shape[2]:
+        raise ValueError("cos/sin batch and sequence dimensions must match x")
+
+    cos_full = cos.repeat_interleave(2, dim=-1).unsqueeze(1)
+    sin_full = sin.repeat_interleave(2, dim=-1).unsqueeze(1)
+    nope = x[..., :-rotary_dim]
+    rope = x[..., -rotary_dim:]
+    sign = -1.0 if inverse else 1.0
+    rotated = (
+        rope.float() * cos_full.float()
+        + sign
+        * rotate_interleaved_pairs(rope).float()
+        * sin_full.float()
+    ).to(x.dtype)
+    return torch.cat((nope, rotated), dim=-1)
