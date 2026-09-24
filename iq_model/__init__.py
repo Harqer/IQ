@@ -1,4 +1,4 @@
-from .mlp import MoEConfigError, MoEOutput, RoutedMoEConfig, RoutedSwiGLUMoE, SwiGLU, SwiGLUExpert
+from .mlp import MoEConfigError, MoEOutput, RoutedMoEConfig, RoutedSwiGLUMoE, RoutedSwiGLUMoELayer, SwiGLU, SwiGLUExpert
 from .architecture import ArchitectureError, HybridLayerType, HybridSchedule
 from .state import (
     MAMBA3_UPSTREAM_COMMIT,
@@ -41,6 +41,7 @@ __all__ = [
     "RMSNorm",
     "RoutedMoEConfig",
     "RoutedSwiGLUMoE",
+    "RoutedSwiGLUMoELayer",
     "SwiGLU",
     "SwiGLUExpert",
     "inspect_mamba3_mimo_runtime",
