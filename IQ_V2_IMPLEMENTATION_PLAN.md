@@ -357,17 +357,50 @@ This preserves donor-compatible gate/up/down transport.
 
 ### Hybrid production path
 
-Hybrid `E` layers use routed SwiGLU experts plus a shared expert. The implementation must support:
+Hybrid `E` layers use routed SwiGLU experts plus a shared expert. The PyTorch reference is `RoutedSwiGLUMoELayer`.
 
-- top-k expert routing;
-- at least one shared expert path;
-- expert capacity accounting;
-- token drop disabled unless an experiment explicitly changes overflow semantics;
-- load-balancing auxiliary loss;
-- router z-loss;
+For token state `x`, router logits/probabilities are:
+
+```text
+r = W_router x
+p = softmax(r)
+I = topk(p, k)
+w_i = p_i / sum_{j in I} p_j
+```
+
+The routed output is:
+
+```text
+y_routed = sum_{i in I} w_i Expert_i(x)
+y = x + Dropout(y_routed + SharedExpert(x))
+```
+
+Reference routing never silently drops tokens. Optional capacity is:
+
+```text
+capacity = ceil(capacity_factor * tokens * top_k / num_experts)
+```
+
+and overflow policy is either unbounded processing with telemetry or a hard error.
+
+Auxiliary losses:
+
+```text
+f_i = routed_assignments_i / (tokens * top_k)
+p_i_bar = mean_token p_i
+L_balance = num_experts * sum_i f_i * p_i_bar
+L_z = mean_token(logsumexp(r)^2)
+```
+
+Production implementation requirements:
+
+- top-k expert routing with selected-probability renormalization;
+- shared expert path;
+- explicit capacity/overflow accounting with no implicit token drop;
+- load-balancing auxiliary loss and router z-loss surfaced to the trainer;
 - expert parallelism through Megatron-Core;
-- grouped GEMM/fused dispatch where supported;
-- explicit separation between Mamba/attention layer schedule and expert-layer schedule.
+- grouped GEMM/fused dispatch only after reference parity;
+- explicit separation between Mamba/attention schedule and expert-layer schedule.
 
 Mellum/code-MoE donors can initialize compatible experts/router through exact/operator/functional transport. Mamba-3 layers do not contain an IQ-added SwiGLU unless the explicit schedule places an `E` layer after them.
 
