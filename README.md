@@ -47,8 +47,8 @@ MTP + LM head
 - **DeepSeek V4-family CSA/HCA compressed context attention** handles long-range context: a local sliding window plus compressed KV memory with learned sparse indexing; dense attention is reserved for strict pairwise/few-shot comparison.
 - **Dense attention anchors** use per-head Q/K RMSNorm followed by RoPE for exact comparison/induction tasks.
 - **CSA/HCA** use normalized compressed KV states, trailing partial RoPE, and inverse output rotation; Mamba-3 keeps its own native state rotation internally.
-- **SwiGLU MoE** is a separate scheduled expert-compute layer, not an automatic FFN attached to every Mamba layer.
-- **mHC** is the target residual-topology experiment after exact reference parity; the Phi control keeps ordinary residuals.
+- **Stable LatentMoE** is the production expert path: full-width sigmoid routing, latent routed experts, post-aggregate RMSNorm, full-width shared experts, SiTU-GLU, and one-step-delayed Quantile Balancing. The older full-width SwiGLU MoE remains an ablation/control.
+- **Block AttnRes** provides content-dependent depth retrieval across heterogeneous schedule blocks; **mHC** remains an orthogonal within-block multi-stream residual experiment. Neither replaces Mamba-3 sequence recurrence.
 - **MTP** is a first-class pretraining objective/head stack rather than an after-the-fact probe.
 - **Differential Attention** is reserved for outer-loop executive reasoning.
 - **Hamiltonian/EBM control** replaces the old fake Ising gate with a real scalar-energy executive controller using PSD-preserving dissipation and energy-aware discrete integration.
@@ -166,7 +166,7 @@ Implemented today:
 - explicit heterogeneous `HybridSchedule` validation
 - executable heterogeneous Mamba-3 MIMO / routed-MoE / dense-attention backbone for implemented layer types
 - packed/padded repository batches converted to Mamba-3 varlen `cu_seqlens` with document-state isolation
-- routed/shared SwiGLU MoE `E` layer with top-k routing, load-balance/z losses, and no silent token drop
+- Stable LatentMoE/SiTU-GLU reference with full-width sigmoid routing, latent routed experts, full-width shared experts, delayed Quantile Balancing, plus the original routed SwiGLU control
 - sequential shared-embedding/shared-head MTP prediction stack with packed-document-safe causal chaining
 - pretraining wrapper combining NTP/MTP/MoE auxiliary objectives with checkpointed coefficients
 - real-batch H200 hybrid forward/backward and cross-document-isolation gate
