@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from hashlib import sha256
-from typing import Mapping
+from typing import Literal, Mapping
 import json
 
 import torch
@@ -17,7 +17,7 @@ from .attention import (
     HeavilyCompressedContextAttention,
 )
 from .config import IQModelConfig
-from .mlp import MoEOutput, RoutedMoEConfig, RoutedSwiGLUMoELayer
+from .mlp import MoEOutput, RoutedMoEConfig, RoutedSwiGLUMoELayer, StableLatentMoEConfig, StableLatentMoELayer, StableLatentMoEOutput
 from .norm import RMSNorm
 from .state import Mamba3MIMOConfig, Mamba3MIMOState
 
@@ -33,6 +33,8 @@ class IQHybridConfig:
     mamba3: Mamba3MIMOConfig
     moe: RoutedMoEConfig
     compressed_context: CompressedContextConfig | None = None
+    moe_variant: Literal["swiglu", "stable_latent"] = "swiglu"
+    stable_moe: StableLatentMoEConfig | None = None
 
     def __post_init__(self) -> None:
         hidden = self.model.hidden_size
@@ -43,6 +45,23 @@ class IQHybridConfig:
         if self.moe.hidden_size != hidden:
             raise HybridModelError(
                 f"MoE hidden_size={self.moe.hidden_size} does not match hidden_size={hidden}"
+            )
+        if self.moe_variant not in {"swiglu", "stable_latent"}:
+            raise HybridModelError(
+                "moe_variant must be 'swiglu' or 'stable_latent'"
+            )
+        if self.moe_variant == "stable_latent":
+            if self.stable_moe is None:
+                raise HybridModelError(
+                    "stable_latent MoE variant requires stable_moe config"
+                )
+            if self.stable_moe.hidden_size != hidden:
+                raise HybridModelError(
+                    "stable_moe hidden_size does not match model hidden_size"
+                )
+        elif self.stable_moe is not None:
+            raise HybridModelError(
+                "stable_moe config is present but moe_variant is not stable_latent"
             )
         mamba_layers = self.schedule.count(HybridLayerType.MAMBA3)
         if self.mamba3.num_layers != mamba_layers:
@@ -77,6 +96,12 @@ class IQHybridConfig:
             "schedule": self.schedule.to_dict(),
             "mamba3": asdict(self.mamba3),
             "moe": asdict(self.moe),
+            "moe_variant": self.moe_variant,
+            "stable_moe": (
+                asdict(self.stable_moe)
+                if self.stable_moe is not None
+                else None
+            ),
             "compressed_context": (
                 asdict(self.compressed_context)
                 if self.compressed_context is not None
@@ -94,6 +119,8 @@ class IQHybridConfig:
         schedule = data.get("schedule")
         mamba3 = data.get("mamba3")
         moe = data.get("moe")
+        moe_variant = str(data.get("moe_variant", "swiglu"))
+        stable_moe = data.get("stable_moe")
         compressed_context = data.get("compressed_context")
         if not isinstance(model, dict):
             raise HybridModelError("hybrid config model must be an object")
@@ -103,6 +130,10 @@ class IQHybridConfig:
             raise HybridModelError("hybrid config mamba3 must be an object")
         if not isinstance(moe, dict):
             raise HybridModelError("hybrid config moe must be an object")
+        if stable_moe is not None and not isinstance(stable_moe, dict):
+            raise HybridModelError(
+                "hybrid config stable_moe must be an object or null"
+            )
         if compressed_context is not None and not isinstance(compressed_context, dict):
             raise HybridModelError(
                 "hybrid config compressed_context must be an object or null"
@@ -113,6 +144,12 @@ class IQHybridConfig:
                 schedule=HybridSchedule.from_dict(schedule),
                 mamba3=Mamba3MIMOConfig(**mamba3),
                 moe=RoutedMoEConfig(**moe),
+                moe_variant=moe_variant,
+                stable_moe=(
+                    StableLatentMoEConfig(**stable_moe)
+                    if isinstance(stable_moe, dict)
+                    else None
+                ),
                 compressed_context=(
                     CompressedContextConfig(**compressed_context)
                     if isinstance(compressed_context, dict)
@@ -523,11 +560,19 @@ class IQHybridForCausalLM(nn.Module):
                 )
                 mamba_layer_idx += 1
             elif layer_type is HybridLayerType.MOE:
-                layer = RoutedSwiGLUMoELayer(
-                    config.moe,
-                    norm_eps=config.model.rms_norm_eps,
-                    residual_dropout=config.model.residual_dropout,
-                ).to(device=device_obj, dtype=dtype)
+                if config.moe_variant == "stable_latent":
+                    assert config.stable_moe is not None
+                    layer = StableLatentMoELayer(
+                        config.stable_moe,
+                        norm_eps=config.model.rms_norm_eps,
+                        residual_dropout=config.model.residual_dropout,
+                    ).to(device=device_obj, dtype=dtype)
+                else:
+                    layer = RoutedSwiGLUMoELayer(
+                        config.moe,
+                        norm_eps=config.model.rms_norm_eps,
+                        residual_dropout=config.model.residual_dropout,
+                    ).to(device=device_obj, dtype=dtype)
             elif layer_type is HybridLayerType.DENSE_ATTENTION:
                 layer = DenseContextResidualLayer(
                     config.model,
@@ -595,7 +640,7 @@ class IQHybridForCausalLM(nn.Module):
                 raise ValueError("labels must be integer token ids")
 
         x = self.embed_tokens(input_ids)
-        moe_outputs: list[MoEOutput] = []
+        moe_outputs: list[MoEOutput | StableLatentMoEOutput] = []
         for layer_type, layer in zip(
             self.config.schedule.layers,
             self.layers,
@@ -652,18 +697,22 @@ class IQHybridForCausalLM(nn.Module):
                 shift_labels.view(-1),
                 ignore_index=-100,
             )
+        dense_moe_outputs = [
+            output for output in moe_outputs
+            if isinstance(output, MoEOutput)
+        ]
         load_balance_loss = (
             torch.stack(
-                [output.load_balance_loss for output in moe_outputs]
+                [output.load_balance_loss for output in dense_moe_outputs]
             ).mean()
-            if moe_outputs
+            if dense_moe_outputs
             else None
         )
         router_z_loss = (
             torch.stack(
-                [output.router_z_loss for output in moe_outputs]
+                [output.router_z_loss for output in dense_moe_outputs]
             ).mean()
-            if moe_outputs
+            if dense_moe_outputs
             else None
         )
         return HybridCausalLMOutput(
