@@ -6,6 +6,11 @@ import torch
 
 from iq_model import (
     AttentionResidualMixer,
+    HybridSchedule,
+    IQHybridConfig,
+    IQModelConfig,
+    Mamba3MIMOConfig,
+    RoutedMoEConfig,
     BlockAttentionResidual,
     BlockAttnResConfig,
     SiTUAndMul,
@@ -126,6 +131,48 @@ class K3InspiredComponentsTests(unittest.TestCase):
         final = attnres.finalize(state)
         self.assertEqual(tuple(final.shape), tuple(embeddings.shape))
         self.assertTrue(torch.isfinite(final).all())
+
+    def test_hybrid_config_serializes_stable_latent_variant(self):
+        model = IQModelConfig(
+            vocab_size=64,
+            hidden_size=16,
+            num_hidden_layers=2,
+            num_attention_heads=4,
+            num_key_value_heads=2,
+            intermediate_size=32,
+            max_position_embeddings=64,
+        )
+        schedule = HybridSchedule.parse("M E M E")
+        mamba = Mamba3MIMOConfig(
+            d_model=16,
+            num_layers=2,
+            d_state=8,
+            headdim=8,
+            mimo_rank=2,
+            expand=2.0,
+            rope_fraction=0.5,
+            chunk_size=16,
+        )
+        control_moe = RoutedMoEConfig(
+            hidden_size=16,
+            expert_intermediate_size=12,
+            num_experts=4,
+            top_k=2,
+            shared_expert_intermediate_size=12,
+        )
+        stable = self.config()
+        config = IQHybridConfig(
+            model=model,
+            schedule=schedule,
+            mamba3=mamba,
+            moe=control_moe,
+            moe_variant="stable_latent",
+            stable_moe=stable,
+        )
+        restored = IQHybridConfig.from_dict(config.to_dict())
+        self.assertEqual(restored.moe_variant, "stable_latent")
+        self.assertEqual(restored.stable_moe, stable)
+        self.assertEqual(restored.fingerprint, config.fingerprint)
 
     def test_attnres_mixer_softmax_depth_selection(self):
         config = BlockAttnResConfig(hidden_size=4, block_size=2)
