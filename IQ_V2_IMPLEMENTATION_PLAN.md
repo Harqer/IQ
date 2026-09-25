@@ -51,7 +51,11 @@ norm: rmsnorm
 dense_attention_position: qk_rope
 dense_attention_qk_norm: per_head_rmsnorm
 compressed_attention_position: trailing_partial_rope_with_inverse_output
-expert_activation: swiglu
+expert_activation: situ_glu
+routed_expert_space: latent
+stable_latent_moe: true
+quantile_balancing: true
+attnres_block_memory: true
 initial_context: 32768
 max_context_target: 131072
 exec_latent_dim: 512
@@ -277,7 +281,7 @@ This is illustrative ordering, not a hardcoded ratio. Production configs store t
 The division of labor is structural:
 
 - **Mamba-3 MIMO** performs the dominant recurrent sequence processing/state evolution and later reasoning recurrence.
-- **MoE/SwiGLU layers** provide nonlinear/expert capacity as separate layers; there is no automatic SwiGLU appended after every Mamba layer.
+- **Stable LatentMoE/SiTU-GLU layers** provide nonlinear/expert capacity as separate layers; routed experts operate in a narrower latent space while shared experts remain full-width. The original SwiGLU MoE remains a control.
 - **CSA/HCA** provide efficient explicit long-range context access.
 - **Dense attention anchors** provide exact pairwise comparison, induction, strict few-shot matching, and diagnostic fallback.
 - **Hamiltonian executive control** manages global reasoning state/halting; it is not another token mixer.
@@ -358,7 +362,36 @@ This preserves donor-compatible gate/up/down transport.
 
 ### Hybrid production path
 
-Hybrid `E` layers use routed SwiGLU experts plus a shared expert. The PyTorch reference is `RoutedSwiGLUMoELayer`.
+The production `E` layer is **Stable LatentMoE**, following the Kimi K3 channel-mixing design while preserving IQ's own Mamba-3 sequence mixer.
+
+For token state `x in R^d`:
+
+```text
+router_scores = sigmoid(W_router x)
+routes = topk(router_scores + routing_bias, k)
+weights = normalize(router_scores[routes])
+
+z = W_down x                    # latent width l < d
+u = sum_i weights_i Expert_i(z)
+u = RMSNorm(u)
+routed = W_up u
+shared = sum_j SharedExpert_j(x)
+y = routed + shared
+```
+
+Routed experts use **SiTU-GLU**:
+
+```text
+gate = beta * tanh(g / beta) * sigmoid(g)
+up   = linear_beta * tanh(u / linear_beta)
+SiTU-GLU = gate * up
+```
+
+with K3 defaults `beta=4` and `linear_beta=25` as the initial IQ reference.
+
+Routing is full-width and uses sigmoid affinities. Expert-selection bias affects Top-k choice only; mixture weights use the unbiased raw scores. Quantile Balancing computes the next mean-centered routing bias from the Top-(k+1) cutoff and applies it only to the **next** optimizer step/logical batch. The final bias is frozen for evaluation/inference.
+
+The original `RoutedSwiGLUMoELayer` remains a control/ablation; production configs explicitly select `moe_variant=stable_latent`.
 
 For token state `x`, router logits/probabilities are:
 
@@ -405,9 +438,9 @@ Production implementation requirements:
 
 Mellum/code-MoE donors can initialize compatible experts/router through exact/operator/functional transport. Mamba-3 layers do not contain an IQ-added SwiGLU unless the explicit schedule places an `E` layer after them.
 
-### Residual topology: standard control and mHC target
+### Residual/depth topology: Block AttnRes + mHC
 
-The dense Phi control keeps ordinary residual connections so donor retention remains interpretable.
+The dense Phi control keeps ordinary residual connections so donor retention remains interpretable. The hybrid path adds **Block Attention Residuals (AttnRes)** for content-dependent retrieval across model depth: completed schedule blocks plus the current within-block prefix are RMS-normalized, scored by a learned depth vector, softmax-mixed, and supplied to the next physical layer. This is separate from token attention and separate from Mamba recurrence.
 
 The hybrid architecture includes **Manifold-Constrained Hyper-Connections (mHC)** as the residual-topology target once its reference implementation is numerically validated. mHC expands the residual stream into multiple streams and constrains the residual mixing matrix to the Birkhoff polytope (doubly stochastic mixing). IQ does not approximate this with an unconstrained learned residual mixer.
 
@@ -420,7 +453,7 @@ Implementation requirements before enabling mHC in training:
 - fused or recomputed projection only after reference parity;
 - standard-residual vs mHC ablation under equal active compute.
 
-mHC changes residual topology, not the role of Mamba, attention, or MoE in the heterogeneous schedule.
+mHC changes within-depth residual topology, while Block AttnRes retrieves across depth. Their combination is an explicit experiment: AttnRes owns inter-block depth memory; mHC owns within-block residual streams. Neither changes the role of Mamba, attention, or MoE in the heterogeneous schedule.
 
 ## 8. Recurrent control flow
 

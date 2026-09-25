@@ -1,3 +1,10 @@
+from .attnres import (
+    AttentionResidualMixer,
+    AttnResError,
+    BlockAttentionResidual,
+    BlockAttnResConfig,
+    BlockAttnResState,
+)
 from .mhc import (
     MHCConfig,
     MHCError,
@@ -9,6 +16,11 @@ from .mhc import (
 )
 
 __all__ = [
+    "AttentionResidualMixer",
+    "AttnResError",
+    "BlockAttentionResidual",
+    "BlockAttnResConfig",
+    "BlockAttnResState",
     "MHCConfig",
     "MHCError",
     "MHCHead",

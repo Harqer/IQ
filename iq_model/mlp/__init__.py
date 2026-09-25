@@ -1,3 +1,12 @@
+from .latent_moe import (
+    SiTUExpert,
+    StableLatentMoE,
+    StableLatentMoEConfig,
+    StableLatentMoEError,
+    StableLatentMoELayer,
+    StableLatentMoEOutput,
+)
+from .situ import SiTUAndMul
 from .moe import (
     MoEConfigError,
     MoEOutput,
@@ -14,6 +23,13 @@ __all__ = [
     "RoutedMoEConfig",
     "RoutedSwiGLUMoE",
     "RoutedSwiGLUMoELayer",
+    "SiTUAndMul",
+    "SiTUExpert",
+    "StableLatentMoE",
+    "StableLatentMoEConfig",
+    "StableLatentMoEError",
+    "StableLatentMoELayer",
+    "StableLatentMoEOutput",
     "SwiGLU",
     "SwiGLUExpert",
 ]
