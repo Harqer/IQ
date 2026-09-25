@@ -98,15 +98,9 @@ class BlockAttentionResidual(nn.Module):
             raise ValueError(
                 "embeddings must have shape [batch, sequence, hidden]"
             )
-        empty = embeddings.new_zeros(
-            embeddings.shape[0],
-            embeddings.shape[1],
-            0,
-            embeddings.shape[2],
-        )
         return BlockAttnResState(
-            block_sources=empty,
-            prefix_sum=embeddings,
+            block_sources=embeddings.unsqueeze(2),
+            prefix_sum=torch.zeros_like(embeddings),
             layer_index=0,
         )
 
@@ -114,8 +108,8 @@ class BlockAttentionResidual(nn.Module):
         self,
         state: BlockAttnResState,
     ) -> torch.Tensor:
-        if state.block_sources.shape[2] == 0:
-            return state.prefix_sum
+        if state.layer_index == 0:
+            return state.block_sources[:, :, 0]
         return self.mixer(
             state.prefix_sum,
             state.block_sources,
@@ -152,8 +146,6 @@ class BlockAttentionResidual(nn.Module):
         self,
         state: BlockAttnResState,
     ) -> torch.Tensor:
-        if state.block_sources.shape[2] == 0:
-            return state.prefix_sum
         return self.mixer(
             state.prefix_sum,
             state.block_sources,
