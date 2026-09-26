@@ -508,9 +508,9 @@ class CompressedContextResidualLayer(nn.Module):
 class IQHybridForCausalLM(nn.Module):
     """Executable heterogeneous Mamba-3 / MoE / CSA / HCA / dense-attention backbone.
 
-    Executive layers still fail construction until the exact Hamiltonian
-    reference is present. Unsupported layer types are never substituted by
-    dense attention or another layer type.
+    Reasoning recurrence, energy critics, and halting are intentionally outside
+    this physical-layer schedule. Unsupported layer types are never substituted
+    by dense attention or another layer type.
     """
 
     def __init__(
