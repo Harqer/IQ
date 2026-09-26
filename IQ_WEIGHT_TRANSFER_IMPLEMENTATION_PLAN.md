@@ -13,7 +13,7 @@ The transfer system must:
 3. support multiple donor families without creating model-specific graft architectures;
 4. initialize the Transformer and code/MoE portions of IQ from proven pretrained systems;
 5. bootstrap the Mamba-3 path from Transformer projections only where there is a published structural correspondence;
-6. keep Hamiltonian/EBM, halting, spectral reasoning depth, hyperbolic executive geometry, and concept mapping recipient-native;
+6. keep the reasoning EBM critic, halting, spectral reasoning depth, and concept mapping recipient-native;
 7. record the provenance of every initialized parameter;
 8. make every transformation reproducible from immutable donor/config/calibration manifests;
 9. fail closed on incompatible checkpoints, ambiguous tensor layouts, non-finite maps, or incomplete artifacts.
@@ -136,17 +136,15 @@ No donor weight exists:
 - GaLore configuration
 - RLVR/verifier training
 - halting regularization
-- attention-anchor schedule
+- context-attention schedule
 
 ### RECIPIENT_NATIVE
 
 Never transplanted:
 
-- Hamiltonian `J/R/B`
-- scalar energy network
+- reasoning EBM critic
 - halting head
 - reasoning-depth spectral parameters
-- hyperbolic executive geometry parameters
 - concept mapper
 - compressed-context memory/indexer parameters
 - Differential Attention lambda/second-stream-only parameters
@@ -354,7 +352,7 @@ Capture corresponding target spaces plus:
 - Mamba recurrent state summaries
 - compressed-context service outputs
 - global attention output
-- executive state/energy once those modules exist
+- reasoning state and EBM score once those modules exist
 
 Capture files are sharded, dtype-tagged, sample-indexed, and hash-addressed. Do not keep full donor models resident when offline cached activations are sufficient.
 
@@ -725,7 +723,7 @@ Initial policy:
 Phi -> dense base
 Mamba bootstrap -> Mamba-3 MIMO primary recurrent path
 Mellum -> code DoRA + MoE + MTP
-IQ-native -> Mamba recurrence-only parameters + QK/KV norms + CSA/HCA compression/indexing/partial-RoPE + mHC residual topology + executive/energy/halting/concept modules
+IQ-native -> Mamba recurrence-only parameters + QK/KV norms + CSA/HCA compression/indexing/partial-RoPE + mHC residual topology + reasoning/EBM-critic/halting/concept modules
 ```
 
 No naive parameter averaging.
@@ -801,13 +799,13 @@ Exit: donor-retention and adaptation-compute gates pass.
 
 Exit: hybrid retains exact retrieval while reducing long-horizon state/compute cost relative to the dense baseline.
 
-### T4 — compressed context service + dense/global anchors
+### T4 — CSA/HCA context service + optional dense control
 
-- add per-head Q/K normalization to dense anchors
-- keep compatible transported dense query/output projections
+- keep compatible transported dense query/output projections as teacher/control initialization
 - train compressed-KV construction and learned sparse indexing
 - implement CSA/HCA trailing partial RoPE and inverse output rotation
-- retain explicit dense/global attention anchors in the schedule
+- use HCA for heavily compressed global context and CSA for sparse content-addressed retrieval
+- keep dense/global attention optional for teacher parity, exact pairwise comparison, and diagnostics rather than requiring periodic anchors
 - benchmark full heterogeneous schedules rather than one global-attention-period scalar
 
 Exit: long-context retrieval/code dependency suite remains within retention tolerance while memory/throughput improves.
@@ -822,11 +820,13 @@ Exit: long-context retrieval/code dependency suite remains within retention tole
 
 Exit: reasoning/compute tradeoff improves over non-recurrent hybrid control.
 
-### T6 — Hamiltonian/EBM executive
+### T6 — reasoning EBM critic
 
-Train only from generated recipient trajectories; never static prompts.
+Train the critic only from generated recipient reasoning states/trajectories paired with the relevant context. Use successful/correct states as lower-energy targets and failed, corrupted, contradictory, or regressive states as higher-energy targets.
 
-Exit: energy separates successful/failed trajectories and improves reasoning or halting efficiency.
+The critic may rank candidate branches, verify trajectories, and provide calibrated energy features to the independent halting head. It never owns the recurrence transition.
+
+Exit: EBM ranking/verification improves reasoning quality or halting efficiency over the recurrence+halting control under matched active compute.
 
 ### T7 — Mellum code/MoE transfer
 
@@ -881,10 +881,10 @@ MoE stage adds:
 + lambda_expert * L_expert
 ```
 
-Executive stage adds:
+Reasoning-critic stage adds:
 
 ```text
-+ lambda_energy * L_energy
++ lambda_energy_rank * L_energy_rank
 + lambda_ponder * L_ponder
 ```
 
