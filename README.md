@@ -46,9 +46,9 @@ pairwise comparisons; it is not a mandatory backbone anchor.
 - **DeepSeek V4-family CSA/HCA** is the production long-context system: sliding-window local attention plus compressed long-range memory and learned sparse selection. Dense attention remains an optional teacher/control/fallback for exact pairwise comparison rather than a required anchor.
 - **Stable LatentMoE** is the production expert path: full-width sigmoid routing, latent routed experts, post-aggregate RMSNorm, full-width shared experts, SiTU-GLU, and one-step-delayed Quantile Balancing. The older full-width SwiGLU MoE remains an ablation/control.
 - **Block AttnRes** provides content-dependent retrieval across completed depth blocks; **mHC** is an orthogonal within-depth residual-stream topology experiment. Neither is a reasoning controller.
-- **Reasoning-time recurrence** is separate from Mamba's token-time recurrence and owns iterative latent refinement.
-- **ReasoningEnergyCritic** is an optional EBM scorer for candidate ranking, trajectory verification, and halting evidence. It never updates reasoning state itself.
-- **Adaptive halting** remains its own mechanism and can use energy stabilization as one feature rather than treating energy as the stopping rule.
+- **Reasoning-time recurrence** is separate from Mamba's token-time recurrence and owns iterative latent refinement. The reference path uses a gated residual transition with a continuous spectral depth coordinate.
+- **ReasoningEnergyCritic** is an optional EBM scorer over the generated reasoning trajectory. It can provide ranking/verification signals and halting evidence, while the recurrence transition remains identical with the critic enabled or disabled.
+- **Adaptive halting** is a separate learned head. Training uses differentiable stop/survival weights across the bounded reasoning trajectory; inference can exit early only when halt probability and state-convergence criteria pass. Optional energy stabilization adds evidence rather than replacing those criteria.
 - **MTP** is a first-class pretraining objective/head stack rather than an after-the-fact probe.
 - **Differential Attention**, Coconut-style recurrence, and the Concept Mapper remain ablation-controlled reasoning experiments rather than mandatory backbone stages.
 
@@ -174,14 +174,17 @@ Implemented today:
 - DeepSeek V4-style CSA/HCA full-sequence PyTorch reference with sliding-window branch, learned Lightning indexer, shared K=V MQA, sinks, grouped low-rank output, and packed-document isolation
 - leading RoPE plus interleaved trailing partial/inverse RoPE reference primitives
 - scale-gate metrics
+- adaptive reasoning-time recurrence with spectral depth encoding, differentiable training-time halting, hard inference early exit, and packed-document isolation
+- optional EBM energy/energy-delta features in the halting path with a tested invariant that the critic does not alter the generated state trajectory
+- near-zero gated injection of final reasoning state back into token representations
 - model-independent agent harness
 
 Specified / next runtime integration:
 
 - wire Block AttnRes and validated mHC behavior into the complete heterogeneous runtime without changing their distinct responsibilities
 - finish CSA/HCA runtime optimization and parity work; keep dense attention as an optional teacher/control rather than a mandatory anchor
-- adaptive reasoning-time recurrence and halting
-- integrate the standalone EBM critic with generated reasoning trajectories for ranking/verification experiments
+- train/evaluate recurrence + halting on reasoning/code tasks and calibrate halt thresholds against quality/compute
+- construct successful/failed/corrupted reasoning-state pairs and train the EBM ranking objective before enabling energy-assisted halting by default
 - concept-mapper and continuous-thought ablations
 - real Muon optimizer
 - code-focused FIM/MTP/MoE training
