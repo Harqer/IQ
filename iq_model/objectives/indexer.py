@@ -43,27 +43,29 @@ def lightning_indexer_kl_loss(
             "indexer distillation batch has no query with a valid compressed entry"
         )
 
-    neg_inf = torch.tensor(
-        float("-inf"),
-        device=student_scores.device,
-        dtype=student_scores.dtype,
-    )
     student = student_scores / temperature
     teacher = teacher_scores / temperature
-    student = torch.where(valid_mask, student, neg_inf)
-    teacher = torch.where(valid_mask, teacher, neg_inf)
 
-    student_log_probs = F.log_softmax(student[row_valid].float(), dim=-1)
-    teacher_probs = F.softmax(teacher[row_valid].float(), dim=-1)
-    return (
-        F.kl_div(
-            student_log_probs,
-            teacher_probs,
-            reduction="batchmean",
-            log_target=False,
+    # Compute each row over its valid support instead of feeding masked -inf
+    # entries into KLDivLoss. Zero-probability teacher entries paired with
+    # -inf student log-probabilities can otherwise produce 0 * inf -> NaN.
+    losses: list[torch.Tensor] = []
+    for row in torch.nonzero(row_valid, as_tuple=False).flatten():
+        valid = torch.nonzero(valid_mask[row], as_tuple=False).flatten()
+        student_valid = student[row].index_select(0, valid).float()
+        teacher_valid = teacher[row].index_select(0, valid).float()
+        student_log_probs = F.log_softmax(student_valid, dim=-1)
+        teacher_probs = F.softmax(teacher_valid, dim=-1)
+        losses.append(
+            F.kl_div(
+                student_log_probs,
+                teacher_probs,
+                reduction="sum",
+                log_target=False,
+            )
         )
-        * (temperature * temperature)
-    )
+
+    return torch.stack(losses).mean() * (temperature * temperature)
 
 
 def lightning_indexer_topk_recall(
