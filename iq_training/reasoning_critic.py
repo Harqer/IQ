@@ -58,6 +58,13 @@ class ReasoningTrajectoryBatch:
             raise ReasoningCriticTrainingError(
                 "verified_success must be boolean"
             )
+        if (
+            self.state_trace.device != self.context.device
+            or self.verified_success.device != self.context.device
+        ):
+            raise ReasoningCriticTrainingError(
+                "context, state_trace, and verified_success must share a device"
+            )
         if self.state_trace.shape[1] <= 0:
             raise ReasoningCriticTrainingError(
                 "state_trace must contain at least one reasoning step"
@@ -81,6 +88,14 @@ class ReasoningTrajectoryBatch:
     ) -> "ReasoningTrajectoryBatch":
         context = getattr(output, "reasoning_context", None)
         state_trace = getattr(output, "reasoning_state_trace", None)
+        if not isinstance(verified_success, torch.Tensor):
+            raise ReasoningCriticTrainingError(
+                "verified_success must be a boolean tensor"
+            )
+        if verified_success.dtype is not torch.bool:
+            raise ReasoningCriticTrainingError(
+                "verified_success must be boolean; verifier scores must be thresholded explicitly upstream"
+            )
         if not isinstance(context, torch.Tensor):
             raise ReasoningCriticTrainingError(
                 "model output is missing reasoning_context"
@@ -95,7 +110,6 @@ class ReasoningTrajectoryBatch:
             state_trace=state_trace.detach().clone(),
             verified_success=verified_success.detach().to(
                 device=context.device,
-                dtype=torch.bool,
             ).clone(),
         )
 
@@ -189,6 +203,14 @@ class ReasoningEnergyPairBatch:
         if self.step_indices.dtype not in (torch.int32, torch.int64):
             raise ReasoningCriticTrainingError(
                 "step_indices must be integer typed"
+            )
+        if (
+            self.positive_states.device != self.context.device
+            or self.negative_states.device != self.context.device
+            or self.step_indices.device != self.context.device
+        ):
+            raise ReasoningCriticTrainingError(
+                "all energy-pair tensors must share a device"
             )
         if pairs == 0:
             raise ReasoningCriticTrainingError(
