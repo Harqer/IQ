@@ -529,18 +529,6 @@ class IQHybridForCausalLM(nn.Module):
                 "IQHybridForCausalLM requires the production CUDA Mamba-3 MIMO runtime"
             )
 
-        unsupported = tuple(
-            layer
-            for layer in config.schedule.layers
-            if layer is HybridLayerType.EXECUTIVE
-        )
-        if unsupported:
-            names = ", ".join(layer.value for layer in unsupported)
-            raise HybridModelError(
-                "schedule requests layer types whose exact runtime is not implemented yet: "
-                f"{names}"
-            )
-
         self.embed_tokens = nn.Embedding(
             config.model.vocab_size,
             config.model.hidden_size,
