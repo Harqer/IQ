@@ -2,7 +2,7 @@
 
 IQ is an experimental language-model architecture for complex coding, long-context retrieval, and adaptive multi-step reasoning.
 
-The production target is **not** the original Neutrino/Ising mock architecture. IQ v2 uses Mamba-3 MIMO as the recurrent reasoning/state-evolution path, with Transformer attention retained as a routed context/comparison service, plus adaptive recurrence and a differentiable Hamiltonian executive controller.
+The production target is **not** the original Neutrino/Ising mock architecture. IQ v2 uses Mamba-3 MIMO as the dominant token-time sequence/state mixer, DeepSeek V4-family CSA/HCA for long-context addressing, Stable LatentMoE for routed expert computation, Block AttnRes for cross-depth retrieval, and mHC as an orthogonal residual-topology experiment. Reasoning-time recurrence, the EBM critic, and adaptive halting are separate from the physical backbone schedule.
 
 ## Architecture
 
@@ -11,58 +11,58 @@ tokens
   ↓
 embeddings
   ↓
-explicit heterogeneous schedule
+heterogeneous backbone
   │
   ├─ M = Mamba-3 MIMO
-  │      exponential-trapezoidal recurrence
-  │      complex/data-dependent state rotation
-  │      rank-4 MIMO state evolution
+  │      token-time recurrent sequence/state mixing
   │
-  ├─ E = routed/shared SwiGLU MoE
+  ├─ E = Stable LatentMoE + SiTU-GLU
   │
-  ├─ C = CSA compressed context attention
-  │      Q/KV RMSNorm + trailing partial RoPE
+  ├─ C/H = CSA/HCA + sliding-window context
   │
-  ├─ H = HCA heavily compressed context attention
+  ├─ Block AttnRes = cross-depth residual retrieval
   │
-  └─ A = dense context anchor
-         QK RMSNorm + RoPE
-         exact pairwise/few-shot comparison
+  └─ mHC = within-depth residual-stream topology experiment
   ↓
-reasoning recurrence + executive state
+reasoning-time latent recurrence
+  ↕
+optional EBM critic
+  │   candidate scoring / branch ranking / verification
+  │   optional evidence for halting
   ↓
-Hamiltonian/energy control
+adaptive halting
   ↓
-adaptive halt/refine
-  ↓
-Concept Mapper
+Concept Mapper (ablation)
   ↓
 MTP + LM head
+
+Optional dense attention remains a teacher/control/fallback path for exact
+pairwise comparisons; it is not a mandatory backbone anchor.
 ```
 
 ### Why the hybrid
 
-- **Mamba-3 MIMO (rank 4)** is the primary recurrent state/reasoning path; MIMO is not optional and IQ has no silent SISO fallback.
-- **Transformer attention** remains the exact content-addressable context/comparison path for identifiers, code dependencies, few-shot induction, and needle-in-context retrieval.
-- **DeepSeek V4-family CSA/HCA compressed context attention** handles long-range context: a local sliding window plus compressed KV memory with learned sparse indexing; dense attention is reserved for strict pairwise/few-shot comparison.
-- **Dense attention anchors** use per-head Q/K RMSNorm followed by RoPE for exact comparison/induction tasks.
-- **CSA/HCA** use normalized compressed KV states, trailing partial RoPE, and inverse output rotation; Mamba-3 keeps its own native state rotation internally.
+- **Mamba-3 MIMO (rank 4)** is the primary token-time recurrent sequence/state mixer; MIMO is not optional and IQ has no silent SISO fallback.
+- **DeepSeek V4-family CSA/HCA** is the production long-context system: sliding-window local attention plus compressed long-range memory and learned sparse selection. Dense attention remains an optional teacher/control/fallback for exact pairwise comparison rather than a required anchor.
 - **Stable LatentMoE** is the production expert path: full-width sigmoid routing, latent routed experts, post-aggregate RMSNorm, full-width shared experts, SiTU-GLU, and one-step-delayed Quantile Balancing. The older full-width SwiGLU MoE remains an ablation/control.
-- **Block AttnRes** provides content-dependent depth retrieval across heterogeneous schedule blocks; **mHC** remains an orthogonal within-block multi-stream residual experiment. Neither replaces Mamba-3 sequence recurrence.
+- **Block AttnRes** provides content-dependent retrieval across completed depth blocks; **mHC** is an orthogonal within-depth residual-stream topology experiment. Neither is a reasoning controller.
+- **Reasoning-time recurrence** is separate from Mamba's token-time recurrence and owns iterative latent refinement.
+- **ReasoningEnergyCritic** is an optional EBM scorer for candidate ranking, trajectory verification, and halting evidence. It never updates reasoning state itself.
+- **Adaptive halting** remains its own mechanism and can use energy stabilization as one feature rather than treating energy as the stopping rule.
 - **MTP** is a first-class pretraining objective/head stack rather than an after-the-fact probe.
-- **Differential Attention** is reserved for outer-loop executive reasoning.
-- **Hamiltonian/EBM control** replaces the old fake Ising gate with a real scalar-energy executive controller using PSD-preserving dissipation and energy-aware discrete integration.
+- **Differential Attention**, Coconut-style recurrence, and the Concept Mapper remain ablation-controlled reasoning experiments rather than mandatory backbone stages.
 
-## Retained NIF ideas, redefined
+## Legacy NIF disposition
 
 The useful ideas from the original NIF design are kept only where they have a defensible mathematical role:
 
-| Legacy idea | IQ v2 |
+| Legacy idea | IQ v2 disposition |
 | --- | --- |
-| Neutrino oscillation | Mamba-3 complex recurrent state dynamics |
-| Ising gate | differentiable port-Hamiltonian / EBM executive controller |
-| Riemannian manifold | optional hyperbolic executive/concept geometry |
-| Heterogeneous MoE | learned heterogeneous routed SwiGLU experts |
+| Neutrino oscillation | superseded by Mamba-3 recurrent state dynamics |
+| Ising / Hamiltonian gate | retired from the canonical architecture |
+| Scalar energy | retained only as an optional learned EBM critic over generated reasoning states |
+| Riemannian manifold | isolated research experiment; not part of the canonical backbone or controller |
+| Heterogeneous MoE | Stable LatentMoE + SiTU-GLU, with full-width SwiGLU retained as a control |
 | Muon | real matrix-gradient/update orthogonalization |
 | GaLore | optional memory-constrained optimizer mode |
 | Muon adapters | DoRA correction around transported weights |
@@ -178,11 +178,11 @@ Implemented today:
 
 Specified / next runtime integration:
 
-- complete heterogeneous schedule once CSA/HCA and executive layer runtimes are implemented
-- CSA/HCA compression, learned indexer, shared compressed KV, sinks, grouped output projection
-- exact mHC residual-topology reference + optimized kernel
-- Hamiltonian/EBM controller with PSD ring dissipation and energy-controlled discrete integration
-- adaptive recurrent reasoning and concept collapse
+- wire Block AttnRes and validated mHC behavior into the complete heterogeneous runtime without changing their distinct responsibilities
+- finish CSA/HCA runtime optimization and parity work; keep dense attention as an optional teacher/control rather than a mandatory anchor
+- adaptive reasoning-time recurrence and halting
+- integrate the standalone EBM critic with generated reasoning trajectories for ranking/verification experiments
+- concept-mapper and continuous-thought ablations
 - real Muon optimizer
 - code-focused FIM/MTP/MoE training
 
