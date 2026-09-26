@@ -17,8 +17,15 @@ from .attention import (
     HeavilyCompressedContextAttention,
 )
 from .config import IQModelConfig
+from .energy import ReasoningEnergyCritic, ReasoningEnergyCriticConfig
 from .mlp import MoEOutput, RoutedMoEConfig, RoutedSwiGLUMoELayer, StableLatentMoEConfig, StableLatentMoELayer, StableLatentMoEOutput
 from .norm import RMSNorm
+from .reasoning import (
+    ReasoningRecurrence,
+    ReasoningRecurrenceConfig,
+    ReasoningRecurrenceOutput,
+    ReasoningStateInjector,
+)
 from .state import Mamba3MIMOConfig, Mamba3MIMOState
 
 
@@ -35,6 +42,9 @@ class IQHybridConfig:
     compressed_context: CompressedContextConfig | None = None
     moe_variant: Literal["swiglu", "stable_latent"] = "swiglu"
     stable_moe: StableLatentMoEConfig | None = None
+    reasoning: ReasoningRecurrenceConfig | None = None
+    energy_critic: ReasoningEnergyCriticConfig | None = None
+    require_energy_stability: bool = False
 
     def __post_init__(self) -> None:
         hidden = self.model.hidden_size
@@ -88,6 +98,28 @@ class IQHybridConfig:
             raise HybridModelError(
                 "compressed_context config is present but the schedule has no CSA/HCA layers"
             )
+        if self.reasoning is not None:
+            if self.reasoning.hidden_size != hidden:
+                raise HybridModelError(
+                    "reasoning hidden_size does not match model hidden_size"
+                )
+            if self.energy_critic is not None:
+                if self.energy_critic.state_dim != self.reasoning.state_dim:
+                    raise HybridModelError(
+                        "energy_critic state_dim must match reasoning state_dim"
+                    )
+                if self.energy_critic.context_dim != hidden:
+                    raise HybridModelError(
+                        "energy_critic context_dim must match model hidden_size"
+                    )
+        elif self.energy_critic is not None:
+            raise HybridModelError(
+                "energy_critic requires reasoning recurrence"
+            )
+        if self.require_energy_stability and self.energy_critic is None:
+            raise HybridModelError(
+                "require_energy_stability requires energy_critic"
+            )
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -107,6 +139,17 @@ class IQHybridConfig:
                 if self.compressed_context is not None
                 else None
             ),
+            "reasoning": (
+                asdict(self.reasoning)
+                if self.reasoning is not None
+                else None
+            ),
+            "energy_critic": (
+                asdict(self.energy_critic)
+                if self.energy_critic is not None
+                else None
+            ),
+            "require_energy_stability": self.require_energy_stability,
         }
 
     @classmethod
@@ -122,6 +165,11 @@ class IQHybridConfig:
         moe_variant = str(data.get("moe_variant", "swiglu"))
         stable_moe = data.get("stable_moe")
         compressed_context = data.get("compressed_context")
+        reasoning = data.get("reasoning")
+        energy_critic = data.get("energy_critic")
+        require_energy_stability = bool(
+            data.get("require_energy_stability", False)
+        )
         if not isinstance(model, dict):
             raise HybridModelError("hybrid config model must be an object")
         if not isinstance(schedule, dict):
@@ -137,6 +185,14 @@ class IQHybridConfig:
         if compressed_context is not None and not isinstance(compressed_context, dict):
             raise HybridModelError(
                 "hybrid config compressed_context must be an object or null"
+            )
+        if reasoning is not None and not isinstance(reasoning, dict):
+            raise HybridModelError(
+                "hybrid config reasoning must be an object or null"
+            )
+        if energy_critic is not None and not isinstance(energy_critic, dict):
+            raise HybridModelError(
+                "hybrid config energy_critic must be an object or null"
             )
         try:
             return cls(
@@ -155,6 +211,17 @@ class IQHybridConfig:
                     if isinstance(compressed_context, dict)
                     else None
                 ),
+                reasoning=(
+                    ReasoningRecurrenceConfig(**reasoning)
+                    if isinstance(reasoning, dict)
+                    else None
+                ),
+                energy_critic=(
+                    ReasoningEnergyCriticConfig(**energy_critic)
+                    if isinstance(energy_critic, dict)
+                    else None
+                ),
+                require_energy_stability=require_energy_stability,
             )
         except (TypeError, ValueError) as exc:
             raise HybridModelError(
@@ -212,6 +279,77 @@ class HybridCausalLMOutput:
     router_z_loss: torch.Tensor | None
     expert_counts: tuple[torch.Tensor, ...]
     schedule_fingerprint: str
+    reasoning_state: torch.Tensor | None = None
+    reasoning_state_trace: torch.Tensor | None = None
+    halt_probabilities: torch.Tensor | None = None
+    halt_weights: torch.Tensor | None = None
+    relative_state_deltas: torch.Tensor | None = None
+    energy_trace: torch.Tensor | None = None
+    energy_deltas: torch.Tensor | None = None
+    expected_reasoning_steps: torch.Tensor | None = None
+    reasoning_steps_executed: int | None = None
+
+
+def _reasoning_masks(
+    input_ids: torch.Tensor,
+    attention_mask: torch.Tensor | None,
+    reasoning_context_lengths: torch.Tensor | None,
+    *,
+    labels_present: bool,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    batch, sequence = input_ids.shape
+    if attention_mask is not None and attention_mask.shape != (batch, sequence):
+        raise HybridModelError(
+            f"attention_mask must have shape {(batch, sequence)}"
+        )
+    valid = (
+        torch.ones(
+            (batch, sequence),
+            dtype=torch.bool,
+            device=input_ids.device,
+        )
+        if attention_mask is None
+        else attention_mask.to(device=input_ids.device, dtype=torch.bool)
+    )
+    valid_counts = valid.sum(dim=-1)
+    if bool((valid_counts == 0).any()):
+        raise HybridModelError(
+            "reasoning requires at least one valid token per batch row"
+        )
+
+    if reasoning_context_lengths is None:
+        if labels_present:
+            raise HybridModelError(
+                "reasoning_context_lengths is required when labels are provided "
+                "so reasoning cannot observe teacher-forced future tokens"
+            )
+        lengths = valid_counts
+    else:
+        if reasoning_context_lengths.shape != (batch,):
+            raise HybridModelError(
+                f"reasoning_context_lengths must have shape {(batch,)}"
+            )
+        if reasoning_context_lengths.dtype not in (torch.int32, torch.int64):
+            raise HybridModelError(
+                "reasoning_context_lengths must be integer typed"
+            )
+        lengths = reasoning_context_lengths.to(
+            device=input_ids.device,
+            dtype=torch.long,
+        )
+        if bool((lengths <= 0).any()):
+            raise HybridModelError(
+                "reasoning_context_lengths must be positive"
+            )
+        if bool((lengths > valid_counts).any()):
+            raise HybridModelError(
+                "reasoning_context_lengths cannot exceed valid token counts"
+            )
+
+    valid_rank = valid.to(torch.long).cumsum(dim=-1)
+    context_mask = valid & (valid_rank <= lengths.unsqueeze(-1))
+    injection_mask = valid & (valid_rank >= lengths.unsqueeze(-1))
+    return context_mask, injection_mask
 
 
 def _valid_tokens(
@@ -582,6 +720,23 @@ class IQHybridForCausalLM(nn.Module):
             config.model.hidden_size,
             config.model.rms_norm_eps,
         ).to(device=device_obj, dtype=dtype)
+
+        self.reasoning: ReasoningRecurrence | None = None
+        self.reasoning_injector: ReasoningStateInjector | None = None
+        self.energy_critic: ReasoningEnergyCritic | None = None
+        if config.reasoning is not None:
+            self.reasoning = ReasoningRecurrence(
+                config.reasoning
+            ).to(device=device_obj, dtype=dtype)
+            self.reasoning_injector = ReasoningStateInjector(
+                config.model.hidden_size,
+                config.reasoning.state_dim,
+            ).to(device=device_obj, dtype=dtype)
+            if config.energy_critic is not None:
+                self.energy_critic = ReasoningEnergyCritic(
+                    config.energy_critic
+                ).to(device=device_obj, dtype=dtype)
+
         self.lm_head = nn.Linear(
             config.model.hidden_size,
             config.model.vocab_size,
@@ -610,6 +765,7 @@ class IQHybridForCausalLM(nn.Module):
         position_ids: torch.Tensor | None = None,
         attention_mask: torch.Tensor | None = None,
         document_ids: torch.Tensor | None = None,
+        reasoning_context_lengths: torch.Tensor | None = None,
         return_hidden_states: bool = False,
     ) -> HybridCausalLMOutput:
         if input_ids.ndim != 2:
@@ -661,6 +817,32 @@ class IQHybridForCausalLM(nn.Module):
                 )
 
         hidden = self.norm(x)
+        reasoning_output: ReasoningRecurrenceOutput | None = None
+        if self.reasoning is not None:
+            reasoning_context_mask, reasoning_injection_mask = _reasoning_masks(
+                input_ids,
+                attention_mask,
+                reasoning_context_lengths,
+                labels_present=labels is not None,
+            )
+            reasoning_output = self.reasoning(
+                hidden,
+                attention_mask=attention_mask,
+                reasoning_context_mask=reasoning_context_mask,
+                document_ids=document_ids,
+                energy_critic=self.energy_critic,
+                require_energy_stability=self.config.require_energy_stability,
+            )
+            assert self.reasoning_injector is not None
+            hidden = self.reasoning_injector(
+                hidden,
+                reasoning_output.state,
+                token_mask=reasoning_injection_mask,
+            )
+        elif reasoning_context_lengths is not None:
+            raise HybridModelError(
+                "reasoning_context_lengths was provided but reasoning is disabled"
+            )
         logits = self.lm_head(hidden)
 
         language_loss: torch.Tensor | None = None
@@ -713,4 +895,49 @@ class IQHybridForCausalLM(nn.Module):
                 output.expert_counts for output in moe_outputs
             ),
             schedule_fingerprint=self.config.schedule.fingerprint,
+            reasoning_state=(
+                reasoning_output.state
+                if reasoning_output is not None
+                else None
+            ),
+            reasoning_state_trace=(
+                reasoning_output.state_trace
+                if reasoning_output is not None
+                else None
+            ),
+            halt_probabilities=(
+                reasoning_output.halt_probabilities
+                if reasoning_output is not None
+                else None
+            ),
+            halt_weights=(
+                reasoning_output.halt_weights
+                if reasoning_output is not None
+                else None
+            ),
+            relative_state_deltas=(
+                reasoning_output.relative_state_deltas
+                if reasoning_output is not None
+                else None
+            ),
+            energy_trace=(
+                reasoning_output.energy_trace
+                if reasoning_output is not None
+                else None
+            ),
+            energy_deltas=(
+                reasoning_output.energy_deltas
+                if reasoning_output is not None
+                else None
+            ),
+            expected_reasoning_steps=(
+                reasoning_output.expected_steps
+                if reasoning_output is not None
+                else None
+            ),
+            reasoning_steps_executed=(
+                reasoning_output.steps_executed
+                if reasoning_output is not None
+                else None
+            ),
         )

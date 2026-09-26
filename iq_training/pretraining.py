@@ -19,12 +19,14 @@ class PretrainingObjectiveConfig:
     mtp_loss_weight: float = 0.0
     moe_load_balance_loss_weight: float = 0.0
     moe_router_z_loss_weight: float = 0.0
+    reasoning_ponder_loss_weight: float = 0.0
 
     def __post_init__(self) -> None:
         weights = {
             "mtp_loss_weight": self.mtp_loss_weight,
             "moe_load_balance_loss_weight": self.moe_load_balance_loss_weight,
             "moe_router_z_loss_weight": self.moe_router_z_loss_weight,
+            "reasoning_ponder_loss_weight": self.reasoning_ponder_loss_weight,
         }
         bad = [name for name, value in weights.items() if float(value) < 0.0]
         if bad:
@@ -43,6 +45,7 @@ class PretrainingOutput:
     mtp_loss: torch.Tensor | None
     moe_load_balance_loss: torch.Tensor | None
     moe_router_z_loss: torch.Tensor | None
+    reasoning_expected_steps: torch.Tensor | None
     logits: torch.Tensor
 
 
@@ -125,7 +128,7 @@ class IQPretrainingModel(nn.Module):
     @property
     def fingerprint(self) -> str:
         payload = {
-            "schema_version": 2,
+            "schema_version": 3,
             "model_config": _model_config_payload(self.main_model),
             "objective_config": self.objective_config.to_dict(),
             "mtp_config": (
@@ -167,18 +170,34 @@ class IQPretrainingModel(nn.Module):
         position_ids: torch.Tensor | None = None,
         attention_mask: torch.Tensor | None = None,
         document_ids: torch.Tensor | None = None,
+        reasoning_context_lengths: torch.Tensor | None = None,
     ) -> PretrainingOutput:
         use_mtp = (
             self.mtp is not None
             and self.objective_config.mtp_loss_weight > 0
         )
+        main_kwargs: dict[str, object] = {
+            "labels": labels,
+            "position_ids": position_ids,
+            "attention_mask": attention_mask,
+            "document_ids": document_ids,
+            "return_hidden_states": use_mtp,
+        }
+        reasoning_config = getattr(
+            getattr(self.main_model, "config", None),
+            "reasoning",
+            None,
+        )
+        if reasoning_config is not None:
+            main_kwargs["reasoning_context_lengths"] = reasoning_context_lengths
+        elif reasoning_context_lengths is not None:
+            raise PretrainingConfigError(
+                "reasoning_context_lengths was provided but the main model has no reasoning recurrence"
+            )
+
         main_output = self.main_model(
             input_ids,
-            labels=labels,
-            position_ids=position_ids,
-            attention_mask=attention_mask,
-            document_ids=document_ids,
-            return_hidden_states=use_mtp,
+            **main_kwargs,
         )
         ntp_loss = main_output.loss
         mtp_loss: torch.Tensor | None = None
@@ -215,6 +234,11 @@ class IQPretrainingModel(nn.Module):
             "router_z_loss",
             None,
         )
+        reasoning_expected_steps = getattr(
+            main_output,
+            "expected_reasoning_steps",
+            None,
+        )
 
         terms: list[torch.Tensor] = []
         if ntp_loss is not None:
@@ -240,6 +264,13 @@ class IQPretrainingModel(nn.Module):
         )
         if weighted_router is not None:
             terms.append(weighted_router)
+        weighted_ponder = self._weighted_auxiliary(
+            name="expected_reasoning_steps",
+            value=reasoning_expected_steps,
+            weight=self.objective_config.reasoning_ponder_loss_weight,
+        )
+        if weighted_ponder is not None:
+            terms.append(weighted_ponder)
 
         loss = torch.stack(terms).sum() if terms else None
         return PretrainingOutput(
@@ -248,5 +279,6 @@ class IQPretrainingModel(nn.Module):
             mtp_loss=mtp_loss,
             moe_load_balance_loss=moe_load_balance_loss,
             moe_router_z_loss=moe_router_z_loss,
+            reasoning_expected_steps=reasoning_expected_steps,
             logits=main_output.logits,
         )
