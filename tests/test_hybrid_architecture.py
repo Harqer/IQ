@@ -13,6 +13,7 @@ from iq_model import (
     IQModelConfig,
 )
 from iq_model.position import (
+    InterleavedRotaryEmbedding,
     RotaryEmbedding,
     apply_inverse_partial_rotary_at_end,
     apply_partial_rotary_at_end,
@@ -92,7 +93,7 @@ class HybridArchitectureTests(unittest.TestCase):
 
     def test_partial_rope_inverse_round_trip(self):
         torch.manual_seed(5)
-        rotary = RotaryEmbedding(4, 32, 10000.0)
+        rotary = InterleavedRotaryEmbedding(4, 32, 10000.0)
         positions = torch.tensor([[0, 1, 2, 3]])
         cos, sin = rotary.cos_sin(
             positions,
