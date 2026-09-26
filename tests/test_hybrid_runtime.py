@@ -11,6 +11,8 @@ from iq_model import (
     IQHybridConfig,
     IQModelConfig,
     Mamba3MIMOConfig,
+    ReasoningEnergyCriticConfig,
+    ReasoningRecurrenceConfig,
     RoutedMoEConfig,
     pack_mamba_varlen,
     unpack_mamba_varlen,
@@ -52,6 +54,18 @@ class HeterogeneousHybridRuntimeTests(unittest.TestCase):
                 top_k=2,
                 shared_expert_intermediate_size=16,
             ),
+            reasoning=ReasoningRecurrenceConfig(
+                hidden_size=16,
+                state_dim=8,
+                transition_hidden_dim=24,
+                max_steps=4,
+                min_steps=1,
+            ),
+            energy_critic=ReasoningEnergyCriticConfig(
+                state_dim=8,
+                context_dim=16,
+                hidden_dim=12,
+            ),
         )
 
     def test_hybrid_config_matches_schedule_and_fingerprints(self):
@@ -69,6 +83,9 @@ class HeterogeneousHybridRuntimeTests(unittest.TestCase):
         restored = IQHybridConfig.from_dict(config.to_dict())
         self.assertEqual(restored.to_dict(), config.to_dict())
         self.assertEqual(restored.fingerprint, config.fingerprint)
+
+        self.assertIsNotNone(restored.reasoning)
+        self.assertIsNotNone(restored.energy_critic)
 
         with self.assertRaises(HybridModelError):
             IQHybridConfig(
