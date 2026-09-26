@@ -469,6 +469,8 @@ At each reasoning step:
 
 The recurrence transition owns state evolution. The EBM never performs the transition. The reference implementation exposes the complete generated state trace and tests that enabling the critic leaves that trace unchanged for identical recurrence parameters and inputs.
 
+Causal training boundary: teacher-forced batches with reasoning enabled provide `reasoning_context_lengths[batch]`. The recurrence pools only the first configured valid-token prefix for each example. The final reasoning state is injected beginning at the last prompt source position, so answer-token targets never enter the reasoning context that predicts them. Inference without labels uses the full visible prefix and injects only at its final valid prediction source position.
+
 ### Candidate branching
 
 When a reasoning experiment emits multiple candidate states
@@ -1065,7 +1067,7 @@ Exit: Mamba state continuation, sparse attention, global retrieval, and fusion a
 Reference runtime implemented in `iq_model/reasoning/recurrence.py` and integrated into `IQHybridForCausalLM`.
 
 1. shared reasoning-state recurrence — **implemented**
-2. bounded reasoning-state/context injection — **implemented with near-zero output gate**
+2. bounded reasoning-state/context injection — **implemented with near-zero output gate and causal prompt-boundary masking**
 3. spectral reasoning-depth encoding — **implemented**
 4. differentiable training-time halting — **implemented with stop/survival weighting**
 5. hard inference early exit — **implemented**
