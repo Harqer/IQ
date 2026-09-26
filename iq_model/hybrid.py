@@ -290,6 +290,64 @@ class HybridCausalLMOutput:
     reasoning_steps_executed: int | None = None
 
 
+def _reasoning_masks(
+    input_ids: torch.Tensor,
+    attention_mask: torch.Tensor | None,
+    reasoning_context_lengths: torch.Tensor | None,
+    *,
+    labels_present: bool,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    batch, sequence = input_ids.shape
+    valid = (
+        torch.ones(
+            (batch, sequence),
+            dtype=torch.bool,
+            device=input_ids.device,
+        )
+        if attention_mask is None
+        else attention_mask.to(device=input_ids.device, dtype=torch.bool)
+    )
+    valid_counts = valid.sum(dim=-1)
+    if bool((valid_counts == 0).any()):
+        raise HybridModelError(
+            "reasoning requires at least one valid token per batch row"
+        )
+
+    if reasoning_context_lengths is None:
+        if labels_present:
+            raise HybridModelError(
+                "reasoning_context_lengths is required when labels are provided "
+                "so reasoning cannot observe teacher-forced future tokens"
+            )
+        lengths = valid_counts
+    else:
+        if reasoning_context_lengths.shape != (batch,):
+            raise HybridModelError(
+                f"reasoning_context_lengths must have shape {(batch,)}"
+            )
+        if reasoning_context_lengths.dtype not in (torch.int32, torch.int64):
+            raise HybridModelError(
+                "reasoning_context_lengths must be integer typed"
+            )
+        lengths = reasoning_context_lengths.to(
+            device=input_ids.device,
+            dtype=torch.long,
+        )
+        if bool((lengths <= 0).any()):
+            raise HybridModelError(
+                "reasoning_context_lengths must be positive"
+            )
+        if bool((lengths > valid_counts).any()):
+            raise HybridModelError(
+                "reasoning_context_lengths cannot exceed valid token counts"
+            )
+
+    valid_rank = valid.to(torch.long).cumsum(dim=-1)
+    context_mask = valid & (valid_rank <= lengths.unsqueeze(-1))
+    injection_mask = valid & (valid_rank >= lengths.unsqueeze(-1))
+    return context_mask, injection_mask
+
+
 def _valid_tokens(
     hidden_states: torch.Tensor,
     attention_mask: torch.Tensor | None,
@@ -703,6 +761,7 @@ class IQHybridForCausalLM(nn.Module):
         position_ids: torch.Tensor | None = None,
         attention_mask: torch.Tensor | None = None,
         document_ids: torch.Tensor | None = None,
+        reasoning_context_lengths: torch.Tensor | None = None,
         return_hidden_states: bool = False,
     ) -> HybridCausalLMOutput:
         if input_ids.ndim != 2:
@@ -756,9 +815,16 @@ class IQHybridForCausalLM(nn.Module):
         hidden = self.norm(x)
         reasoning_output: ReasoningRecurrenceOutput | None = None
         if self.reasoning is not None:
+            reasoning_context_mask, reasoning_injection_mask = _reasoning_masks(
+                input_ids,
+                attention_mask,
+                reasoning_context_lengths,
+                labels_present=labels is not None,
+            )
             reasoning_output = self.reasoning(
                 hidden,
                 attention_mask=attention_mask,
+                reasoning_context_mask=reasoning_context_mask,
                 document_ids=document_ids,
                 energy_critic=self.energy_critic,
                 require_energy_stability=self.config.require_energy_stability,
@@ -767,6 +833,11 @@ class IQHybridForCausalLM(nn.Module):
             hidden = self.reasoning_injector(
                 hidden,
                 reasoning_output.state,
+                token_mask=reasoning_injection_mask,
+            )
+        elif reasoning_context_lengths is not None:
+            raise HybridModelError(
+                "reasoning_context_lengths was provided but reasoning is disabled"
             )
         logits = self.lm_head(hidden)
 
