@@ -485,8 +485,16 @@ class ReasoningRecurrence(nn.Module):
             halt_probability = self.halting(
                 state,
                 delta,
-                energy=energy,
-                energy_delta=energy_delta,
+                energy=(
+                    energy.detach()
+                    if energy is not None
+                    else None
+                ),
+                energy_delta=(
+                    energy_delta.detach()
+                    if energy_delta is not None
+                    else None
+                ),
             )
             if step < self.config.min_steps:
                 halt_probability = torch.zeros_like(halt_probability)
