@@ -280,6 +280,7 @@ class HybridCausalLMOutput:
     expert_counts: tuple[torch.Tensor, ...]
     schedule_fingerprint: str
     reasoning_state: torch.Tensor | None = None
+    reasoning_state_trace: torch.Tensor | None = None
     halt_probabilities: torch.Tensor | None = None
     halt_weights: torch.Tensor | None = None
     relative_state_deltas: torch.Tensor | None = None
@@ -821,6 +822,11 @@ class IQHybridForCausalLM(nn.Module):
             schedule_fingerprint=self.config.schedule.fingerprint,
             reasoning_state=(
                 reasoning_output.state
+                if reasoning_output is not None
+                else None
+            ),
+            reasoning_state_trace=(
+                reasoning_output.state_trace
                 if reasoning_output is not None
                 else None
             ),
