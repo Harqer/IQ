@@ -4,6 +4,7 @@ import unittest
 
 import torch
 
+from iq_model.hybrid import _reasoning_masks
 from iq_model import (
     HybridLayerType,
     HybridModelError,
@@ -161,6 +162,84 @@ class HeterogeneousHybridRuntimeTests(unittest.TestCase):
             torch.equal(
                 unpack_mamba_varlen(hidden, layout),
                 hidden,
+            )
+        )
+
+    def test_reasoning_masks_require_explicit_training_boundary(self):
+        input_ids = torch.tensor(
+            [
+                [10, 11, 12, 13, 14, 0],
+                [20, 21, 22, 23, 0, 0],
+            ]
+        )
+        mask = torch.tensor(
+            [
+                [1, 1, 1, 1, 1, 0],
+                [1, 1, 1, 1, 0, 0],
+            ]
+        )
+
+        with self.assertRaisesRegex(
+            HybridModelError,
+            "required when labels are provided",
+        ):
+            _reasoning_masks(
+                input_ids,
+                mask,
+                None,
+                labels_present=True,
+            )
+
+        context, injection = _reasoning_masks(
+            input_ids,
+            mask,
+            torch.tensor([3, 2]),
+            labels_present=True,
+        )
+        self.assertTrue(
+            torch.equal(
+                context,
+                torch.tensor(
+                    [
+                        [1, 1, 1, 0, 0, 0],
+                        [1, 1, 0, 0, 0, 0],
+                    ],
+                    dtype=torch.bool,
+                ),
+            )
+        )
+        self.assertTrue(
+            torch.equal(
+                injection,
+                torch.tensor(
+                    [
+                        [0, 0, 1, 1, 1, 0],
+                        [0, 1, 1, 1, 0, 0],
+                    ],
+                    dtype=torch.bool,
+                ),
+            )
+        )
+
+    def test_reasoning_inference_uses_full_visible_prefix(self):
+        input_ids = torch.tensor([[4, 5, 6, 0]])
+        mask = torch.tensor([[1, 1, 1, 0]])
+        context, injection = _reasoning_masks(
+            input_ids,
+            mask,
+            None,
+            labels_present=False,
+        )
+        self.assertTrue(
+            torch.equal(
+                context,
+                torch.tensor([[1, 1, 1, 0]], dtype=torch.bool),
+            )
+        )
+        self.assertTrue(
+            torch.equal(
+                injection,
+                torch.tensor([[0, 0, 1, 0]], dtype=torch.bool),
             )
         )
 
