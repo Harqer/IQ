@@ -27,6 +27,7 @@ class ReasoningTrajectoryBatch:
     context: torch.Tensor
     state_trace: torch.Tensor
     verified_success: torch.Tensor
+    step_mask: torch.Tensor | None = None
 
     def __post_init__(self) -> None:
         if self.context.ndim != 2:
@@ -69,6 +70,23 @@ class ReasoningTrajectoryBatch:
             raise ReasoningCriticTrainingError(
                 "state_trace must contain at least one reasoning step"
             )
+        if self.step_mask is not None:
+            if self.step_mask.shape != self.state_trace.shape[:2]:
+                raise ReasoningCriticTrainingError(
+                    "step_mask must have shape [trajectories, steps]"
+                )
+            if self.step_mask.dtype is not torch.bool:
+                raise ReasoningCriticTrainingError(
+                    "step_mask must be boolean"
+                )
+            if self.step_mask.device != self.context.device:
+                raise ReasoningCriticTrainingError(
+                    "step_mask must share the trajectory device"
+                )
+            if bool((~self.step_mask.any(dim=-1)).any()):
+                raise ReasoningCriticTrainingError(
+                    "every trajectory must contain at least one valid reasoning step"
+                )
         if not bool(torch.isfinite(self.context).all()):
             raise ReasoningCriticTrainingError(
                 "context contains non-finite values"
@@ -77,6 +95,16 @@ class ReasoningTrajectoryBatch:
             raise ReasoningCriticTrainingError(
                 "state_trace contains non-finite values"
             )
+
+    @property
+    def effective_step_mask(self) -> torch.Tensor:
+        if self.step_mask is not None:
+            return self.step_mask
+        return torch.ones(
+            self.state_trace.shape[:2],
+            dtype=torch.bool,
+            device=self.state_trace.device,
+        )
 
     @classmethod
     def from_model_output(
@@ -111,6 +139,11 @@ class ReasoningTrajectoryBatch:
             verified_success=verified_success.detach().to(
                 device=context.device,
             ).clone(),
+            step_mask=torch.ones(
+                state_trace.shape[:2],
+                dtype=torch.bool,
+                device=context.device,
+            ),
         )
 
     @classmethod
@@ -124,8 +157,12 @@ class ReasoningTrajectoryBatch:
             )
         context_dim = batches[0].context.shape[-1]
         state_dim = batches[0].state_trace.shape[-1]
-        steps = batches[0].state_trace.shape[1]
         device = batches[0].context.device
+        context_dtype = batches[0].context.dtype
+        state_dtype = batches[0].state_trace.dtype
+        max_steps = max(batch.state_trace.shape[1] for batch in batches)
+        padded_states: list[torch.Tensor] = []
+        padded_masks: list[torch.Tensor] = []
         for batch in batches:
             if batch.context.shape[-1] != context_dim:
                 raise ReasoningCriticTrainingError(
@@ -135,14 +172,45 @@ class ReasoningTrajectoryBatch:
                 raise ReasoningCriticTrainingError(
                     "all trajectory batches must share state_dim"
                 )
-            if batch.state_trace.shape[1] != steps:
-                raise ReasoningCriticTrainingError(
-                    "all trajectory batches must share reasoning step count"
-                )
             if batch.context.device != device or batch.state_trace.device != device:
                 raise ReasoningCriticTrainingError(
                     "all trajectory batches must be on the same device"
                 )
+            if batch.context.dtype != context_dtype or batch.state_trace.dtype != state_dtype:
+                raise ReasoningCriticTrainingError(
+                    "all trajectory batches must share context/state dtypes"
+                )
+            steps = batch.state_trace.shape[1]
+            if steps < max_steps:
+                state_padding = torch.zeros(
+                    (
+                        batch.state_trace.shape[0],
+                        max_steps - steps,
+                        state_dim,
+                    ),
+                    device=device,
+                    dtype=state_dtype,
+                )
+                padded_states.append(
+                    torch.cat((batch.state_trace, state_padding), dim=1)
+                )
+                mask_padding = torch.zeros(
+                    (
+                        batch.state_trace.shape[0],
+                        max_steps - steps,
+                    ),
+                    device=device,
+                    dtype=torch.bool,
+                )
+                padded_masks.append(
+                    torch.cat(
+                        (batch.effective_step_mask, mask_padding),
+                        dim=1,
+                    )
+                )
+            else:
+                padded_states.append(batch.state_trace)
+                padded_masks.append(batch.effective_step_mask)
         return cls(
             task_ids=tuple(
                 task_id
@@ -153,14 +221,12 @@ class ReasoningTrajectoryBatch:
                 [batch.context for batch in batches],
                 dim=0,
             ),
-            state_trace=torch.cat(
-                [batch.state_trace for batch in batches],
-                dim=0,
-            ),
+            state_trace=torch.cat(padded_states, dim=0),
             verified_success=torch.cat(
                 [batch.verified_success for batch in batches],
                 dim=0,
             ),
+            step_mask=torch.cat(padded_masks, dim=0),
         )
 
 
@@ -172,7 +238,8 @@ class ReasoningEnergyPairBatch:
     positive_states: torch.Tensor
     negative_states: torch.Tensor
     task_ids: tuple[str, ...]
-    step_indices: torch.Tensor
+    positive_step_indices: torch.Tensor
+    negative_step_indices: torch.Tensor
 
     def __post_init__(self) -> None:
         if self.context.ndim != 2:
@@ -196,18 +263,25 @@ class ReasoningEnergyPairBatch:
             raise ReasoningCriticTrainingError(
                 "task_ids length must match pair count"
             )
-        if self.step_indices.shape != (pairs,):
+        if (
+            self.positive_step_indices.shape != (pairs,)
+            or self.negative_step_indices.shape != (pairs,)
+        ):
             raise ReasoningCriticTrainingError(
-                "step_indices must have shape [pairs]"
+                "positive/negative step indices must have shape [pairs]"
             )
-        if self.step_indices.dtype not in (torch.int32, torch.int64):
+        if (
+            self.positive_step_indices.dtype not in (torch.int32, torch.int64)
+            or self.negative_step_indices.dtype not in (torch.int32, torch.int64)
+        ):
             raise ReasoningCriticTrainingError(
-                "step_indices must be integer typed"
+                "positive/negative step indices must be integer typed"
             )
         if (
             self.positive_states.device != self.context.device
             or self.negative_states.device != self.context.device
-            or self.step_indices.device != self.context.device
+            or self.positive_step_indices.device != self.context.device
+            or self.negative_step_indices.device != self.context.device
         ):
             raise ReasoningCriticTrainingError(
                 "all energy-pair tensors must share a device"
@@ -254,7 +328,8 @@ def build_same_task_energy_pairs(
     positives: list[torch.Tensor] = []
     negatives: list[torch.Tensor] = []
     pair_task_ids: list[str] = []
-    step_indices: list[int] = []
+    positive_step_indices: list[int] = []
+    negative_step_indices: list[int] = []
 
     for task_id, indices in groups.items():
         reference = trajectories.context[indices[0]]
@@ -287,20 +362,52 @@ def build_same_task_energy_pairs(
             for negative_index in failure_indices:
                 if trajectory_pairs >= config.max_trajectory_pairs_per_task:
                     break
+                positive_valid = torch.nonzero(
+                    trajectories.effective_step_mask[positive_index],
+                    as_tuple=False,
+                ).flatten()
+                negative_valid = torch.nonzero(
+                    trajectories.effective_step_mask[negative_index],
+                    as_tuple=False,
+                ).flatten()
                 if config.include_all_steps:
-                    steps = range(trajectories.state_trace.shape[1])
+                    negative_set = {
+                        int(step)
+                        for step in negative_valid.tolist()
+                    }
+                    step_pairs = [
+                        (int(step), int(step))
+                        for step in positive_valid.tolist()
+                        if int(step) in negative_set
+                    ]
                 else:
-                    steps = (trajectories.state_trace.shape[1] - 1,)
-                for step in steps:
+                    step_pairs = [
+                        (
+                            int(positive_valid[-1]),
+                            int(negative_valid[-1]),
+                        )
+                    ]
+                if not step_pairs:
+                    raise ReasoningCriticTrainingError(
+                        f"task {task_id!r} has no comparable reasoning steps"
+                    )
+                for positive_step, negative_step in step_pairs:
                     contexts.append(reference)
                     positives.append(
-                        trajectories.state_trace[positive_index, step]
+                        trajectories.state_trace[
+                            positive_index,
+                            positive_step,
+                        ]
                     )
                     negatives.append(
-                        trajectories.state_trace[negative_index, step]
+                        trajectories.state_trace[
+                            negative_index,
+                            negative_step,
+                        ]
                     )
                     pair_task_ids.append(task_id)
-                    step_indices.append(step)
+                    positive_step_indices.append(positive_step)
+                    negative_step_indices.append(negative_step)
                 trajectory_pairs += 1
             if trajectory_pairs >= config.max_trajectory_pairs_per_task:
                 break
@@ -316,8 +423,13 @@ def build_same_task_energy_pairs(
         positive_states=torch.stack(positives, dim=0).detach(),
         negative_states=torch.stack(negatives, dim=0).detach(),
         task_ids=tuple(pair_task_ids),
-        step_indices=torch.tensor(
-            step_indices,
+        positive_step_indices=torch.tensor(
+            positive_step_indices,
+            device=device,
+            dtype=torch.long,
+        ),
+        negative_step_indices=torch.tensor(
+            negative_step_indices,
             device=device,
             dtype=torch.long,
         ),
