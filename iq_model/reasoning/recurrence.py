@@ -245,6 +245,8 @@ class ReasoningStateInjector(nn.Module):
         self,
         hidden_states: torch.Tensor,
         reasoning_state: torch.Tensor,
+        *,
+        token_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
         if hidden_states.ndim != 3:
             raise ValueError(
@@ -260,6 +262,15 @@ class ReasoningStateInjector(nn.Module):
                 "reasoning_state must have shape [batch, state_dim]"
             )
         injection = self.proj(reasoning_state).unsqueeze(1)
+        if token_mask is not None:
+            if token_mask.shape != hidden_states.shape[:2]:
+                raise ValueError(
+                    "token_mask must match hidden_states batch/sequence dimensions"
+                )
+            injection = injection * token_mask.to(
+                device=hidden_states.device,
+                dtype=hidden_states.dtype,
+            ).unsqueeze(-1)
         return hidden_states + torch.sigmoid(self.gate_logit) * injection
 
 
@@ -379,6 +390,7 @@ class ReasoningRecurrence(nn.Module):
         hidden_states: torch.Tensor,
         *,
         attention_mask: torch.Tensor | None = None,
+        reasoning_context_mask: torch.Tensor | None = None,
         document_ids: torch.Tensor | None = None,
         energy_critic: ReasoningEnergyCritic | None = None,
         require_energy_stability: bool = False,
@@ -394,7 +406,30 @@ class ReasoningRecurrence(nn.Module):
             batch=batch,
             sequence=sequence,
         )
-        context = self._pool_context(hidden_states, attention_mask)
+        if reasoning_context_mask is not None:
+            if reasoning_context_mask.shape != (batch, sequence):
+                raise ValueError(
+                    f"reasoning_context_mask must have shape {(batch, sequence)}"
+                )
+            reasoning_context_mask = reasoning_context_mask.to(
+                device=hidden_states.device,
+                dtype=torch.bool,
+            )
+            if attention_mask is not None:
+                valid = attention_mask.to(
+                    device=hidden_states.device,
+                    dtype=torch.bool,
+                )
+                if bool((reasoning_context_mask & ~valid).any()):
+                    raise ValueError(
+                        "reasoning_context_mask cannot include masked tokens"
+                    )
+        context = self._pool_context(
+            hidden_states,
+            reasoning_context_mask
+            if reasoning_context_mask is not None
+            else attention_mask,
+        )
         context_state = self.context_to_state(context)
         state = self.initial_state(context)
 
