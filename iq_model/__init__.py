@@ -1,3 +1,4 @@
+from .reasoning import AdaptiveHaltingHead, ReasoningRecurrence, ReasoningRecurrenceConfig, ReasoningRecurrenceOutput, ReasoningStateInjector, ReasoningStateTransition, SpectralDepthEncoding
 from .energy import ReasoningEnergyCritic, ReasoningEnergyCriticConfig, energy_margin_ranking_loss
 from .residual import AttentionResidualMixer, AttnResError, BlockAttentionResidual, BlockAttnResConfig, BlockAttnResState, MHCConfig, MHCError, MHCHead, MHCWeights, ManifoldHyperConnection, expand_mhc_streams, sinkhorn_doubly_stochastic
 from .hybrid import CompressedContextResidualLayer, HybridCausalLMOutput, HybridModelError, IQHybridConfig, IQHybridForCausalLM, Mamba3ResidualLayer, DenseContextResidualLayer, MambaPackedLayout, pack_mamba_varlen, unpack_mamba_varlen
@@ -83,6 +84,13 @@ __all__ = [
     "IQForCausalLM",
     "IQModelConfig",
     "RMSNorm",
+    "AdaptiveHaltingHead",
+    "ReasoningRecurrence",
+    "ReasoningRecurrenceConfig",
+    "ReasoningRecurrenceOutput",
+    "ReasoningStateInjector",
+    "ReasoningStateTransition",
+    "SpectralDepthEncoding",
     "ReasoningEnergyCritic",
     "ReasoningEnergyCriticConfig",
     "UnweightedRMSNorm",
