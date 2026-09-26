@@ -86,6 +86,18 @@ def _validate_batch(
                 f"{name} must be a tensor with the same shape as input_ids"
             )
         result[name] = value
+
+    reasoning_context_lengths = batch.get("reasoning_context_lengths")
+    if reasoning_context_lengths is not None:
+        if (
+            not isinstance(reasoning_context_lengths, torch.Tensor)
+            or reasoning_context_lengths.shape != (input_ids.shape[0],)
+            or reasoning_context_lengths.dtype not in (torch.int32, torch.int64)
+        ):
+            raise TrainingError(
+                "reasoning_context_lengths must be an integer tensor with shape [batch]"
+            )
+        result["reasoning_context_lengths"] = reasoning_context_lengths
     return result
 
 
