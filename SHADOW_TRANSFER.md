@@ -16,7 +16,7 @@ Donor checkpoint
     -> source->IQ coordinate maps
     -> transported Q/K/V/O + MLP operators
     -> DoRA correction
-    -> Hamiltonian/energy alignment
+    -> optional reasoning-EBM calibration
     -> IQ adaptation/evaluation
 ```
 
@@ -95,7 +95,7 @@ The current ownership policy is:
 Phi-4 -> dense Transformer base
 Transformer projections -> Mamba-3 x/B/C/out bootstrap
 Mellum2 -> code-specialized DoRA + MoE + MTP
-IQ-native -> Hamiltonian/EBM, halting, spectral depth, concept mapper
+IQ-native -> reasoning EBM critic, halting, spectral depth, concept mapper
 ```
 
 Mamba-3-specific recurrence parameters without a justified donor correspondence use the official initialization and are learned. Do not invent mappings for recurrence-only fields.

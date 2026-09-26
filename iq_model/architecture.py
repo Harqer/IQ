@@ -17,7 +17,6 @@ class HybridLayerType(str, Enum):
     CSA = "csa"
     HCA = "hca"
     DENSE_ATTENTION = "dense_attention"
-    EXECUTIVE = "executive"
 
     @property
     def is_attention(self) -> bool:
@@ -32,9 +31,10 @@ class HybridLayerType(str, Enum):
 class HybridSchedule:
     """Explicit heterogeneous IQ backbone schedule.
 
-    Sequence-mixing, expert-compute, context-attention, and executive layers are
-    separate physical layer types. This prevents an implementation from silently
-    turning every Mamba layer into a Transformer+MLP block.
+    The schedule contains physical backbone operators only: sequence mixing,
+    expert computation, and context attention. Reasoning recurrence, critics,
+    and halting live outside the backbone schedule so they cannot be mistaken
+    for token-mixing layers.
     """
 
     layers: tuple[HybridLayerType, ...]
@@ -50,11 +50,6 @@ class HybridSchedule:
             raise ArchitectureError(
                 "IQ requires a Mamba-dominant schedule: Mamba-3 layer count must exceed attention layer count"
             )
-        executive_positions = self.positions(HybridLayerType.EXECUTIVE)
-        if len(executive_positions) > 1:
-            raise ArchitectureError("at most one executive layer is allowed in the backbone schedule")
-        if executive_positions and executive_positions[0] != len(self.layers) - 1:
-            raise ArchitectureError("the executive layer, when present, must terminate the backbone schedule")
 
     @classmethod
     def from_tokens(cls, tokens: Iterable[str | HybridLayerType]) -> "HybridSchedule":
@@ -72,14 +67,16 @@ class HybridSchedule:
             "a": HybridLayerType.DENSE_ATTENTION,
             "dense": HybridLayerType.DENSE_ATTENTION,
             "dense_attention": HybridLayerType.DENSE_ATTENTION,
-            "x": HybridLayerType.EXECUTIVE,
-            "executive": HybridLayerType.EXECUTIVE,
         }
         for token in tokens:
             if isinstance(token, HybridLayerType):
                 parsed.append(token)
                 continue
             key = str(token).strip().lower()
+            if key in {"x", "executive"}:
+                raise ArchitectureError(
+                    "reasoning control is outside HybridSchedule; configure recurrence, critic, and halting separately"
+                )
             try:
                 parsed.append(aliases[key])
             except KeyError as exc:

@@ -508,9 +508,9 @@ class CompressedContextResidualLayer(nn.Module):
 class IQHybridForCausalLM(nn.Module):
     """Executable heterogeneous Mamba-3 / MoE / CSA / HCA / dense-attention backbone.
 
-    Executive layers still fail construction until the exact Hamiltonian
-    reference is present. Unsupported layer types are never substituted by
-    dense attention or another layer type.
+    Reasoning recurrence, energy critics, and halting are intentionally outside
+    this physical-layer schedule. Unsupported layer types are never substituted
+    by dense attention or another layer type.
     """
 
     def __init__(
@@ -527,18 +527,6 @@ class IQHybridForCausalLM(nn.Module):
         if device_obj.type != "cuda":
             raise HybridModelError(
                 "IQHybridForCausalLM requires the production CUDA Mamba-3 MIMO runtime"
-            )
-
-        unsupported = tuple(
-            layer
-            for layer in config.schedule.layers
-            if layer is HybridLayerType.EXECUTIVE
-        )
-        if unsupported:
-            names = ", ".join(layer.value for layer in unsupported)
-            raise HybridModelError(
-                "schedule requests layer types whose exact runtime is not implemented yet: "
-                f"{names}"
             )
 
         self.embed_tokens = nn.Embedding(

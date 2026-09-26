@@ -1,3 +1,4 @@
+from .energy import ReasoningEnergyCritic, ReasoningEnergyCriticConfig, energy_margin_ranking_loss
 from .residual import AttentionResidualMixer, AttnResError, BlockAttentionResidual, BlockAttnResConfig, BlockAttnResState, MHCConfig, MHCError, MHCHead, MHCWeights, ManifoldHyperConnection, expand_mhc_streams, sinkhorn_doubly_stochastic
 from .hybrid import CompressedContextResidualLayer, HybridCausalLMOutput, HybridModelError, IQHybridConfig, IQHybridForCausalLM, Mamba3ResidualLayer, DenseContextResidualLayer, MambaPackedLayout, pack_mamba_varlen, unpack_mamba_varlen
 from .objectives import IndexerObjectiveError, MTPConfig, MTPConfigError, MTPDepthOutput, MTPOutput, MTPPredictionBlock, MultiTokenPrediction, lightning_indexer_kl_loss, lightning_indexer_topk_recall
@@ -82,6 +83,8 @@ __all__ = [
     "IQForCausalLM",
     "IQModelConfig",
     "RMSNorm",
+    "ReasoningEnergyCritic",
+    "ReasoningEnergyCriticConfig",
     "UnweightedRMSNorm",
     "RoutedMoEConfig",
     "RoutedSwiGLUMoE",
@@ -95,6 +98,7 @@ __all__ = [
     "StableLatentMoEOutput",
     "SwiGLU",
     "SwiGLUExpert",
+    "energy_margin_ranking_loss",
     "expand_mhc_streams",
     "inspect_mamba3_mimo_runtime",
     "lightning_indexer_kl_loss",
