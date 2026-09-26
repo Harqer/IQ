@@ -467,7 +467,7 @@ At each reasoning step:
 5. update the reasoning state through the recurrence transition itself;
 6. evaluate the independent halting mechanism.
 
-The recurrence transition owns state evolution. The EBM never performs the transition.
+The recurrence transition owns state evolution. The EBM never performs the transition. The reference implementation exposes the complete generated state trace and tests that enabling the critic leaves that trace unchanged for identical recurrence parameters and inputs.
 
 ### Candidate branching
 
@@ -489,12 +489,13 @@ Branching is an explicit experiment; single-state recurrence remains a valid con
 
 Training remains differentiable and distributed/compile friendly.
 
-- execute up to configured max reasoning steps;
+- execute the bounded reference trajectory up to configured max reasoning steps;
 - compute halting probabilities per step;
-- use soft expected-state/ACT-style weighting during training;
-- after a sequence is effectively halted, later steps are masked/no-op for loss/state aggregation;
-- enforce minimum steps;
-- add ponder/compute loss to discourage unnecessary iterations;
+- convert them into differentiable survival/stop weights whose per-example mass sums to one;
+- force the final configured step to receive any remaining survival mass;
+- enforce minimum steps by zeroing stop probability before the configured minimum;
+- expose expected executed steps as ponder/compute telemetry for the trainer; the model does not silently add a ponder coefficient to LM loss;
+- optimized masked/no-op execution may be added only after numerical parity with the full reference trajectory;
 - when the EBM is enabled, energy and energy deltas are features/telemetry for the halting head rather than a standalone stopping rule.
 
 ### Inference-time halting
@@ -1048,7 +1049,7 @@ Exit: Phi->IQ transported model trains and evaluates end-to-end before reasoning
 
 1. integrate the pinned Mamba-3 **MIMO** state path with exact recurrent-state semantics; rank-4 MIMO is the production baseline, not an ablation behind a Boolean flag
 2. verify MIMO forward/backward, chunk/state continuation, and H200 decode-step parity with no SISO fallback
-3. implement the Mamba-dominant context-service hybrid so attention retrieves/compares context and Mamba performs state evolution/reasoning
+3. implement the Mamba-dominant context-service hybrid so attention retrieves/compares context and Mamba performs token-time sequence/state evolution; reasoning-time recurrence remains a separate post/backbone control path
 4. implement bounded context injection/fusion without allowing an always-on Transformer branch to bypass Mamba reasoning
 5. implement a DeepSeek V4/V4.1-style compressed context service: sliding window + compressed KV memory + learned top-k indexer
 6. add HCA heavily compressed global memory; retain dense/global attention as an optional teacher/control path rather than a periodic mandatory safety floor
@@ -1061,23 +1062,28 @@ Exit: Mamba state continuation, sparse attention, global retrieval, and fusion a
 
 ### Phase 3 — reasoning recurrence + halting
 
-1. shared reasoning-state recurrence
-2. bounded reasoning-state/context injection
-3. spectral reasoning-depth encoding
-4. differentiable training-time halting
-5. hard inference early exit
+Reference runtime implemented in `iq_model/reasoning/recurrence.py` and integrated into `IQHybridForCausalLM`.
 
-Exit: adaptive compute works, telemetry is correct, and task quality vs executed steps is measured.
+1. shared reasoning-state recurrence — **implemented**
+2. bounded reasoning-state/context injection — **implemented with near-zero output gate**
+3. spectral reasoning-depth encoding — **implemented**
+4. differentiable training-time halting — **implemented with stop/survival weighting**
+5. hard inference early exit — **implemented**
+6. packed multi-document isolation — **implemented as fail-closed until segment-wise reasoning is added**
+7. task-quality / compute calibration — **pending training and evaluation**
+
+Exit: reference adaptive compute and telemetry are code-complete; promotion requires measured task quality vs executed steps and H200 runtime profiling.
 
 ### Phase 4 — EBM critic
 
-1. standalone scalar reasoning-energy critic
-2. successful/failed/corrupted state-pair construction
-3. margin/ranking objective
-4. optional candidate-branch ranking
-5. energy features integrated into halting only as an ablation
+1. standalone scalar reasoning-energy critic — **implemented**
+2. energy and energy-delta features in the independent halting head — **implemented as an opt-in config**
+3. critic/state-transition separation invariant — **implemented and tested**
+4. successful/failed/corrupted state-pair construction — **pending data pipeline**
+5. margin/ranking objective training — **objective implemented; trajectory-pair training pending**
+6. optional candidate-branch ranking — **pending branching experiment**
 
-Exit: the EBM improves reasoning quality, ranking/verification, or compute efficiency over the recurrence+halting control. Otherwise it remains disabled.
+Exit: the EBM remains opt-in until ranking/verification improves reasoning quality or halting efficiency over the recurrence+halting control under matched active compute.
 
 ### Phase 5 — continuous thought + lexical collapse
 
