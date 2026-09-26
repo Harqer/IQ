@@ -58,8 +58,9 @@ quantile_balancing: true
 attnres_block_memory: true
 initial_context: 32768
 max_context_target: 131072
-exec_latent_dim: 512
-exec_ring_groups: 8
+reasoning_latent_dim: 512
+energy_critic_hidden_dim: 512
+energy_critic_mode: ablation
 max_inner_steps: 4
 max_outer_steps: 4
 min_inner_steps: 1
@@ -70,7 +71,6 @@ mamba3_mimo_rank: 4
 mamba3_chunk_size_bf16: 16
 mamba3_state_rotation: native_complex_data_dependent_rope
 hybrid_backbone: explicit_heterogeneous_schedule
-executive_geometry: euclidean
 mtp_shared_heads: 2
 ```
 
@@ -118,12 +118,7 @@ iq_model/
   residual/
     mhc.py
   energy/
-    scalar_energy.py
-    hamiltonian_ring.py
-    diagnostics.py
-  geometry/
-    euclidean.py
-    hyperbolic.py
+    critic.py
   adapters/
     dora.py
   objectives/
@@ -249,20 +244,19 @@ Token position, Mamba token-time state, and reasoning-depth coordinates are sepa
 
 ## 6. Heterogeneous hybrid backbone
 
-IQ does not use one universal `Transformer + Mamba + FFN` block. Sequence mixing, expert computation, context attention, and executive control are distinct physical layer types arranged by an explicit `HybridSchedule`.
+IQ does not use one universal `Transformer + Mamba + FFN` block. The physical backbone schedule contains only sequence mixing, expert computation, and context attention. Residual topology wraps those layers, while reasoning-time recurrence, the EBM critic, and halting are configured outside `HybridSchedule`.
 
 Canonical layer symbols:
 
 ```text
-M = Mamba-3 MIMO recurrent sequence/state layer
-E = routed/shared SwiGLU MoE layer
+M = Mamba-3 MIMO token-time recurrent sequence/state layer
+E = Stable LatentMoE + SiTU-GLU expert layer
 C = CSA compressed sparse context layer
 H = HCA heavily compressed context layer
-A = dense/global QK-normalized RoPE attention anchor
-X = Hamiltonian executive update
+A = optional dense/global QK-normalized RoPE comparison control
 ```
 
-A schedule is written explicitly, for example:
+A production-oriented schedule is written explicitly, for example:
 
 ```text
 M E
@@ -271,20 +265,23 @@ M C E
 M E
 M H E
 M E
-M A E
 ...
-X
 ```
 
-This is illustrative ordering, not a hardcoded ratio. Production configs store the complete layer sequence; `iq_model.architecture.HybridSchedule` validates that Mamba-3 remains the dominant sequence mixer and that executive control terminates the backbone when present.
+Dense `A` layers remain available for teacher/control, exact pairwise comparison, and diagnostics; they are not a mandatory periodic anchor in the production schedule.
+
+This is illustrative ordering, not a hardcoded ratio. Production configs store the complete layer sequence; `iq_model.architecture.HybridSchedule` validates that Mamba-3 remains the dominant sequence mixer.
 
 The division of labor is structural:
 
-- **Mamba-3 MIMO** performs the dominant recurrent sequence processing/state evolution and later reasoning recurrence.
+- **Mamba-3 MIMO** owns token-time recurrent sequence/state mixing.
 - **Stable LatentMoE/SiTU-GLU layers** provide nonlinear/expert capacity as separate layers; routed experts operate in a narrower latent space while shared experts remain full-width. The original SwiGLU MoE remains a control.
-- **CSA/HCA** provide efficient explicit long-range context access.
-- **Dense attention anchors** provide exact pairwise comparison, induction, strict few-shot matching, and diagnostic fallback.
-- **Hamiltonian executive control** manages global reasoning state/halting; it is not another token mixer.
+- **CSA/HCA + sliding-window attention** provide the production long-context addressing system.
+- **Dense attention** is an optional teacher/control/fallback for operations that materially benefit from exact pairwise comparison.
+- **Block AttnRes** retrieves useful representations across completed depth blocks.
+- **mHC** changes within-depth residual-stream topology and is tested independently and jointly with AttnRes.
+- **Reasoning-time recurrence** iteratively refines latent reasoning state after/around backbone execution; it is a different recurrence axis from Mamba token-time state.
+- **ReasoningEnergyCritic** is an optional scorer over generated reasoning states. It can rank/verify candidates and contribute evidence to halting, but it does not update the state.
 
 During the first Phi transport stage, `IQForCausalLM` remains the dense Transformer retention/control model. The hybrid model is built separately so transfer evaluation is not confounded by changing the control architecture.
 
@@ -340,7 +337,7 @@ Do not naively copy donor K/V into a shared compressed-KV space. Transport compa
 
 ### Outer/global execution path
 
-Use Differential Attention over compressed token memory + executive state, not every raw token at every inner step.
+When enabled, use Differential Attention over compressed token memory + reasoning state, not every raw token at every refinement step.
 
 Two attention maps are computed and combined using the differential parameterization. Stream 1 receives transported donor initialization. Stream 2 starts from the same transported basis plus a small reproducible trainable symmetry-breaking delta; differential-specific lambda parameters are initialized from the published formulation.
 
@@ -457,55 +454,66 @@ mHC changes within-depth residual topology, while Block AttnRes retrieves across
 
 ## 8. Recurrent control flow
 
-IQ uses nested adaptive recurrence with shared weights.
+IQ uses adaptive reasoning-time recurrence that is explicitly separate from Mamba-3 token-time recurrence.
 
-### Inner loop
+### Reasoning refinement
 
-Purpose: local refinement and code/token computation.
+At each reasoning step:
 
-- reuse the same block parameters across inner steps
-- inject inner-step spectral encoding
-- inject executive latent through a gated projection
-- produce compressed memory for the outer controller
+1. consume the current latent reasoning state plus selected backbone/context features;
+2. produce one or more candidate next reasoning states;
+3. optionally retrieve/compare compressed context through CSA/HCA or the ablation-controlled Differential Attention path;
+4. optionally score candidates with the EBM critic;
+5. update the reasoning state through the recurrence transition itself;
+6. evaluate the independent halting mechanism.
 
-### Outer loop
+The recurrence transition owns state evolution. The EBM never performs the transition.
 
-Purpose: update the global execution hypothesis.
+### Candidate branching
 
-At each outer step:
+When a reasoning experiment emits multiple candidate states
 
-1. run required inner refinement
-2. compress token state
-3. run Differential Attention against executive/global memory
-4. update executive latent with the Hamiltonian controller
-5. compute energy, convergence, and halting statistics
-6. continue or halt
+```text
+z_(k+1)^1, z_(k+1)^2, ..., z_(k+1)^n
+```
+
+the EBM may rank them with lower-is-better energy:
+
+```text
+best = argmin_i E_theta(z_(k+1)^i, context)
+```
+
+Branching is an explicit experiment; single-state recurrence remains a valid control.
 
 ### Training-time halting
 
-Training must remain differentiable and distributed/compile friendly.
+Training remains differentiable and distributed/compile friendly.
 
-- execute up to configured max steps
-- compute halting probabilities per step
-- use soft expected-state/ACT-style weighting during training
-- after a sequence is effectively halted, later steps are masked/no-op for loss/state aggregation
-- enforce minimum steps
-- add ponder/compute loss to discourage unnecessary iterations
+- execute up to configured max reasoning steps;
+- compute halting probabilities per step;
+- use soft expected-state/ACT-style weighting during training;
+- after a sequence is effectively halted, later steps are masked/no-op for loss/state aggregation;
+- enforce minimum steps;
+- add ponder/compute loss to discourage unnecessary iterations;
+- when the EBM is enabled, energy and energy deltas are features/telemetry for the halting head rather than a standalone stopping rule.
 
 ### Inference-time halting
 
-Inference may physically exit early when all enabled criteria pass:
+Inference may physically exit early when the configured convergence criteria pass:
 
 ```text
 p_halt >= threshold
 relative_reasoning_state_delta <= eps_reason
-relative_executive_state_delta <= eps_exec
-abs(work_adjusted_energy_residual) <= eps_energy
-predicted_value_of_more_context <= context_cost
 step >= min_steps
 ```
 
-Record actual inner/outer step counts in telemetry.
+An EBM-enabled experiment may additionally require calibrated energy stabilization:
+
+```text
+abs(E_k - E_(k-1)) <= eps_energy
+```
+
+Energy is never sufficient by itself to halt. Record actual reasoning-step counts, state deltas, halt probability, and energy telemetry when available.
 
 ## 9. Continuous latent reasoning
 
@@ -526,106 +534,74 @@ The top-k approximation must be compared against the dense reference on small vo
 
 ### Experimental isolation
 
-Coconut, soft-thinking, and IQ executive-latent reasoning are independently feature-flagged for ablation. No training run may silently enable all three without an experiment configuration that names the combination.
+Coconut, soft-thinking, and the core reasoning-time recurrence are independently feature-flagged for ablation. Combined experiments name every enabled mechanism explicitly.
 
-## 10. Hamiltonian executive controller
+## 10. Reasoning EBM critic
 
-Replace `IsingGate` entirely. No fake scalar energy and no spin-copy operation remains. The useful legacy NIF idea is retained as a real differentiable energy-based executive controller, not as a quantum-spin simulation.
+The energy-based model is retained only as a **critic over generated reasoning states**. It is not a backbone layer, sequence mixer, residual mechanism, state-transition rule, or executive controller.
 
-The executive state is intentionally small (`d_exec=512`) so energy-gradient dynamics are computationally tractable.
-
-Define a scalar energy:
+The reference implementation lives in `iq_model/energy/critic.py` and computes:
 
 ```text
 E_theta(z, c) -> scalar
 ```
 
-where `c` is compressed reasoning context.
+where `z` is a generated reasoning state and `c` is the associated reasoning/context representation. Lower energy means a candidate is more compatible with the learned successful-state distribution.
 
-Continuous port-Hamiltonian dynamics:
+### Candidate ranking and verification
 
-```text
-g = grad_z E_theta(z, c)
-dz/dt = (J_theta - R_theta) g + B_theta u
-```
-
-Structural constraints are enforced by construction:
+For candidate states:
 
 ```text
-J = J_ring + U V^T - V U^T
-J^T = -J
-
-R = B_ring^T diag(softplus(r_edge)) B_ring
-    + diag(softplus(r_self))
-R >= 0
+z_1, z_2, ..., z_n
 ```
 
-`B_ring` is the incidence matrix of the executive-state ring. This preserves both ring locality and positive-semidefinite dissipation; post-hoc masking of `L L^T` is not used because masking can destroy PSD structure.
-
-The continuous identity is:
+the critic produces:
 
 ```text
-dE/dt = -g^T R g + g^T B u
+E_1, E_2, ..., E_n
+best = argmin_i E_i
 ```
 
-so external context injection can legitimately increase energy. Halting therefore uses an input-work-adjusted energy residual rather than raw `abs(E_next - E)` alone.
+The critic may be used for branch ranking, trajectory verification, or rejection of reasoning regressions. The recurrence module remains responsible for producing the candidates and advancing the state.
 
-The production discrete integrator must preserve the intended stability property. Explicit Euler is only a diagnostic baseline because continuous-time dissipation does not imply finite-step Euler dissipation. Prefer a discrete-gradient/energy-controlled update or a bounded-step integrator with an explicit descent/stability check.
+### Training objective
 
-Ring structure:
-
-- split `z` into 8 groups;
-- primary learned interactions are self + nearest-neighbor + wraparound edges;
-- optional bounded low-rank global skew correction;
-- all structure is parameterized directly rather than imposed by masking a dense matrix.
-
-Because backpropagation through `grad_z E` creates higher-order derivatives, keep the energy network small and isolated. Benchmark memory/throughput with `torch.func.grad`/autograd and activation checkpoint this controller if needed.
-
-### Energy must score generated reasoning
-
-The energy model receives the actual recipient trajectory/state/output context. It must never score only the unchanged problem prompt.
-
-Contrastive/ranking training uses successful vs failed/corrupted trajectories from the same task. Example objective:
+Train on successful/correct states and failed, corrupted, contradictory, or regressive states from the same task/context. A reference ranking objective is:
 
 ```text
 L_rank = softplus((E_positive - E_negative + margin) / temperature)
-L_stationary = ||grad_z E_positive||^2
-L_gauge = mean_batch(E)^2
 ```
 
-Energy is also logged as a calibration signal for halting; halting does not rely on energy alone.
+Optional centering/calibration terms may be added only when they improve held-out ranking calibration.
 
-### Optional Riemannian executive geometry
+The critic receives generated recipient reasoning states. Static prompt-only scoring is not a valid substitute.
 
-Riemannian/hyperbolic geometry is retained only as an explicit executive/concept-space experiment. It is not applied to the transferred token backbone by default.
+### Halting integration
 
-Baseline:
+Energy can contribute **evidence** to the independent halting head through features such as current energy, energy delta, and candidate-energy spread. It never becomes the sole halting condition and never updates the reasoning state through `grad_z E` or a Hamiltonian integrator.
 
-```text
-z_exec in R^d
-```
+Required ablations:
 
-Experimental variant:
+1. recurrence + halting;
+2. recurrence + EBM ranking/verification + halting;
+3. recurrence + EBM ranking/verification + energy-assisted halting.
 
-```text
-z_exec in H^d
-```
-
-The hyperbolic implementation must provide numerically stable exp/log maps, distance, projection/retraction, mixed-precision guards, and Euclidean-vs-hyperbolic ablation parity. No curvature-dependent hand-designed attention factor is permitted.
+Retain the critic only if it improves reasoning quality, branch efficiency, calibration, or inference compute under matched active-compute evaluation.
 
 ## 11. Concept collapse / lexicalization head
 
 Reasoning and language spaces are explicitly separated.
 
 ```text
-[final token state, executive state, optional soft concept]
+[final token state, final reasoning state, optional soft concept]
  -> ConceptMapper
  -> RMSNorm
  -> LM head
  -> vocabulary logits
 ```
 
-The concept mapper is a real trainable gated residual MLP/projection. Initialize it near identity with the executive branch initially gated near zero so transported donor logits remain stable at step 0.
+The concept mapper is a real trainable gated residual MLP/projection. Initialize it near identity with the reasoning-state branch initially gated near zero so transported donor logits remain stable at step 0.
 
 Ablation:
 
@@ -683,7 +659,7 @@ Transport:
 - down
 - compatible norm/embedding/LM-head state
 
-Never directly transplant donor weights into the Hamiltonian controller.
+Never directly transplant donor weights into the reasoning EBM critic.
 
 ### Stage D — correction
 
@@ -691,9 +667,9 @@ Initially freeze transported base and train:
 
 - DoRA corrections
 - compressed-memory, sliding-window, and learned-indexer parameters
-- executive latent injection
-- Differential Attention second stream/lambda
-- Hamiltonian controller
+- reasoning-state injection
+- Differential Attention second stream/lambda when that ablation is enabled
+- reasoning EBM critic when its phase is enabled
 - concept mapper
 - halting controller
 
@@ -735,13 +711,13 @@ Packed-document training invalidates any MTP chain edge that crosses a document 
 - ACT/ponder compute regularization
 - state-convergence diagnostics
 
-### Energy
+### Energy critic
 
-- same-task positive/negative trajectory ranking;
-- successful-state stationarity penalty;
-- energy gauge/centering regularization;
-- conservative/dissipative diagnostics;
-- work-adjusted energy residual used for halting calibration.
+- same-task positive/negative reasoning-state ranking;
+- candidate/trajectory ranking calibration;
+- optional energy gauge/centering regularization;
+- energy-delta telemetry for halting experiments;
+- no state-transition or Hamiltonian-dynamics loss.
 
 ### MoE
 
@@ -782,7 +758,7 @@ Keep numerically sensitive operations in BF16/FP32 as needed:
 - normalization statistics
 - softmax/logsumexp reductions
 - routing probabilities
-- Hamiltonian energy accumulation
+- energy-critic scoring and ranking reductions
 - selected optimizer state
 
 No low-precision mode becomes default solely because it runs faster.
@@ -1066,7 +1042,7 @@ Exit: empty framework is not enough. A real minimal dense decoder must run forwa
 8. implement DoRA correction
 9. train CE/FIM/MTP
 
-Exit: Phi->IQ transported model trains and evaluates end-to-end without recurrent/Hamiltonian features.
+Exit: Phi->IQ transported model trains and evaluates end-to-end before reasoning-time recurrence and EBM experiments.
 
 ### Phase 2 — Mamba-3 + Transformer hybrid execution
 
@@ -1075,33 +1051,33 @@ Exit: Phi->IQ transported model trains and evaluates end-to-end without recurren
 3. implement the Mamba-dominant context-service hybrid so attention retrieves/compares context and Mamba performs state evolution/reasoning
 4. implement bounded context injection/fusion without allowing an always-on Transformer branch to bypass Mamba reasoning
 5. implement a DeepSeek V4/V4.1-style compressed context service: sliding window + compressed KV memory + learned top-k indexer
-6. add heavily compressed/global memory anchors and periodic mandatory dense/global attention as a safety floor
+6. add HCA heavily compressed global memory; retain dense/global attention as an optional teacher/control path rather than a periodic mandatory safety floor
 7. optimized compressed-attention/state kernels only after reference parity
 8. outer Differential Attention for noisy/competing retrieved context
 9. evaluate hierarchical index search and cross-layer index reuse only after baseline parity
-10. evaluate anchor frequency plus event-driven OFF / COMPRESSED / DENSE routing on long-context coding, few-shot induction, pairwise comparison, and needle retrieval
+10. evaluate CSA/HCA scheduling plus optional OFF / COMPRESSED / DENSE control routing on long-context coding, few-shot induction, pairwise comparison, and needle retrieval
 
 Exit: Mamba state continuation, sparse attention, global retrieval, and fusion are numerically correct; the hybrid meets the donor-retention gate and demonstrates the intended memory/throughput tradeoff.
 
-### Phase 3 — recurrence + halting
+### Phase 3 — reasoning recurrence + halting
 
-1. shared inner recurrence
-2. executive latent injection
+1. shared reasoning-state recurrence
+2. bounded reasoning-state/context injection
 3. spectral reasoning-depth encoding
 4. differentiable training-time halting
 5. hard inference early exit
 
 Exit: adaptive compute works, telemetry is correct, and task quality vs executed steps is measured.
 
-### Phase 4 — Hamiltonian/energy controller
+### Phase 4 — EBM critic
 
-1. scalar energy network
-2. structured ring J/R parameterization
-3. differentiable port-Hamiltonian update
-4. trajectory ranking dataset/objective
-5. energy/convergence halting integration
+1. standalone scalar reasoning-energy critic
+2. successful/failed/corrupted state-pair construction
+3. margin/ranking objective
+4. optional candidate-branch ranking
+5. energy features integrated into halting only as an ablation
 
-Exit: energy separates successful/failed trajectories and improves target reasoning or compute efficiency against a conventional recurrent-controller control.
+Exit: the EBM improves reasoning quality, ranking/verification, or compute efficiency over the recurrence+halting control. Otherwise it remains disabled.
 
 ### Phase 5 — continuous thought + lexical collapse
 
