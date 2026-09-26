@@ -34,16 +34,16 @@ class HybridArchitectureTests(unittest.TestCase):
 
     def test_explicit_schedule_is_mamba_dominant(self):
         schedule = HybridSchedule.parse(
-            "M E M C E M E M A E M H X"
+            "M E M C E M E M H E"
         )
-        self.assertEqual(schedule.count(HybridLayerType.MAMBA3), 5)
+        self.assertEqual(schedule.count(HybridLayerType.MAMBA3), 4)
         self.assertEqual(
             schedule.attention_positions,
-            (3, 8, 11),
+            (3, 8),
         )
         self.assertEqual(
             schedule.layers[-1],
-            HybridLayerType.EXECUTIVE,
+            HybridLayerType.MOE,
         )
         restored = HybridSchedule.from_dict(schedule.to_dict())
         self.assertEqual(restored, schedule)
@@ -51,8 +51,16 @@ class HybridArchitectureTests(unittest.TestCase):
 
         with self.assertRaises(ArchitectureError):
             HybridSchedule.parse("M A C H")
-        with self.assertRaises(ArchitectureError):
+        with self.assertRaisesRegex(
+            ArchitectureError,
+            "reasoning control is outside HybridSchedule",
+        ):
             HybridSchedule.parse("M X E")
+        with self.assertRaisesRegex(
+            ArchitectureError,
+            "reasoning control is outside HybridSchedule",
+        ):
+            HybridSchedule.parse("M executive E")
 
     def test_head_rmsnorm_normalizes_per_head_dimension(self):
         norm = HeadRMSNorm(4, eps=1e-6)
