@@ -55,6 +55,7 @@ class ReasoningRecurrenceConfig:
 @dataclass
 class ReasoningRecurrenceOutput:
     state: torch.Tensor
+    state_trace: torch.Tensor
     halt_probabilities: torch.Tensor
     halt_weights: torch.Tensor
     relative_state_deltas: torch.Tensor
@@ -382,6 +383,10 @@ class ReasoningRecurrence(nn.Module):
         energy_critic: ReasoningEnergyCritic | None = None,
         require_energy_stability: bool = False,
     ) -> ReasoningRecurrenceOutput:
+        if hidden_states.ndim != 3:
+            raise ValueError(
+                "hidden_states must have shape [batch, sequence, hidden]"
+            )
         batch, sequence, _ = hidden_states.shape
         self._validate_document_isolation(
             document_ids,
@@ -429,6 +434,7 @@ class ReasoningRecurrence(nn.Module):
                 if energy_critic is not None
                 else None
             )
+            had_previous_energy = previous_energy is not None
             if energy is not None:
                 energy_delta = (
                     torch.zeros_like(energy)
@@ -462,9 +468,12 @@ class ReasoningRecurrence(nn.Module):
                 )
                 if require_energy_stability:
                     assert energy_delta is not None
-                    converged = converged & (
-                        energy_delta <= self.config.energy_delta_epsilon
-                    )
+                    if not had_previous_energy:
+                        converged = torch.zeros_like(converged)
+                    else:
+                        converged = converged & (
+                            energy_delta <= self.config.energy_delta_epsilon
+                        )
                 if bool(converged.all()):
                     steps_executed = step
                     break
@@ -527,6 +536,7 @@ class ReasoningRecurrence(nn.Module):
 
         return ReasoningRecurrenceOutput(
             state=final_state,
+            state_trace=state_stack,
             halt_probabilities=probability_stack,
             halt_weights=weight_stack,
             relative_state_deltas=delta_stack,
