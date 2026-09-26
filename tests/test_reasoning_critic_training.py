@@ -106,7 +106,14 @@ class ReasoningCriticTrainingTests(unittest.TestCase):
                 "task-b",
             ),
         )
-        self.assertEqual(pairs.step_indices.tolist(), [0, 1, 2, 0, 1, 2])
+        self.assertEqual(
+            pairs.positive_step_indices.tolist(),
+            [0, 1, 2, 0, 1, 2],
+        )
+        self.assertEqual(
+            pairs.negative_step_indices.tolist(),
+            [0, 1, 2, 0, 1, 2],
+        )
         self.assertFalse(pairs.context.requires_grad)
         self.assertFalse(pairs.positive_states.requires_grad)
         self.assertFalse(pairs.negative_states.requires_grad)
@@ -121,7 +128,52 @@ class ReasoningCriticTrainingTests(unittest.TestCase):
         )
 
         self.assertEqual(tuple(pairs.positive_states.shape), (2, 8))
-        self.assertEqual(pairs.step_indices.tolist(), [2, 2])
+        self.assertEqual(pairs.positive_step_indices.tolist(), [2, 2])
+        self.assertEqual(pairs.negative_step_indices.tolist(), [2, 2])
+
+    def test_concatenate_pads_variable_depth_and_preserves_final_steps(self):
+        torch.manual_seed(205)
+        context = torch.randn(1, 6)
+        successful = ReasoningTrajectoryBatch(
+            task_ids=("task-a",),
+            context=context,
+            state_trace=torch.randn(1, 2, 8),
+            verified_success=torch.tensor([True], dtype=torch.bool),
+        )
+        failed = ReasoningTrajectoryBatch(
+            task_ids=("task-a",),
+            context=context.clone(),
+            state_trace=torch.randn(1, 4, 8),
+            verified_success=torch.tensor([False], dtype=torch.bool),
+        )
+
+        combined = ReasoningTrajectoryBatch.concatenate(
+            (successful, failed)
+        )
+
+        self.assertEqual(tuple(combined.state_trace.shape), (2, 4, 8))
+        self.assertIsNotNone(combined.step_mask)
+        assert combined.step_mask is not None
+        self.assertEqual(
+            combined.step_mask.tolist(),
+            [
+                [True, True, False, False],
+                [True, True, True, True],
+            ],
+        )
+
+        aligned = build_same_task_energy_pairs(combined)
+        self.assertEqual(aligned.positive_step_indices.tolist(), [0, 1])
+        self.assertEqual(aligned.negative_step_indices.tolist(), [0, 1])
+
+        final_only = build_same_task_energy_pairs(
+            combined,
+            ReasoningCriticPairingConfig(
+                include_all_steps=False,
+            ),
+        )
+        self.assertEqual(final_only.positive_step_indices.tolist(), [1])
+        self.assertEqual(final_only.negative_step_indices.tolist(), [3])
 
     def test_pairing_rejects_reused_task_id_with_different_context(self):
         batch = self.trajectory_batch()
