@@ -179,8 +179,76 @@ class ReasoningRecurrenceTests(unittest.TestCase):
         ):
             recurrence(hidden, document_ids=document_ids)
 
-    def test_reasoning_state_injector_starts_near_identity(self):
+    def test_reasoning_context_mask_blocks_future_token_leakage(self):
         torch.manual_seed(105)
+        recurrence = ReasoningRecurrence(self.config()).train()
+        hidden = torch.randn(2, 6, 16)
+        changed = hidden.clone()
+        changed[:, 3:] = torch.randn_like(changed[:, 3:])
+        context_mask = torch.tensor(
+            [
+                [1, 1, 1, 0, 0, 0],
+                [1, 1, 1, 0, 0, 0],
+            ],
+            dtype=torch.bool,
+        )
+
+        original = recurrence(
+            hidden,
+            reasoning_context_mask=context_mask,
+        )
+        modified = recurrence(
+            changed,
+            reasoning_context_mask=context_mask,
+        )
+
+        self.assertTrue(
+            torch.allclose(
+                original.state_trace,
+                modified.state_trace,
+                atol=0.0,
+                rtol=0.0,
+            )
+        )
+
+    def test_reasoning_state_injector_masks_preboundary_tokens(self):
+        torch.manual_seed(106)
+        injector = ReasoningStateInjector(
+            hidden_size=16,
+            state_dim=8,
+            gate_init=-2.0,
+        )
+        hidden = torch.randn(2, 5, 16)
+        state = torch.randn(2, 8)
+        token_mask = torch.tensor(
+            [
+                [0, 0, 1, 1, 1],
+                [0, 0, 0, 1, 1],
+            ],
+            dtype=torch.bool,
+        )
+
+        output = injector(
+            hidden,
+            state,
+            token_mask=token_mask,
+        )
+
+        self.assertTrue(
+            torch.equal(
+                output[~token_mask],
+                hidden[~token_mask],
+            )
+        )
+        self.assertFalse(
+            torch.equal(
+                output[token_mask],
+                hidden[token_mask],
+            )
+        )
+
+    def test_reasoning_state_injector_starts_near_identity(self):
+        torch.manual_seed(107)
         injector = ReasoningStateInjector(
             hidden_size=16,
             state_dim=8,
