@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 import torch
 
@@ -128,6 +129,134 @@ class TrainingTests(unittest.TestCase):
             [{"input_ids": ids}],
         )
         self.assertTrue(metrics.loss > 0)
+
+    def test_pretraining_reasoning_boundary_and_ponder_are_explicit(self):
+        class StubHybridConfig:
+            reasoning = object()
+
+            def to_dict(self):
+                return {"schema_version": 1, "reasoning": {"enabled": True}}
+
+        class StubReasoningModel(torch.nn.Module):
+            def __init__(self, language_config):
+                super().__init__()
+                self.model_config = language_config
+                self.config = StubHybridConfig()
+                self.embed_tokens = torch.nn.Embedding(
+                    language_config.vocab_size,
+                    language_config.hidden_size,
+                )
+                self.lm_head = torch.nn.Linear(
+                    language_config.hidden_size,
+                    language_config.vocab_size,
+                    bias=False,
+                )
+                self.ponder = torch.nn.Parameter(torch.tensor(2.0))
+                self.seen_reasoning_context_lengths = None
+
+            def forward(
+                self,
+                input_ids,
+                *,
+                labels=None,
+                position_ids=None,
+                attention_mask=None,
+                document_ids=None,
+                reasoning_context_lengths=None,
+                return_hidden_states=False,
+            ):
+                self.seen_reasoning_context_lengths = reasoning_context_lengths
+                hidden = self.embed_tokens(input_ids)
+                logits = self.lm_head(hidden)
+                ntp_loss = logits.float().square().mean()
+                expected_steps = self.ponder.abs() + 1.0
+                return SimpleNamespace(
+                    logits=logits,
+                    loss=ntp_loss,
+                    hidden_states=hidden if return_hidden_states else None,
+                    load_balance_loss=None,
+                    router_z_loss=None,
+                    expected_reasoning_steps=expected_steps,
+                )
+
+        main = StubReasoningModel(self.config())
+        model = IQPretrainingModel(
+            main,
+            PretrainingObjectiveConfig(
+                reasoning_ponder_loss_weight=0.25,
+            ),
+        )
+        ids = torch.tensor([[1, 2, 3, 4, 5]])
+        context_lengths = torch.tensor([3], dtype=torch.long)
+
+        output = model(
+            ids,
+            labels=ids,
+            reasoning_context_lengths=context_lengths,
+        )
+
+        self.assertTrue(
+            torch.equal(
+                main.seen_reasoning_context_lengths,
+                context_lengths,
+            )
+        )
+        self.assertIsNotNone(output.reasoning_expected_steps)
+        expected = (
+            output.ntp_loss
+            + 0.25 * output.reasoning_expected_steps
+        )
+        self.assertTrue(torch.allclose(output.loss, expected))
+
+        no_ponder = IQPretrainingModel(
+            main,
+            PretrainingObjectiveConfig(),
+        )
+        output_no_ponder = no_ponder(
+            ids,
+            labels=ids,
+            reasoning_context_lengths=context_lengths,
+        )
+        self.assertTrue(
+            torch.allclose(
+                output_no_ponder.loss,
+                output_no_ponder.ntp_loss,
+            )
+        )
+
+    def test_train_step_accepts_reasoning_context_lengths(self):
+        from iq_training.train import _validate_batch
+
+        batch = {
+            "input_ids": torch.tensor(
+                [
+                    [1, 2, 3, 4],
+                    [5, 6, 7, 8],
+                ]
+            ),
+            "reasoning_context_lengths": torch.tensor(
+                [2, 3],
+                dtype=torch.long,
+            ),
+        }
+        validated = _validate_batch(batch)
+        self.assertTrue(
+            torch.equal(
+                validated["reasoning_context_lengths"],
+                batch["reasoning_context_lengths"],
+            )
+        )
+
+        with self.assertRaises(TrainingError):
+            _validate_batch(
+                {
+                    "input_ids": batch["input_ids"],
+                    "reasoning_context_lengths": torch.tensor(
+                        [[2], [3]],
+                        dtype=torch.long,
+                    ),
+                }
+            )
 
     def test_pretraining_rejects_unavailable_moe_auxiliary_loss(self):
         model = IQPretrainingModel(
