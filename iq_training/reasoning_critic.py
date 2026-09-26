@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, field
+from hashlib import sha256
 from typing import Sequence
+import json
 
 import torch
 
@@ -309,6 +311,9 @@ class ReasoningCriticPairingConfig:
                 "context tolerances must be non-negative"
             )
 
+    def to_dict(self) -> dict[str, object]:
+        return asdict(self)
+
 
 def build_same_task_energy_pairs(
     trajectories: ReasoningTrajectoryBatch,
@@ -455,6 +460,35 @@ class ReasoningCriticTrainConfig:
             raise ReasoningCriticTrainingError(
                 "max_grad_norm must be positive"
             )
+
+    def to_dict(self) -> dict[str, object]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class ReasoningCriticExperimentConfig:
+    pairing: ReasoningCriticPairingConfig = field(
+        default_factory=ReasoningCriticPairingConfig
+    )
+    training: ReasoningCriticTrainConfig = field(
+        default_factory=ReasoningCriticTrainConfig
+    )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": 1,
+            "pairing": self.pairing.to_dict(),
+            "training": self.training.to_dict(),
+        }
+
+    @property
+    def fingerprint(self) -> str:
+        payload = json.dumps(
+            self.to_dict(),
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return sha256(payload).hexdigest()
 
 
 @dataclass(frozen=True)
