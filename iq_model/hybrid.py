@@ -298,6 +298,10 @@ def _reasoning_masks(
     labels_present: bool,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     batch, sequence = input_ids.shape
+    if attention_mask is not None and attention_mask.shape != (batch, sequence):
+        raise HybridModelError(
+            f"attention_mask must have shape {(batch, sequence)}"
+        )
     valid = (
         torch.ones(
             (batch, sequence),
