@@ -109,6 +109,27 @@ class ReasoningRecurrenceTests(unittest.TestCase):
         self.assertEqual(tuple(with_critic.energy_trace.shape), (3, 4))
         self.assertEqual(tuple(with_critic.energy_deltas.shape), (3, 4))
 
+    def test_halting_gradients_do_not_train_energy_critic(self):
+        torch.manual_seed(108)
+        recurrence = ReasoningRecurrence(self.config()).train()
+        critic = self.critic().train()
+        hidden = torch.randn(2, 5, 16, requires_grad=True)
+
+        output = recurrence(
+            hidden,
+            energy_critic=critic,
+        )
+        loss = output.state.square().mean() + 0.1 * output.expected_steps
+        loss.backward()
+
+        self.assertIsNotNone(recurrence.halting.proj.weight.grad)
+        self.assertIsNotNone(recurrence.transition.update[0].weight.grad)
+        critic_grads = [
+            parameter.grad
+            for parameter in critic.parameters()
+        ]
+        self.assertTrue(all(grad is None for grad in critic_grads))
+
     def test_inference_hard_exit_respects_minimum_steps(self):
         torch.manual_seed(103)
         recurrence = ReasoningRecurrence(
