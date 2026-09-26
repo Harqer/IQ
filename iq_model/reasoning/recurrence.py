@@ -55,6 +55,7 @@ class ReasoningRecurrenceConfig:
 @dataclass
 class ReasoningRecurrenceOutput:
     state: torch.Tensor
+    context: torch.Tensor
     state_trace: torch.Tensor
     halt_probabilities: torch.Tensor
     halt_weights: torch.Tensor
@@ -579,6 +580,7 @@ class ReasoningRecurrence(nn.Module):
 
         return ReasoningRecurrenceOutput(
             state=final_state,
+            context=context,
             state_trace=state_stack,
             halt_probabilities=probability_stack,
             halt_weights=weight_stack,
