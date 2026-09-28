@@ -559,15 +559,6 @@ class Mamba3ResidualLayer(nn.Module):
         device: torch.device | str,
     ) -> None:
         super().__init__()
-        self.attnres = (
-            BlockAttentionResidual(config.attnres).to(
-                device=device_obj,
-                dtype=dtype,
-            )
-            if config.attnres is not None
-            else None
-        )
-
         self.norm = RMSNorm(
             model_config.hidden_size,
             model_config.rms_norm_eps,
@@ -751,6 +742,14 @@ class IQHybridForCausalLM(nn.Module):
                 )
             self.layers.append(layer)
 
+        self.attnres = (
+            BlockAttentionResidual(config.attnres).to(
+                device=device_obj,
+                dtype=dtype,
+            )
+            if config.attnres is not None
+            else None
+        )
         self.norm = RMSNorm(
             config.model.hidden_size,
             config.model.rms_norm_eps,
