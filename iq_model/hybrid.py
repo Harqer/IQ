@@ -20,6 +20,7 @@ from .config import IQModelConfig
 from .energy import ReasoningEnergyCritic, ReasoningEnergyCriticConfig
 from .mlp import MoEOutput, RoutedMoEConfig, RoutedSwiGLUMoELayer, StableLatentMoEConfig, StableLatentMoELayer, StableLatentMoEOutput
 from .norm import RMSNorm
+from .residual import BlockAttentionResidual, BlockAttnResConfig
 from .reasoning import (
     ReasoningRecurrence,
     ReasoningRecurrenceConfig,
@@ -42,6 +43,7 @@ class IQHybridConfig:
     compressed_context: CompressedContextConfig | None = None
     moe_variant: Literal["swiglu", "stable_latent"] = "swiglu"
     stable_moe: StableLatentMoEConfig | None = None
+    attnres: BlockAttnResConfig | None = None
     reasoning: ReasoningRecurrenceConfig | None = None
     energy_critic: ReasoningEnergyCriticConfig | None = None
     require_energy_stability: bool = False
@@ -98,6 +100,15 @@ class IQHybridConfig:
             raise HybridModelError(
                 "compressed_context config is present but the schedule has no CSA/HCA layers"
             )
+        if self.attnres is not None:
+            if self.attnres.hidden_size != hidden:
+                raise HybridModelError(
+                    "attnres hidden_size does not match model hidden_size"
+                )
+            if self.attnres.num_layers != len(self.schedule.layers):
+                raise HybridModelError(
+                    "attnres num_layers must equal the physical schedule length"
+                )
         if self.reasoning is not None:
             if self.reasoning.hidden_size != hidden:
                 raise HybridModelError(
@@ -134,6 +145,11 @@ class IQHybridConfig:
                 if self.stable_moe is not None
                 else None
             ),
+            "attnres": (
+                asdict(self.attnres)
+                if self.attnres is not None
+                else None
+            ),
             "compressed_context": (
                 asdict(self.compressed_context)
                 if self.compressed_context is not None
@@ -164,6 +180,7 @@ class IQHybridConfig:
         moe = data.get("moe")
         moe_variant = str(data.get("moe_variant", "swiglu"))
         stable_moe = data.get("stable_moe")
+        attnres = data.get("attnres")
         compressed_context = data.get("compressed_context")
         reasoning = data.get("reasoning")
         energy_critic = data.get("energy_critic")
@@ -181,6 +198,10 @@ class IQHybridConfig:
         if stable_moe is not None and not isinstance(stable_moe, dict):
             raise HybridModelError(
                 "hybrid config stable_moe must be an object or null"
+            )
+        if attnres is not None and not isinstance(attnres, dict):
+            raise HybridModelError(
+                "hybrid config attnres must be an object or null"
             )
         if compressed_context is not None and not isinstance(compressed_context, dict):
             raise HybridModelError(
@@ -204,6 +225,11 @@ class IQHybridConfig:
                 stable_moe=(
                     StableLatentMoEConfig(**stable_moe)
                     if isinstance(stable_moe, dict)
+                    else None
+                ),
+                attnres=(
+                    BlockAttnResConfig(**attnres)
+                    if isinstance(attnres, dict)
                     else None
                 ),
                 compressed_context=(
@@ -533,6 +559,15 @@ class Mamba3ResidualLayer(nn.Module):
         device: torch.device | str,
     ) -> None:
         super().__init__()
+        self.attnres = (
+            BlockAttentionResidual(config.attnres).to(
+                device=device_obj,
+                dtype=dtype,
+            )
+            if config.attnres is not None
+            else None
+        )
+
         self.norm = RMSNorm(
             model_config.hidden_size,
             model_config.rms_norm_eps,
@@ -785,28 +820,38 @@ class IQHybridForCausalLM(nn.Module):
 
         x = self.embed_tokens(input_ids)
         moe_outputs: list[MoEOutput | StableLatentMoEOutput] = []
+        attnres_state = (
+            self.attnres.init_state(x)
+            if self.attnres is not None
+            else None
+        )
         for layer_type, layer in zip(
             self.config.schedule.layers,
             self.layers,
             strict=True,
         ):
+            layer_input = (
+                self.attnres.read(attnres_state)
+                if self.attnres is not None and attnres_state is not None
+                else x
+            )
             if layer_type is HybridLayerType.MAMBA3:
-                x = layer(
-                    x,
+                layer_output = layer(
+                    layer_input,
                     attention_mask=attention_mask,
                     document_ids=document_ids,
                 )
             elif layer_type is HybridLayerType.MOE:
-                moe_output = layer(x)
-                x = moe_output.hidden_states
+                moe_output = layer(layer_input)
+                layer_output = moe_output.hidden_states
                 moe_outputs.append(moe_output)
             elif layer_type in {
                 HybridLayerType.DENSE_ATTENTION,
                 HybridLayerType.CSA,
                 HybridLayerType.HCA,
             }:
-                x = layer(
-                    x,
+                layer_output = layer(
+                    layer_input,
                     position_ids=position_ids,
                     attention_mask=attention_mask,
                     document_ids=document_ids,
@@ -815,6 +860,20 @@ class IQHybridForCausalLM(nn.Module):
                 raise HybridModelError(
                     f"unsupported runtime layer type: {layer_type.value}"
                 )
+
+            if self.attnres is not None and attnres_state is not None:
+                layer_delta = layer_output - layer_input
+                attnres_state = self.attnres.advance(
+                    attnres_state,
+                    layer_delta,
+                )
+                x = layer_output
+            else:
+                x = layer_output
+
+        if self.attnres is not None:
+            assert attnres_state is not None
+            x = self.attnres.finalize(attnres_state)
 
         hidden = self.norm(x)
         reasoning_output: ReasoningRecurrenceOutput | None = None
