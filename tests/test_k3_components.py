@@ -103,6 +103,7 @@ class K3InspiredComponentsTests(unittest.TestCase):
         torch.manual_seed(53)
         config = BlockAttnResConfig(
             hidden_size=8,
+            num_layers=2,
             block_size=2,
             rms_norm_eps=1e-6,
         )
@@ -126,6 +127,7 @@ class K3InspiredComponentsTests(unittest.TestCase):
         self.assertEqual(state.layer_index, 2)
         # embedding + completed first block
         self.assertEqual(state.block_sources.shape[2], 2)
+        self.assertFalse(state.prefix_active)
         self.assertTrue(torch.equal(state.prefix_sum, torch.zeros_like(state.prefix_sum)))
 
         final = attnres.finalize(state)
@@ -161,6 +163,11 @@ class K3InspiredComponentsTests(unittest.TestCase):
             shared_expert_intermediate_size=12,
         )
         stable = self.config()
+        attnres = BlockAttnResConfig(
+            hidden_size=16,
+            num_layers=len(schedule.layers),
+            block_size=2,
+        )
         config = IQHybridConfig(
             model=model,
             schedule=schedule,
@@ -168,14 +175,16 @@ class K3InspiredComponentsTests(unittest.TestCase):
             moe=control_moe,
             moe_variant="stable_latent",
             stable_moe=stable,
+            attnres=attnres,
         )
         restored = IQHybridConfig.from_dict(config.to_dict())
         self.assertEqual(restored.moe_variant, "stable_latent")
         self.assertEqual(restored.stable_moe, stable)
+        self.assertEqual(restored.attnres, attnres)
         self.assertEqual(restored.fingerprint, config.fingerprint)
 
     def test_attnres_mixer_softmax_depth_selection(self):
-        config = BlockAttnResConfig(hidden_size=4, block_size=2)
+        config = BlockAttnResConfig(hidden_size=4, num_layers=2, block_size=2)
         mixer = AttentionResidualMixer(config)
         with torch.no_grad():
             mixer.score.fill_(1.0)
@@ -187,7 +196,7 @@ class K3InspiredComponentsTests(unittest.TestCase):
             ],
             dim=2,
         )
-        out = mixer(prefix, sources)
+        out = mixer(sources, prefix)
         self.assertEqual(tuple(out.shape), (1, 1, 4))
         self.assertTrue(torch.isfinite(out).all())
 
