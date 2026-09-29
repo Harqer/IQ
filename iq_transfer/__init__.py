@@ -8,7 +8,7 @@ from .executor import DonorRuntime, ExecutionError, TransportExecutionReport, ex
 from .apply import ApplyError, ParameterUpdate, apply_parameter_updates
 from .alignment import AlignmentError, ByteSpan, PairedSpanActivations, TokenByteSpan, align_token_activations_by_bytes, pool_activations_by_byte_spans
 from .mamba3_init import Mamba3BootstrapReport, Mamba3BootstrapWeights, Mamba3InitError, Mamba3Layout, TRANSFORMER_TO_MAMBA3, apply_mamba3_bootstrap
-from .mamba3_direct import MAMBA3_MIMO_15B_REPO, MAMBA3_MIMO_15B_REVISION, MAMBA3_MIMO_15B_BIN_SHA256, Mamba3DirectTransferError, Mamba3DirectTransferResult, Mamba3DonorConfig, Mamba3LayerPlacement, compile_official_mamba3_mimo_15b_transplant, evenly_spaced_layer_placements, expand_mamba3_layer, validate_official_mamba3_mimo_15b_config, validate_official_mamba3_mimo_state
+from .mamba3_direct import MAMBA3_MIMO_15B_REPO, MAMBA3_MIMO_15B_REVISION, MAMBA3_MIMO_15B_BIN_SHA256, Mamba3DirectTransferError, Mamba3DirectTransferResult, Mamba3OverlayApplyReport, Mamba3DonorConfig, Mamba3LayerPlacement, apply_mamba3_transplant_overlay, compile_official_mamba3_mimo_15b_transplant, evenly_spaced_layer_placements, expand_mamba3_layer, validate_official_mamba3_mimo_15b_config, validate_official_mamba3_mimo_state
 from .plan import PlanError, TransportPlan
 from .provenance import ParameterProvenance, ProvenanceError, ProvenanceLedger
 from .capture import ActivationTap, CaptureError, TorchActivationCapture, load_capture_records, save_capture_records
@@ -67,6 +67,7 @@ __all__ = [
     "Mamba3BootstrapWeights",
     "Mamba3DirectTransferError",
     "Mamba3DirectTransferResult",
+    "Mamba3OverlayApplyReport",
     "Mamba3DonorConfig",
     "Mamba3InitError",
     "Mamba3LayerPlacement",
@@ -81,6 +82,7 @@ __all__ = [
     "TransportPlan",
     "align_token_activations_by_bytes",
     "apply_mamba3_bootstrap",
+    "apply_mamba3_transplant_overlay",
     "apply_parameter_updates",
     "MapDiagnostics",
     "MappingTensorSource",
