@@ -20,6 +20,7 @@ from iq_transfer.complete_transplant import (
     canonical_complete_config,
     canonical_complete_schedule,
     donor_layer_positions,
+    expected_complete_state_keys,
 )
 from iq_transfer.gpt_oss20b import GptOss20BConfig, GptOss20BError
 
@@ -43,6 +44,24 @@ class CompleteTransplantTests(unittest.TestCase):
         self.assertEqual(config.stable_moe.num_experts, 32)
         self.assertTrue(config.stable_moe.expert_bias)
         self.assertTrue(config.stable_moe.router_bias)
+
+    def test_complete_state_schema_is_self_consistent(self):
+        config = canonical_complete_config()
+        keys = expected_complete_state_keys(config)
+        self.assertIn("embed_tokens.weight", keys)
+        self.assertIn("lm_head.weight", keys)
+        self.assertIn("layers.0.mamba.core.in_proj.weight", keys)
+        context_physical, moe_physical = donor_layer_positions(config)[0]
+        self.assertIn(
+            f"layers.{context_physical}.attention.q_a_proj.weight",
+            keys,
+        )
+        self.assertIn(
+            f"layers.{moe_physical}.moe.routed_experts.0.gate_proj.weight",
+            keys,
+        )
+        self.assertIn("attnres.mixers.0.mix_logit", keys)
+        self.assertIn("reasoning_injector.gate_logit", keys)
 
     def test_residual_embedding_scale_preserves_rms(self):
         torch.manual_seed(1)
