@@ -56,6 +56,11 @@ class GLM53InspectorTests(unittest.TestCase):
             tensors[f"{p}.self_attn.kv_a_layernorm.weight"] = torch.empty(4)
             tensors[f"{p}.self_attn.kv_b_proj.weight"] = torch.empty(14, 4)
             tensors[f"{p}.self_attn.o_proj.weight"] = torch.empty(16, 8)
+            tensors[f"{p}.self_attn.indexer.wq_b.weight"] = torch.empty(8, 8)
+            tensors[f"{p}.self_attn.indexer.wk.weight"] = torch.empty(4, 16)
+            tensors[f"{p}.self_attn.indexer.weights_proj.weight"] = torch.empty(2, 16)
+            tensors[f"{p}.self_attn.indexer.k_norm.weight"] = torch.empty(4)
+            tensors[f"{p}.self_attn.indexer.k_norm.bias"] = torch.empty(4)
         p = "model.layers.0.mlp"
         tensors[f"{p}.gate_proj.weight"] = torch.empty(24, 16)
         tensors[f"{p}.up_proj.weight"] = torch.empty(24, 16)
@@ -82,6 +87,7 @@ class GLM53InspectorTests(unittest.TestCase):
         roles = {ref.role for ref in inspector.operators(self.source())}
         self.assertIn("attn.q_a", roles)
         self.assertIn("attn.kv_b", roles)
+        self.assertIn("dsa.indexer.q", roles)
         self.assertIn("mlp.gate", roles)
         self.assertIn("moe.router", roles)
         self.assertIn("moe.expert.1.down", roles)
