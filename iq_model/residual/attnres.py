@@ -41,6 +41,10 @@ class AttentionResidualMixer(nn.Module):
         super().__init__()
         self.config = config
         self.score = nn.Parameter(torch.ones(config.hidden_size))
+        # Start nearly equivalent to the ordinary residual stream while keeping
+        # cross-depth attention trainable. This makes recipient-native AttnRes
+        # safe for direct weight transplantation.
+        self.mix_logit = nn.Parameter(torch.tensor(-12.0))
 
     def forward(
         self,
@@ -84,7 +88,17 @@ class AttentionResidualMixer(nn.Module):
             keys * self.score.float()
         ).sum(dim=-1)
         probs = torch.softmax(scores, dim=-1).unsqueeze(-1)
-        mixed = (probs * values_f).sum(dim=2)
+        attended = (probs * values_f).sum(dim=2)
+
+        # Sum of embedding/completed blocks/current prefix reconstructs the
+        # ordinary residual stream exactly. A near-zero sigmoid gate keeps the
+        # freshly transplanted checkpoint on that baseline, then allows learned
+        # Block AttnRes retrieval to take over during later optimization.
+        baseline = block_sources.float().sum(dim=2)
+        if prefix_sum is not None:
+            baseline = baseline + prefix_sum.float()
+        mix = torch.sigmoid(self.mix_logit.float())
+        mixed = baseline + mix * (attended - baseline)
         return mixed.to(values.dtype)
 
 
