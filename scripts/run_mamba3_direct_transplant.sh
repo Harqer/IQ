@@ -8,7 +8,6 @@ DONOR_DIR="$ROOT/donor"
 OUTPUT_DIR="${IQ_TRANSFER_OUTPUT:-$ROOT/iq-mamba3-overlay}"
 
 : "${HF_TOKEN:?Set HF_TOKEN from an OpenShift Secret}"
-: "${IQ_RECIPIENT_CONFIG:?Set IQ_RECIPIENT_CONFIG to the frozen IQHybridConfig JSON}"
 
 mkdir -p "$DONOR_DIR" "$OUTPUT_DIR"
 
@@ -23,7 +22,6 @@ hf download "$DONOR_REPO" \
 python -m iq_transfer.cli mamba3-direct \
   --checkpoint "$DONOR_DIR" \
   --checkpoint-revision "$DONOR_REVISION" \
-  --recipient-config "$IQ_RECIPIENT_CONFIG" \
   --output "$OUTPUT_DIR"
 
 if [[ -n "${HF_TARGET_REPO:-}" ]]; then
