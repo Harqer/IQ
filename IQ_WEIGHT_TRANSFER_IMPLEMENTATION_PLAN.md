@@ -153,7 +153,6 @@ Never transplanted:
 - Mamba-3 recurrence-specific parameters without a justified source mapping
 - Block AttnRes depth-query vectors and block-memory policy
 - mHC stream-mixing/manifold parameters
-ng
 
 ## 3. Target-slot registry
 
