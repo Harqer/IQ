@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import json
+import tempfile
 import unittest
+from pathlib import Path
 
 import torch
+from torch import nn
 
 from iq_transfer.mamba3_direct import (
     Mamba3DirectTransferError,
+    apply_mamba3_transplant_overlay,
     Mamba3DonorConfig,
     evenly_spaced_layer_placements,
     expand_mamba3_layer,
@@ -235,6 +240,82 @@ class Mamba3DirectTransferTests(unittest.TestCase):
                 target_physical_layer=0,
                 state=state,
             )
+
+    def test_overlay_applicator_copies_and_zeroes_identity_gap(self):
+        try:
+            from safetensors.torch import save_file
+        except ImportError:
+            self.skipTest("safetensors not installed")
+
+        class Core(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.out_proj = nn.Linear(2, 2, bias=False)
+
+        class Mamba(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.core = Core()
+
+        class Layer(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.norm = nn.Linear(2, 2, bias=False)
+                self.mamba = Mamba()
+
+        class TinyRecipient(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.layers = nn.ModuleList([Layer(), Layer()])
+
+        model = TinyRecipient()
+        self.assertNotEqual(
+            torch.count_nonzero(
+                model.layers[1].mamba.core.out_proj.weight
+            ).item(),
+            0,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            shard = root / "mamba" / "layer-000.safetensors"
+            shard.parent.mkdir(parents=True)
+            save_file(
+                {
+                    "layers.0.norm.weight": torch.full((2, 2), 3.0),
+                },
+                str(shard),
+            )
+            (root / "mamba3_transplant.json").write_text(
+                json.dumps(
+                    {
+                        "artifact_type": "iq_mamba3_direct_transplant",
+                        "placements": [
+                            {"shard": "mamba/layer-000.safetensors"}
+                        ],
+                        "identity_physical_layers": [1],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            report = apply_mamba3_transplant_overlay(model, root)
+
+        self.assertTrue(
+            torch.equal(
+                model.layers[0].norm.weight,
+                torch.full((2, 2), 3.0),
+            )
+        )
+        self.assertEqual(
+            torch.count_nonzero(
+                model.layers[1].mamba.core.out_proj.weight
+            ).item(),
+            0,
+        )
+        self.assertIn(
+            "layers.1.mamba.core.out_proj.weight",
+            report.identity_parameters,
+        )
 
     def test_pinned_15b_config_validation_is_strict(self):
         official = Mamba3DonorConfig(
