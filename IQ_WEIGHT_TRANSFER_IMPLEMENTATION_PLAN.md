@@ -2,7 +2,7 @@
 
 Status: canonical implementation plan for transferring pretrained donor capability into IQ v2.
 
-Current execution state (2026-09-28): transfer remains subordinate to the now-executable hybrid backbone. Stable LatentMoE, SiTU-GLU, Block AttnRes, reasoning recurrence/halting, and the standalone mHC runtime are recipient-side architecture, not new donor grafts. The immediate transfer work should not add another architecture branch: finish the Phi proof/retention path, preserve operator provenance, and validate transport against the frozen residual-topology choice after the standard/AttnRes/mHC ablation.
+Current execution state (2026-09-28): the recipient architecture is frozen enough to start transfer. T1 transfers Phi into the dense `IQForCausalLM` retention/control model first; this stage is intentionally independent of the later heterogeneous runtime. The hybrid target is fixed as rank-4 Mamba-3 MIMO + Stable LatentMoE/SiTU + CSA/HCA + Block AttnRes. mHC is an ablation only and is not a transfer target. CSA/HCA kernel optimization and H200 Mamba validation are promotion gates after the transfer/bootstrap path, not prerequisites for beginning T1.
 
 This document complements `SHADOW_TRANSFER.md` and `IQ_V2_IMPLEMENTATION_PLAN.md`. It defines exact donor roles, target parameter slots, calibration/alignment, operator transport, Mamba-3 bootstrap, code/MoE transfer, correction training, provenance, verification, and promotion gates.
 
