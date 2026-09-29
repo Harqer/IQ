@@ -2,6 +2,14 @@
 
 Status: canonical implementation plan for the trainable IQ architecture.
 
+Current execution state (2026-09-28):
+
+- implemented: Mamba-3 MIMO heterogeneous runtime, Stable LatentMoE + SiTU-GLU, CSA/HCA reference path, Block AttnRes, MTP, reasoning recurrence, adaptive halting, and optional EBM critic;
+- implemented in the current runtime pass: standalone mHC residual topology in `IQHybridForCausalLM`, using the existing physical layer implementations and merging only each layer's operator delta;
+- next validation gate: matched standard-residual vs AttnRes-only vs mHC-only experiments;
+- joint AttnRes+mHC remains fail-closed until those controls establish a numerically stable composition contract. Do not invent an unvalidated additive/gated merge between the two systems;
+- after residual-topology selection: finish CSA/HCA optimized-kernel parity, run the H200 Mamba-3 MIMO gate, then freeze the backbone for pretraining/recurrence/EBM experiments.
+
 This document replaces the old Gemma/NIF training assumptions. `SHADOW_TRANSFER.md` remains the source of truth for donor-independent transport math, and `IQ_WEIGHT_TRANSFER_IMPLEMENTATION_PLAN.md` defines the production multi-donor transfer sequence. This plan defines the recipient architecture, training runtime, data path, distributed execution, validation, and migration criteria.
 
 ## 0. Non-negotiable engineering rules
@@ -439,7 +447,9 @@ Mellum/code-MoE donors can initialize compatible experts/router through exact/op
 
 The dense Phi control keeps ordinary residual connections so donor retention remains interpretable. The hybrid path adds **Block Attention Residuals (AttnRes)** for content-dependent retrieval across model depth: completed schedule blocks plus the current within-block prefix are RMS-normalized, scored by a learned depth vector, softmax-mixed, and supplied to the next physical layer. This is separate from token attention and separate from Mamba recurrence.
 
-The hybrid architecture includes **Manifold-Constrained Hyper-Connections (mHC)** as the residual-topology target once its reference implementation is numerically validated. mHC expands the residual stream into multiple streams and constrains the residual mixing matrix to the Birkhoff polytope (doubly stochastic mixing). IQ does not approximate this with an unconstrained learned residual mixer.
+The hybrid runtime includes **Manifold-Constrained Hyper-Connections (mHC)** as an explicit residual-topology mode. mHC expands the residual stream into multiple streams and constrains the residual mixing matrix to the Birkhoff polytope (doubly stochastic mixing). Each physical Mamba/MoE/CSA/HCA/dense layer is reused unchanged: the runtime extracts the operator delta `layer_output - layer_input` and merges that delta into the mHC streams. IQ does not approximate this with an unconstrained learned residual mixer.
+
+AttnRes and mHC are separate mechanisms. AttnRes is cross-depth retrieval; mHC is within-depth residual-stream management. Their simultaneous runtime composition is intentionally rejected until matched single-topology ablations define the correct interface.
 
 Implementation requirements before enabling mHC in training:
 
