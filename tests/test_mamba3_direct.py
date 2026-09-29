@@ -135,23 +135,16 @@ class Mamba3DirectTransferTests(unittest.TestCase):
         source_in = state["backbone.layers.0.mixer.in_proj.weight"]
         target_in = result["layers.3.mamba.core.in_proj.weight"]
         for name in ("z", "x", "B", "C", "dd_dt", "dd_A", "trap", "angle"):
-            s = source_layout.slices()[name]
-            t = target.slices()[name]
-            rows = s.stop - s.start
-            self.assertTrue(
-                torch.equal(
-                    target_in[t.start : t.start + rows, : config.d_model],
-                    source_in[s, :],
-                )
-            )
-            self.assertTrue(
-                torch.count_nonzero(
-                    target_in[t.start : t.start + rows, config.d_model :]
-                ).item()
-                == 0
-            )
+            source_rows = source_in[source_layout.slices()[name], :]
+            mapped = target_in[target.slices()[name], :]
+            row_factor = mapped.shape[0] // source_rows.shape[0]
+            expected_rows = torch.cat(
+                [source_rows / 2, source_rows / 2],
+                dim=1,
+            ).repeat((row_factor, 1))
+            self.assertTrue(torch.equal(mapped, expected_rows))
 
-    def test_output_projection_is_prefix_subspace_embedding(self):
+    def test_output_projection_tiles_donor_function_across_replica_subspace(self):
         config = self.tiny_config()
         state = self.tiny_layer_state(config)
         target = Mamba3Layout(
@@ -173,22 +166,10 @@ class Mamba3DirectTransferTests(unittest.TestCase):
         )
         source = state["backbone.layers.0.mixer.out_proj.weight"]
         mapped = result["layers.1.mamba.core.out_proj.weight"]
-        self.assertTrue(
-            torch.equal(
-                mapped[: config.d_model, : config.layout.d_inner],
-                source,
-            )
-        )
-        self.assertEqual(
-            torch.count_nonzero(mapped[config.d_model :, :]).item(),
-            0,
-        )
-        self.assertEqual(
-            torch.count_nonzero(mapped[:, config.layout.d_inner :]).item(),
-            0,
-        )
+        expected = source.repeat((2, 2)) / 2
+        self.assertTrue(torch.equal(mapped, expected))
 
-    def test_head_parameters_preserve_donor_and_use_neutral_extra_heads(self):
+    def test_head_parameters_and_norm_are_exactly_replicated(self):
         config = self.tiny_config()
         state = self.tiny_layer_state(config)
         target = Mamba3Layout(
@@ -208,30 +189,25 @@ class Mamba3DirectTransferTests(unittest.TestCase):
             target_physical_layer=2,
             state=state,
         )
-        d = result["layers.2.mamba.core.D"]
+        d_value = result["layers.2.mamba.core.D"]
         self.assertTrue(
             torch.equal(
-                d[: config.layout.nheads],
-                state["backbone.layers.0.mixer.D"],
-            )
-        )
-        self.assertTrue(
-            torch.equal(
-                d[config.layout.nheads :],
-                torch.ones(target.nheads - config.layout.nheads),
+                d_value,
+                state["backbone.layers.0.mixer.D"].repeat(2),
             )
         )
         norm = result["layers.2.norm.weight"]
         self.assertTrue(
             torch.equal(
-                norm[: config.d_model],
-                state["backbone.layers.0.norm.weight"],
+                norm,
+                state["backbone.layers.0.norm.weight"].repeat(2),
             )
         )
+        b_bias = result["layers.2.mamba.core.B_bias"]
         self.assertTrue(
             torch.equal(
-                norm[config.d_model :],
-                torch.ones(target.d_model - config.d_model),
+                b_bias,
+                state["backbone.layers.0.mixer.B_bias"].repeat((2, 1, 1)),
             )
         )
 
