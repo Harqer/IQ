@@ -2,6 +2,8 @@
 
 Status: canonical implementation plan for transferring pretrained donor capability into IQ v2.
 
+Current execution state (2026-09-28): transfer remains subordinate to the now-executable hybrid backbone. Stable LatentMoE, SiTU-GLU, Block AttnRes, reasoning recurrence/halting, and the standalone mHC runtime are recipient-side architecture, not new donor grafts. The immediate transfer work should not add another architecture branch: finish the Phi proof/retention path, preserve operator provenance, and validate transport against the frozen residual-topology choice after the standard/AttnRes/mHC ablation.
+
 This document complements `SHADOW_TRANSFER.md` and `IQ_V2_IMPLEMENTATION_PLAN.md`. It defines exact donor roles, target parameter slots, calibration/alignment, operator transport, Mamba-3 bootstrap, code/MoE transfer, correction training, provenance, verification, and promotion gates.
 
 ## 0. Objectives
@@ -149,6 +151,9 @@ Never transplanted:
 - compressed-context memory/indexer parameters
 - Differential Attention lambda/second-stream-only parameters
 - Mamba-3 recurrence-specific parameters without a justified source mapping
+- Block AttnRes depth-query vectors and block-memory policy
+- mHC stream-mixing/manifold parameters
+ng
 
 ## 3. Target-slot registry
 
