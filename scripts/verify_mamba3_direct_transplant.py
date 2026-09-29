@@ -7,7 +7,7 @@ from pathlib import Path
 import torch
 from safetensors.torch import load_file
 
-from iq_model import IQHybridConfig, require_mamba3_mimo_runtime
+from iq_model import Mamba3MIMOConfig, require_mamba3_mimo_runtime
 from iq_transfer.mamba3_direct import (
     Mamba3DonorConfig,
     _load_official_state_dict,
@@ -20,7 +20,6 @@ def parser() -> argparse.ArgumentParser:
         description="CUDA parity check for direct Mamba-3 MIMO transplant shards"
     )
     p.add_argument("--checkpoint", required=True)
-    p.add_argument("--recipient-config", required=True)
     p.add_argument("--overlay", required=True)
     p.add_argument(
         "--source-layer",
@@ -46,13 +45,16 @@ def main() -> int:
     overlay = Path(args.overlay)
     donor_config = Mamba3DonorConfig.from_json(checkpoint / "config.json")
     validate_official_mamba3_mimo_15b_config(donor_config)
-    recipient = IQHybridConfig.from_json(args.recipient_config)
+    target_config = Mamba3MIMOConfig.production_4096x32()
 
     manifest = json.loads(
         (overlay / "mamba3_transplant.json").read_text(encoding="utf-8")
     )
-    if manifest["recipient"]["config_fingerprint"] != recipient.fingerprint:
-        raise RuntimeError("overlay recipient fingerprint does not match supplied config")
+    manifest_target = manifest.get("target", {}).get("mamba3")
+    if not isinstance(manifest_target, dict):
+        raise RuntimeError("overlay is missing target Mamba config")
+    if manifest_target != target_config.__dict__:
+        raise RuntimeError("overlay target Mamba config does not match frozen production target")
 
     placements = {
         int(item["source_layer"]): item
@@ -75,6 +77,7 @@ def main() -> int:
     reports = []
     for source_layer in requested:
         placement = placements[source_layer]
+        target_ordinal = int(placement["target_mamba_ordinal"])
         source = Mamba3(
             d_model=donor_config.d_model,
             d_state=donor_config.d_state,
@@ -101,23 +104,23 @@ def main() -> int:
         source.eval()
 
         target = Mamba3(
-            d_model=recipient.mamba3.d_model,
-            d_state=recipient.mamba3.d_state,
-            expand=recipient.mamba3.expand,
-            headdim=recipient.mamba3.headdim,
+            d_model=target_config.d_model,
+            d_state=target_config.d_state,
+            expand=target_config.expand,
+            headdim=target_config.headdim,
             ngroups=1,
-            rope_fraction=recipient.mamba3.rope_fraction,
-            is_outproj_norm=recipient.mamba3.outproj_norm,
+            rope_fraction=target_config.rope_fraction,
+            is_outproj_norm=target_config.outproj_norm,
             is_mimo=True,
-            mimo_rank=recipient.mamba3.mimo_rank,
-            chunk_size=recipient.mamba3.chunk_size,
-            layer_idx=int(placement["target_mamba_ordinal"]),
-            n_layer=recipient.mamba3.num_layers,
+            mimo_rank=target_config.mimo_rank,
+            chunk_size=target_config.chunk_size,
+            layer_idx=target_ordinal,
+            n_layer=target_config.num_layers,
             device=device,
             dtype=torch.bfloat16,
         )
         shard = load_file(str(overlay / placement["shard"]), device="cpu")
-        tp = f"layers.{int(placement['target_physical_layer'])}.mamba.core."
+        tp = f"mamba_layers.{target_ordinal}.core."
         target_sd = {
             key[len(tp):]: value.to(device=device)
             for key, value in shard.items()
@@ -133,14 +136,14 @@ def main() -> int:
             device=device,
             dtype=torch.bfloat16,
         )
-        factor = recipient.mamba3.d_model // donor_config.d_model
+        factor = target_config.d_model // donor_config.d_model
         x_target = x_source.repeat((1, 1, factor))
 
         source_norm_weight = state[
             f"backbone.layers.{source_layer}.norm.weight"
         ].to(device=device)
         target_norm_weight = shard[
-            f"layers.{int(placement['target_physical_layer'])}.norm.weight"
+            f"mamba_layers.{target_ordinal}.norm.weight"
         ].to(device=device)
 
         def rms_norm(
@@ -198,7 +201,7 @@ def main() -> int:
         reports.append(
             {
                 "source_layer": source_layer,
-                "target_physical_layer": int(placement["target_physical_layer"]),
+                "target_mamba_ordinal": target_ordinal,
                 "norm_max_abs_error": normalized_max_abs,
                 "mixer_max_abs_error": mixed_max_abs,
                 "residual_max_abs_error": residual_max_abs,
