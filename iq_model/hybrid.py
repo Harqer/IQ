@@ -20,7 +20,7 @@ from .config import IQModelConfig
 from .energy import ReasoningEnergyCritic, ReasoningEnergyCriticConfig
 from .mlp import MoEOutput, RoutedMoEConfig, RoutedSwiGLUMoELayer, StableLatentMoEConfig, StableLatentMoELayer, StableLatentMoEOutput
 from .norm import RMSNorm
-from .residual import BlockAttentionResidual, BlockAttnResConfig
+from .residual import (\n    BlockAttentionResidual,\n    BlockAttnResConfig,\n    MHCConfig,\n    MHCHead,\n    ManifoldHyperConnection,\n    expand_mhc_streams,\n)
 from .reasoning import (
     ReasoningRecurrence,
     ReasoningRecurrenceConfig,
@@ -109,6 +109,17 @@ class IQHybridConfig:
                 raise HybridModelError(
                     "attnres num_layers must equal the physical schedule length"
                 )
+        if self.mhc is not None:
+            if self.mhc.hidden_size != hidden:
+                raise HybridModelError(
+                    "mhc hidden_size does not match model hidden_size"
+                )
+            if self.attnres is not None:
+                raise HybridModelError(
+                    "mHC and AttnRes joint composition is not enabled until "
+                    "the matched single-topology ablations establish a stable "
+                    "composition contract"
+                )
         if self.reasoning is not None:
             if self.reasoning.hidden_size != hidden:
                 raise HybridModelError(
@@ -150,6 +161,11 @@ class IQHybridConfig:
                 if self.attnres is not None
                 else None
             ),
+            "mhc": (
+                asdict(self.mhc)
+                if self.mhc is not None
+                else None
+            ),
             "compressed_context": (
                 asdict(self.compressed_context)
                 if self.compressed_context is not None
@@ -181,6 +197,7 @@ class IQHybridConfig:
         moe_variant = str(data.get("moe_variant", "swiglu"))
         stable_moe = data.get("stable_moe")
         attnres = data.get("attnres")
+        mhc = data.get("mhc")
         compressed_context = data.get("compressed_context")
         reasoning = data.get("reasoning")
         energy_critic = data.get("energy_critic")
@@ -202,6 +219,10 @@ class IQHybridConfig:
         if attnres is not None and not isinstance(attnres, dict):
             raise HybridModelError(
                 "hybrid config attnres must be an object or null"
+            )
+        if mhc is not None and not isinstance(mhc, dict):
+            raise HybridModelError(
+                "hybrid config mhc must be an object or null"
             )
         if compressed_context is not None and not isinstance(compressed_context, dict):
             raise HybridModelError(
@@ -230,6 +251,11 @@ class IQHybridConfig:
                 attnres=(
                     BlockAttnResConfig(**attnres)
                     if isinstance(attnres, dict)
+                    else None
+                ),
+                mhc=(
+                    MHCConfig(**mhc)
+                    if isinstance(mhc, dict)
                     else None
                 ),
                 compressed_context=(
@@ -750,6 +776,25 @@ class IQHybridForCausalLM(nn.Module):
             if config.attnres is not None
             else None
         )
+        self.mhc_layers = (
+            nn.ModuleList(
+                ManifoldHyperConnection(config.mhc).to(
+                    device=device_obj,
+                    dtype=dtype,
+                )
+                for _ in config.schedule.layers
+            )
+            if config.mhc is not None
+            else None
+        )
+        self.mhc_head = (
+            MHCHead(config.mhc).to(
+                device=device_obj,
+                dtype=dtype,
+            )
+            if config.mhc is not None
+            else None
+        )
         self.norm = RMSNorm(
             config.model.hidden_size,
             config.model.rms_norm_eps,
@@ -824,16 +869,34 @@ class IQHybridForCausalLM(nn.Module):
             if self.attnres is not None
             else None
         )
-        for layer_type, layer in zip(
-            self.config.schedule.layers,
-            self.layers,
-            strict=True,
-        ):
-            layer_input = (
-                self.attnres.read(attnres_state)
-                if self.attnres is not None and attnres_state is not None
-                else x
+        mhc_streams = (
+            expand_mhc_streams(
+                x,
+                streams=self.config.mhc.streams,
             )
+            if self.config.mhc is not None
+            else None
+        )
+        for layer_index, (layer_type, layer) in enumerate(
+            zip(
+                self.config.schedule.layers,
+                self.layers,
+                strict=True,
+            )
+        ):
+            mhc_weights = None
+            if self.mhc_layers is not None:
+                assert mhc_streams is not None
+                mhc_layer = self.mhc_layers[layer_index]
+                mhc_weights = mhc_layer(mhc_streams)
+                layer_input = mhc_weights.collapsed
+            else:
+                layer_input = (
+                    self.attnres.read(attnres_state)
+                    if self.attnres is not None and attnres_state is not None
+                    else x
+                )
+
             if layer_type is HybridLayerType.MAMBA3:
                 layer_output = layer(
                     layer_input,
@@ -860,8 +923,16 @@ class IQHybridForCausalLM(nn.Module):
                     f"unsupported runtime layer type: {layer_type.value}"
                 )
 
-            if self.attnres is not None and attnres_state is not None:
-                layer_delta = layer_output - layer_input
+            layer_delta = layer_output - layer_input
+            if self.mhc_layers is not None:
+                assert mhc_streams is not None
+                assert mhc_weights is not None
+                mhc_streams = self.mhc_layers[layer_index].merge(
+                    mhc_streams,
+                    layer_delta,
+                    mhc_weights,
+                )
+            elif self.attnres is not None and attnres_state is not None:
                 attnres_state = self.attnres.advance(
                     attnres_state,
                     layer_delta,
@@ -870,7 +941,10 @@ class IQHybridForCausalLM(nn.Module):
             else:
                 x = layer_output
 
-        if self.attnres is not None:
+        if self.mhc_head is not None:
+            assert mhc_streams is not None
+            x = self.mhc_head(mhc_streams)
+        elif self.attnres is not None:
             assert attnres_state is not None
             x = self.attnres.finalize(attnres_state)
 
