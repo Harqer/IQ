@@ -168,6 +168,7 @@ Implemented today:
 - packed/padded repository batches converted to Mamba-3 varlen `cu_seqlens` with document-state isolation
 - Stable LatentMoE/SiTU-GLU reference with full-width sigmoid routing, latent routed experts, full-width shared experts, delayed Quantile Balancing, plus the original routed SwiGLU control
 - K3-style Block AttnRes wired into `IQHybridForCausalLM` with per-physical-layer depth retrieval and checkpointed configuration
+- standalone mHC residual topology wired through the full heterogeneous runtime using existing layer deltas; simultaneous AttnRes+mHC remains fail-closed pending matched ablation and an explicit composition contract
 - sequential shared-embedding/shared-head MTP prediction stack with packed-document-safe causal chaining
 - pretraining wrapper combining NTP/MTP/MoE auxiliary objectives with checkpointed coefficients
 - real-batch H200 hybrid forward/backward and cross-document-isolation gate
@@ -182,7 +183,7 @@ Implemented today:
 
 Specified / next runtime integration:
 
-- wire validated mHC behavior into the complete heterogeneous runtime without changing its distinct role from Block AttnRes
+- run matched standard-residual vs AttnRes-only vs mHC-only experiments; define the AttnRes+mHC composition only after those controls are stable
 - finish CSA/HCA runtime optimization and parity work; keep dense attention as an optional teacher/control rather than a mandatory anchor
 - train/evaluate recurrence + halting on reasoning/code tasks and calibrate halt thresholds against quality/compute
 - construct successful/failed/corrupted reasoning-state pairs and train the EBM ranking objective before enabling energy-assisted halting by default
