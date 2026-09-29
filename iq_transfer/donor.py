@@ -52,7 +52,11 @@ class DonorConfig:
             num_attention_heads=int(data["num_attention_heads"]),
             num_key_value_heads=int(data["num_key_value_heads"]),
             vocab_size=int(data["vocab_size"]) if data.get("vocab_size") is not None else None,
-            dtype=str(data.get("torch_dtype")) if data.get("torch_dtype") is not None else None,
+            dtype=(
+                str(data.get("dtype") or data.get("torch_dtype"))
+                if (data.get("dtype") is not None or data.get("torch_dtype") is not None)
+                else None
+            ),
         )
 
     @classmethod

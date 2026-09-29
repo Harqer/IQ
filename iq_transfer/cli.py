@@ -4,11 +4,27 @@ import argparse
 import json
 
 from .job import run_phi_dense_transfer
+from .glm53_job import validate_glm53_donor
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m iq_transfer.cli")
     sub = parser.add_subparsers(dest="command", required=True)
+    glm = sub.add_parser(
+        "glm53-validate",
+        help="validate and fingerprint a local GLM-5.3 donor snapshot",
+    )
+    glm.add_argument("--checkpoint", required=True)
+    glm.add_argument("--checkpoint-revision", required=True)
+    glm.add_argument("--donor-license", required=True)
+    glm.add_argument("--source-uri")
+    glm.add_argument("--manifest-output")
+    glm.add_argument(
+        "--allow-quantized",
+        action="store_true",
+        help="allow an FP8/quantized checkpoint for inspection only",
+    )
+
     phi = sub.add_parser("phi-dense", help="build a transported dense IQ artifact from a local Phi checkpoint")
     phi.add_argument("--checkpoint", required=True)
     phi.add_argument("--recipient-config", required=True)
@@ -35,6 +51,29 @@ def _parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+    if args.command == "glm53-validate":
+        artifact = validate_glm53_donor(
+            checkpoint=args.checkpoint,
+            checkpoint_revision=args.checkpoint_revision,
+            donor_license=args.donor_license,
+            source_uri=args.source_uri,
+            require_bf16=not args.allow_quantized,
+            manifest_output=args.manifest_output,
+        )
+        print(
+            json.dumps(
+                {
+                    "checkpoint_dir": str(artifact.checkpoint_dir),
+                    "donor_fingerprint": artifact.manifest.fingerprint,
+                    "checkpoint_hash": artifact.manifest.checkpoint_hash,
+                    "num_layers": artifact.manifest.num_layers,
+                    "hidden_size": artifact.manifest.hidden_size,
+                    "vocab_size": artifact.manifest.vocab_size,
+                },
+                sort_keys=True,
+            )
+        )
+        return 0
     if args.command == "phi-dense":
         result = run_phi_dense_transfer(
             checkpoint=args.checkpoint,
