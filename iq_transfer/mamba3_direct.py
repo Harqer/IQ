@@ -305,7 +305,7 @@ def evenly_spaced_layer_placements(
     return positions
 
 
-def _validate_layout_pair(source: Mamba3Layout, target: Mamba3Layout) -> None:
+def _replication_factor(source: Mamba3Layout, target: Mamba3Layout) -> int:
     if target.d_model < source.d_model:
         raise Mamba3DirectTransferError(
             "current direct Mamba-3 path supports width preservation/expansion, not compression"
@@ -326,10 +326,26 @@ def _validate_layout_pair(source: Mamba3Layout, target: Mamba3Layout) -> None:
         raise Mamba3DirectTransferError(
             "Mamba-3 recurrent semantics differ for: " + ", ".join(mismatches)
         )
-    if target.d_inner < source.d_inner or target.nheads < source.nheads:
+    if target.d_model % source.d_model != 0:
         raise Mamba3DirectTransferError(
-            "target Mamba-3 inner/head dimensions must not be smaller than donor"
+            "target d_model must be an integer multiple of donor d_model for exact replication embedding"
         )
+    factor = target.d_model // source.d_model
+    if target.d_inner != source.d_inner * factor:
+        raise Mamba3DirectTransferError(
+            "target d_inner must scale by the same factor as d_model"
+        )
+    if target.nheads != source.nheads * factor:
+        raise Mamba3DirectTransferError(
+            "target head count must scale by the same factor as d_model"
+        )
+    return factor
+
+
+def _replicate_input_columns(weight: torch.Tensor, factor: int) -> torch.Tensor:
+    if factor <= 0:
+        raise Mamba3DirectTransferError("replication factor must be positive")
+    return torch.cat([weight / factor for _ in range(factor)], dim=1)
 
 
 def expand_mamba3_layer(
@@ -340,12 +356,14 @@ def expand_mamba3_layer(
     target_physical_layer: int,
     state: Mapping[str, torch.Tensor],
 ) -> dict[str, torch.Tensor]:
-    """Embed one pretrained Mamba-3 layer into a wider IQ Mamba-3 layer.
+    """Embed one pretrained Mamba-3 layer by exact representation replication.
 
-    The donor's model-space, inner-space, and head-space occupy a prefix
-    subspace of the target. New target dimensions are neutralized so the
-    transplanted donor dynamics are not mixed with random extra-capacity
-    weights.
+    For a width factor r, the donor residual representation x is embedded as
+    E(x)=[x,...,x] (r copies). RMSNorm is therefore invariant. Linear input
+    operators are expanded as [W/r,...,W/r], head-local operators are
+    duplicated, and the output projection is tiled as W/r. Consequently the
+    target Mamba block maps E(x) to E(f(x)) on the embedded donor subspace,
+    rather than merely zero-padding weights.
     """
     if source_layer < 0 or source_layer >= source_config.n_layer:
         raise Mamba3DirectTransferError("source_layer is outside donor depth")
@@ -353,7 +371,7 @@ def expand_mamba3_layer(
         raise Mamba3DirectTransferError("target_physical_layer must be non-negative")
 
     source_layout = source_config.layout
-    _validate_layout_pair(source_layout, target_layout)
+    factor = _replication_factor(source_layout, target_layout)
     p = f"backbone.layers.{source_layer}"
     q = f"layers.{target_physical_layer}"
 
@@ -362,100 +380,75 @@ def expand_mamba3_layer(
         f"{p}.mixer.in_proj.weight",
         source_layout.in_proj_shape,
     )
-    target_in = torch.zeros(
+    target_in = torch.empty(
         target_layout.in_proj_shape,
         dtype=source_in.dtype,
     )
     source_slices = source_layout.slices()
     target_slices = target_layout.slices()
     for name in ("z", "x", "B", "C", "dd_dt", "dd_A", "trap", "angle"):
-        s = source_slices[name]
-        t = target_slices[name]
-        rows = s.stop - s.start
-        if (t.stop - t.start) < rows:
+        s_slice = source_slices[name]
+        t_slice = target_slices[name]
+        source_rows = source_in[s_slice, :]
+        source_row_count = s_slice.stop - s_slice.start
+        target_row_count = t_slice.stop - t_slice.start
+        if target_row_count % source_row_count != 0:
             raise Mamba3DirectTransferError(
-                f"target Mamba-3 {name} slice is smaller than donor slice"
+                f"target Mamba-3 {name} rows are not an integer multiple of donor rows"
             )
-        target_in[t.start : t.start + rows, : source_layout.d_model].copy_(
-            source_in[s, :]
-        )
+        row_factor = target_row_count // source_row_count
+        expanded = _replicate_input_columns(source_rows, factor)
+        if row_factor > 1:
+            expanded = expanded.repeat((row_factor, 1))
+        if _shape(expanded) != (target_row_count, target_layout.d_model):
+            raise Mamba3DirectTransferError(
+                f"internal {name} expansion produced {_shape(expanded)}"
+            )
+        target_in[t_slice, :].copy_(expanded)
 
     source_out = _require_tensor(
         state,
         f"{p}.mixer.out_proj.weight",
         source_layout.out_proj_shape,
     )
-    target_out = torch.zeros(
-        target_layout.out_proj_shape,
-        dtype=source_out.dtype,
-    )
-    target_out[
-        : source_layout.d_model,
-        : source_layout.d_inner,
-    ].copy_(source_out)
+    target_out = source_out.repeat((factor, factor)) / factor
+    if _shape(target_out) != target_layout.out_proj_shape:
+        raise Mamba3DirectTransferError(
+            f"internal out_proj expansion produced {_shape(target_out)}"
+        )
 
     source_norm = _require_tensor(
         state,
         f"{p}.norm.weight",
         (source_layout.d_model,),
     )
-    target_norm = torch.ones(
-        (target_layout.d_model,),
-        dtype=source_norm.dtype,
-    )
-    target_norm[: source_layout.d_model].copy_(source_norm)
+    target_norm = source_norm.repeat(factor)
 
-    def expand_head_vector(name: str, *, fill: float) -> torch.Tensor:
+    def replicate_heads(name: str) -> torch.Tensor:
         source = _require_tensor(
             state,
             f"{p}.mixer.{name}",
             (source_layout.nheads,),
         )
-        target = torch.full(
-            (target_layout.nheads,),
-            fill,
-            dtype=source.dtype,
-        )
-        target[: source_layout.nheads].copy_(source)
-        return target
+        return source.repeat(factor)
 
-    def expand_head_rank_state(name: str, *, fill: float) -> torch.Tensor:
+    def replicate_head_rank_state(name: str) -> torch.Tensor:
         shape = (
             source_layout.nheads,
             source_layout.effective_mimo_rank,
             source_layout.d_state,
         )
         source = _require_tensor(state, f"{p}.mixer.{name}", shape)
-        target = torch.full(
-            (
-                target_layout.nheads,
-                target_layout.effective_mimo_rank,
-                target_layout.d_state,
-            ),
-            fill,
-            dtype=source.dtype,
-        )
-        target[: source_layout.nheads].copy_(source)
-        return target
+        return source.repeat((factor, 1, 1))
 
-    def expand_head_rank_dim(name: str, *, fill: float) -> torch.Tensor:
+    def replicate_head_rank_dim(name: str) -> torch.Tensor:
         shape = (
             source_layout.nheads,
             source_layout.effective_mimo_rank,
             source_layout.headdim,
         )
         source = _require_tensor(state, f"{p}.mixer.{name}", shape)
-        target = torch.full(
-            (
-                target_layout.nheads,
-                target_layout.effective_mimo_rank,
-                target_layout.headdim,
-            ),
-            fill,
-            dtype=source.dtype,
-        )
-        target[: source_layout.nheads].copy_(source)
-        return target
+        return source.repeat((factor, 1, 1))
 
     b_norm = _require_tensor(
         state,
@@ -471,21 +464,15 @@ def expand_mamba3_layer(
     return {
         f"{q}.norm.weight": target_norm,
         f"{q}.mamba.core.in_proj.weight": target_in,
-        f"{q}.mamba.core.dt_bias": expand_head_vector("dt_bias", fill=0.0),
-        f"{q}.mamba.core.B_bias": expand_head_rank_state("B_bias", fill=1.0),
-        f"{q}.mamba.core.C_bias": expand_head_rank_state("C_bias", fill=1.0),
+        f"{q}.mamba.core.dt_bias": replicate_heads("dt_bias"),
+        f"{q}.mamba.core.B_bias": replicate_head_rank_state("B_bias"),
+        f"{q}.mamba.core.C_bias": replicate_head_rank_state("C_bias"),
         f"{q}.mamba.core.B_norm.weight": b_norm,
         f"{q}.mamba.core.C_norm.weight": c_norm,
-        f"{q}.mamba.core.mimo_x": expand_head_rank_dim(
-            "mimo_x",
-            fill=1.0 / target_layout.effective_mimo_rank,
-        ),
-        f"{q}.mamba.core.mimo_z": expand_head_rank_dim("mimo_z", fill=1.0),
-        f"{q}.mamba.core.mimo_o": expand_head_rank_dim(
-            "mimo_o",
-            fill=1.0 / target_layout.effective_mimo_rank,
-        ),
-        f"{q}.mamba.core.D": expand_head_vector("D", fill=1.0),
+        f"{q}.mamba.core.mimo_x": replicate_head_rank_dim("mimo_x"),
+        f"{q}.mamba.core.mimo_z": replicate_head_rank_dim("mimo_z"),
+        f"{q}.mamba.core.mimo_o": replicate_head_rank_dim("mimo_o"),
+        f"{q}.mamba.core.D": replicate_heads("D"),
         f"{q}.mamba.core.out_proj.weight": target_out,
     }
 
@@ -535,6 +522,11 @@ def compile_official_mamba3_mimo_15b_transplant(
     recipient = validate_canonical_hybrid_backbone(
         IQHybridConfig.from_json(str(recipient_config_path))
     )
+    if abs(float(recipient.model.rms_norm_eps) - 1e-5) > 1e-12:
+        raise Mamba3DirectTransferError(
+            "exact Mamba-3 replication embedding requires recipient RMSNorm eps=1e-5 "
+            "to match the official donor runtime"
+        )
     target_layout = Mamba3Layout(
         d_model=recipient.mamba3.d_model,
         d_state=recipient.mamba3.d_state,
@@ -545,7 +537,7 @@ def compile_official_mamba3_mimo_15b_transplant(
         is_mimo=True,
         mimo_rank=recipient.mamba3.mimo_rank,
     )
-    _validate_layout_pair(donor.layout, target_layout)
+    _replication_factor(donor.layout, target_layout)
 
     mamba_positions = recipient.schedule.positions(HybridLayerType.MAMBA3)
     if len(mamba_positions) != recipient.mamba3.num_layers:
@@ -594,7 +586,7 @@ def compile_official_mamba3_mimo_15b_transplant(
     manifest = {
         "schema_version": 1,
         "artifact_type": "iq_mamba3_direct_transplant",
-        "method": "prefix_subspace_embedding_plus_identity_depth_expansion",
+        "method": "exact_replication_embedding_plus_identity_depth_expansion",
         "teacher_student_distillation": False,
         "donor": {
             "repo_id": MAMBA3_MIMO_15B_REPO,
