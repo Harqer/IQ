@@ -48,6 +48,7 @@ class CompressedContextConfig:
     compress_rope_theta: float = 160000.0
     rms_norm_eps: float = 1e-6
     attention_dropout: float = 0.0
+    projection_bias: bool = False
 
     def __post_init__(self) -> None:
         ints = {
@@ -94,6 +95,7 @@ class GroupedLowRankOutput(nn.Module):
         groups: int,
         rank: int,
         hidden_size: int,
+        bias: bool = False,
     ) -> None:
         super().__init__()
         if num_heads % groups:
@@ -105,7 +107,7 @@ class GroupedLowRankOutput(nn.Module):
         self.heads_per_group = num_heads // groups
         in_per_group = self.heads_per_group * head_dim
         self.weight = nn.Parameter(torch.empty(groups, rank, in_per_group))
-        self.out_proj = nn.Linear(groups * rank, hidden_size, bias=False)
+        self.out_proj = nn.Linear(groups * rank, hidden_size, bias=bias)
         nn.init.xavier_uniform_(self.weight)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -178,24 +180,28 @@ class _V4CompressedContextAttention(nn.Module):
         self.q_a_proj = nn.Linear(
             config.hidden_size,
             config.q_lora_rank,
-            bias=False,
+            bias=config.projection_bias,
         )
         self.q_a_norm = RMSNorm(config.q_lora_rank, config.rms_norm_eps)
         self.q_b_proj = nn.Linear(
             config.q_lora_rank,
             config.num_attention_heads * config.head_dim,
-            bias=False,
+            bias=config.projection_bias,
         )
         self.q_b_norm = UnweightedRMSNorm(config.rms_norm_eps)
 
-        self.kv_proj = nn.Linear(config.hidden_size, config.head_dim, bias=False)
+        self.kv_proj = nn.Linear(
+            config.hidden_size,
+            config.head_dim,
+            bias=config.projection_bias,
+        )
         self.kv_norm = HeadRMSNorm(config.head_dim, config.rms_norm_eps)
 
         compressor_width = config.head_dim * (2 if mode == "csa" else 1)
         self.compressor_kv_proj = nn.Linear(
             config.hidden_size,
             compressor_width,
-            bias=False,
+            bias=config.projection_bias,
         )
         self.compressor_gate_proj = nn.Linear(
             config.hidden_size,
@@ -223,12 +229,12 @@ class _V4CompressedContextAttention(nn.Module):
             self.index_kv_proj = nn.Linear(
                 config.hidden_size,
                 2 * config.index_head_dim,
-                bias=False,
+                bias=config.projection_bias,
             )
             self.index_gate_proj = nn.Linear(
                 config.hidden_size,
                 2 * config.index_head_dim,
-                bias=False,
+                bias=config.projection_bias,
             )
             self.index_position_bias = nn.Parameter(
                 torch.zeros(
@@ -243,12 +249,12 @@ class _V4CompressedContextAttention(nn.Module):
             self.index_q_proj = nn.Linear(
                 config.q_lora_rank,
                 config.index_n_heads * config.index_head_dim,
-                bias=False,
+                bias=config.projection_bias,
             )
             self.index_weight_proj = nn.Linear(
                 config.hidden_size,
                 config.index_n_heads,
-                bias=False,
+                bias=config.projection_bias,
             )
 
         self.rotary = InterleavedRotaryEmbedding(
@@ -263,6 +269,7 @@ class _V4CompressedContextAttention(nn.Module):
             groups=config.o_groups,
             rank=config.o_lora_rank,
             hidden_size=config.hidden_size,
+            bias=config.projection_bias,
         )
 
     @property
