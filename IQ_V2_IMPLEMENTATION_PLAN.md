@@ -124,6 +124,7 @@ iq_model/
     soft_thinking.py
     concept_mapper.py
   residual/
+    attnres.py
     mhc.py
   energy/
     critic.py
