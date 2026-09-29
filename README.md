@@ -89,7 +89,7 @@ donor checkpoint
   → IQ adaptation
 ```
 
-Phi-4 is the proof donor. The transfer engine is intentionally model-independent so larger dense, code-specialized, MoE, and future Mamba-3 donors can be added through inspectors rather than separate graft architectures.
+GLM-5.3 BF16 is the primary production donor. `GLM53Inspector` validates its MLA/DSA + sigmoid-MoE checkpoint layout before any transport occurs. Phi-4 remains a regression/control donor. The transfer engine stays donor-independent: new donors add inspectors rather than separate graft architectures.
 
 See:
 
@@ -159,6 +159,7 @@ Implemented today:
 
 - dense Phi-compatible Transformer control/teacher with packed/padded GQA
 - donor-independent Phi checkpoint inspection and executable transfer job
+- strict GLM-5.3 BF16 donor inspection/provenance gate for MLA/DSA + 256-expert MoE checkpoints
 - lazy safetensors operator access
 - functional-shadow measurements and monotonic layer matching
 - coordinate-map/operator transport + DoRA correction
