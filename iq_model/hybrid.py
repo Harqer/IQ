@@ -284,6 +284,33 @@ class IQHybridConfig:
         return sha256(payload).hexdigest()
 
 
+def validate_canonical_hybrid_backbone(
+    config: IQHybridConfig,
+) -> IQHybridConfig:
+    """Fail closed unless config matches the frozen IQ production backbone."""
+    if config.mamba3.mimo_rank != 4:
+        raise HybridModelError(
+            "canonical IQ backbone requires Mamba-3 MIMO rank 4"
+        )
+    if config.moe_variant != "stable_latent" or config.stable_moe is None:
+        raise HybridModelError(
+            "canonical IQ backbone requires Stable LatentMoE + SiTU"
+        )
+    if config.attnres is None:
+        raise HybridModelError(
+            "canonical IQ backbone requires Block AttnRes"
+        )
+    compressed_layers = (
+        config.schedule.count(HybridLayerType.CSA)
+        + config.schedule.count(HybridLayerType.HCA)
+    )
+    if compressed_layers == 0 or config.compressed_context is None:
+        raise HybridModelError(
+            "canonical IQ backbone requires at least one CSA/HCA context layer"
+        )
+    return config
+
+
 @dataclass(frozen=True)
 class MambaPackedLayout:
     packed_hidden_states: torch.Tensor

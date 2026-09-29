@@ -158,10 +158,7 @@ class BlockAttentionResidual(nn.Module):
         block_sources = state.block_sources
         prefix_active = True
 
-        if (
-            next_index % self.config.block_size == 0
-            and next_index < self.config.num_layers
-        ):
+        if next_index % self.config.block_size == 0:
             block_sources = torch.cat(
                 [
                     block_sources,

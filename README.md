@@ -2,7 +2,7 @@
 
 IQ is an experimental language-model architecture for complex coding, long-context retrieval, and adaptive multi-step reasoning.
 
-The production target is **not** the original Neutrino/Ising mock architecture. IQ v2 uses Mamba-3 MIMO as the dominant token-time sequence/state mixer, DeepSeek V4-family CSA/HCA for long-context addressing, Stable LatentMoE for routed expert computation, Block AttnRes for cross-depth retrieval, and mHC as an orthogonal residual-topology experiment. Reasoning-time recurrence, the EBM critic, and adaptive halting are separate from the physical backbone schedule.
+The production target is **not** the original Neutrino/Ising mock architecture. IQ v2 uses Mamba-3 MIMO as the dominant token-time sequence/state mixer, DeepSeek V4-family CSA/HCA for long-context addressing, Stable LatentMoE for routed expert computation, and Block AttnRes as the canonical cross-depth residual mechanism. mHC is retained only as an ablation/reference. Reasoning-time recurrence, the EBM critic, and adaptive halting are separate from the physical backbone schedule.
 
 ## Architecture
 
@@ -22,7 +22,7 @@ heterogeneous backbone
   │
   ├─ Block AttnRes = cross-depth residual retrieval
   │
-  └─ mHC = within-depth residual-stream topology experiment
+  └─ mHC = standalone ablation/reference only
   ↓
 reasoning-time latent recurrence
   ↕
@@ -45,7 +45,7 @@ pairwise comparisons; it is not a mandatory backbone anchor.
 - **Mamba-3 MIMO (rank 4)** is the primary token-time recurrent sequence/state mixer; MIMO is not optional and IQ has no silent SISO fallback.
 - **DeepSeek V4-family CSA/HCA** is the production long-context system: sliding-window local attention plus compressed long-range memory and learned sparse selection. Dense attention remains an optional teacher/control/fallback for exact pairwise comparison rather than a required anchor.
 - **Stable LatentMoE** is the production expert path: full-width sigmoid routing, latent routed experts, post-aggregate RMSNorm, full-width shared experts, SiTU-GLU, and one-step-delayed Quantile Balancing. The older full-width SwiGLU MoE remains an ablation/control.
-- **Block AttnRes** provides content-dependent retrieval across completed depth blocks; **mHC** is an orthogonal within-depth residual-stream topology experiment. Neither is a reasoning controller.
+- **Block AttnRes** is the frozen production depth/residual mechanism. **mHC** remains a standalone ablation/reference and is not composed into the canonical hybrid. Neither is a reasoning controller.
 - **Reasoning-time recurrence** is separate from Mamba's token-time recurrence and owns iterative latent refinement. The reference path uses a gated residual transition with a continuous spectral depth coordinate. Teacher-forced training requires explicit `reasoning_context_lengths` so the recurrent state only observes the causal prompt prefix; inference uses the full visible prefix and injects reasoning only at the final prediction source position.
 - **ReasoningEnergyCritic** is an optional EBM scorer over the generated reasoning trajectory. It can provide ranking/verification signals and halting evidence, while the recurrence transition remains identical with the critic enabled or disabled.
 - **Adaptive halting** is a separate learned head. Training uses differentiable stop/survival weights across the bounded reasoning trajectory; inference can exit early only when halt probability and state-convergence criteria pass. Optional energy stabilization adds evidence rather than replacing those criteria.
@@ -168,6 +168,7 @@ Implemented today:
 - packed/padded repository batches converted to Mamba-3 varlen `cu_seqlens` with document-state isolation
 - Stable LatentMoE/SiTU-GLU reference with full-width sigmoid routing, latent routed experts, full-width shared experts, delayed Quantile Balancing, plus the original routed SwiGLU control
 - K3-style Block AttnRes wired into `IQHybridForCausalLM` with per-physical-layer depth retrieval and checkpointed configuration
+- canonical hybrid-backbone validator requiring rank-4 Mamba-3 MIMO, Stable LatentMoE, Block AttnRes, and CSA/HCA before production bootstrap
 - sequential shared-embedding/shared-head MTP prediction stack with packed-document-safe causal chaining
 - pretraining wrapper combining NTP/MTP/MoE auxiliary objectives with checkpointed coefficients
 - real-batch H200 hybrid forward/backward and cross-document-isolation gate
@@ -182,7 +183,7 @@ Implemented today:
 
 Specified / next runtime integration:
 
-- wire validated mHC behavior into the complete heterogeneous runtime without changing its distinct role from Block AttnRes
+- begin T1 Phi dense transfer; keep mHC and standard residual as non-blocking ablations rather than reopening the production backbone
 - finish CSA/HCA runtime optimization and parity work; keep dense attention as an optional teacher/control rather than a mandatory anchor
 - train/evaluate recurrence + halting on reasoning/code tasks and calibrate halt thresholds against quality/compute
 - construct successful/failed/corrupted reasoning-state pairs and train the EBM ranking objective before enabling energy-assisted halting by default

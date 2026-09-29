@@ -6,6 +6,8 @@ import torch
 
 from iq_model.hybrid import _reasoning_masks
 from iq_model import (
+    BlockAttnResConfig,
+    CompressedContextConfig,
     HybridLayerType,
     HybridModelError,
     HybridSchedule,
@@ -15,7 +17,9 @@ from iq_model import (
     ReasoningEnergyCriticConfig,
     ReasoningRecurrenceConfig,
     RoutedMoEConfig,
+    StableLatentMoEConfig,
     pack_mamba_varlen,
+    validate_canonical_hybrid_backbone,
     unpack_mamba_varlen,
 )
 
@@ -103,6 +107,71 @@ class HeterogeneousHybridRuntimeTests(unittest.TestCase):
                     chunk_size=16,
                 ),
                 moe=config.moe,
+            )
+
+    def test_canonical_backbone_requires_attnres_stable_moe_and_compressed_context(self):
+        base = self.hybrid_config()
+        canonical = IQHybridConfig(
+            model=base.model,
+            schedule=HybridSchedule.parse("M E M C E M"),
+            mamba3=Mamba3MIMOConfig(
+                d_model=16,
+                num_layers=3,
+                d_state=8,
+                headdim=8,
+                mimo_rank=4,
+                expand=2.0,
+                rope_fraction=0.5,
+                chunk_size=16,
+            ),
+            moe=base.moe,
+            moe_variant="stable_latent",
+            stable_moe=StableLatentMoEConfig(
+                hidden_size=16,
+                latent_size=8,
+                expert_intermediate_size=24,
+                num_experts=4,
+                top_k=2,
+            ),
+            attnres=BlockAttnResConfig(
+                hidden_size=16,
+                num_layers=6,
+                block_size=2,
+            ),
+            compressed_context=CompressedContextConfig(
+                hidden_size=16,
+                num_attention_heads=4,
+                head_dim=8,
+                q_lora_rank=8,
+                partial_rotary_dim=4,
+                max_position_embeddings=64,
+                sliding_window=3,
+                csa_compress_rate=2,
+                hca_compress_rate=4,
+                o_groups=2,
+                o_lora_rank=4,
+                index_n_heads=2,
+                index_head_dim=4,
+                index_topk=2,
+                compress_rope_theta=10000.0,
+            ),
+        )
+        self.assertIs(validate_canonical_hybrid_backbone(canonical), canonical)
+
+        with self.assertRaisesRegex(
+            HybridModelError,
+            "requires Block AttnRes",
+        ):
+            validate_canonical_hybrid_backbone(
+                IQHybridConfig(
+                    model=canonical.model,
+                    schedule=canonical.schedule,
+                    mamba3=canonical.mamba3,
+                    moe=canonical.moe,
+                    moe_variant=canonical.moe_variant,
+                    stable_moe=canonical.stable_moe,
+                    compressed_context=canonical.compressed_context,
+                )
             )
 
     def test_varlen_pack_resets_at_rows_and_document_boundaries(self):

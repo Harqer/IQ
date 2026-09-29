@@ -2,6 +2,14 @@
 
 Status: canonical implementation plan for the trainable IQ architecture.
 
+Current execution state (2026-09-28):
+
+- **architecture frozen for weight transfer**: Mamba-3 MIMO rank 4 is the dominant token-time mixer; Stable LatentMoE + SiTU-GLU is the production expert path; CSA/HCA + sliding-window attention is the production context path; Block AttnRes is the canonical depth/residual mechanism; dense attention remains teacher/control/fallback only;
+- reasoning-time recurrence, adaptive halting, MTP, and the optional EBM critic remain outside the physical backbone roles already defined;
+- mHC remains a standalone ablation/reference in `iq_model/residual/mhc.py`; it is not part of the production hybrid runtime and does not gate weight transfer;
+- `validate_canonical_hybrid_backbone()` fails closed unless a hybrid target uses rank-4 Mamba-3 MIMO, Stable LatentMoE, Block AttnRes, and at least one CSA/HCA layer;
+- **T1 Phi dense transfer may begin now.** CSA/HCA optimized-kernel parity and the H200 Mamba-3 gate are later runtime-promotion gates, not architecture-selection blockers.
+
 This document replaces the old Gemma/NIF training assumptions. `SHADOW_TRANSFER.md` remains the source of truth for donor-independent transport math, and `IQ_WEIGHT_TRANSFER_IMPLEMENTATION_PLAN.md` defines the production multi-donor transfer sequence. This plan defines the recipient architecture, training runtime, data path, distributed execution, validation, and migration criteria.
 
 ## 0. Non-negotiable engineering rules
@@ -116,6 +124,7 @@ iq_model/
     soft_thinking.py
     concept_mapper.py
   residual/
+    attnres.py
     mhc.py
   energy/
     critic.py
@@ -435,22 +444,20 @@ Production implementation requirements:
 
 Mellum/code-MoE donors can initialize compatible experts/router through exact/operator/functional transport. Mamba-3 layers do not contain an IQ-added SwiGLU unless the explicit schedule places an `E` layer after them.
 
-### Residual/depth topology: Block AttnRes + mHC
+### Residual/depth topology: Block AttnRes
 
-The dense Phi control keeps ordinary residual connections so donor retention remains interpretable. The hybrid path adds **Block Attention Residuals (AttnRes)** for content-dependent retrieval across model depth: completed schedule blocks plus the current within-block prefix are RMS-normalized, scored by a learned depth vector, softmax-mixed, and supplied to the next physical layer. This is separate from token attention and separate from Mamba recurrence.
+The dense Phi transfer/control model keeps ordinary residual connections so donor retention remains interpretable. The production hybrid uses **Block Attention Residuals (AttnRes)** for content-dependent retrieval across model depth: completed schedule blocks plus the current within-block prefix are RMS-normalized, scored by a learned depth vector, softmax-mixed, and supplied to the next physical layer. This is separate from token attention and from Mamba recurrence.
 
-The hybrid architecture includes **Manifold-Constrained Hyper-Connections (mHC)** as the residual-topology target once its reference implementation is numerically validated. mHC expands the residual stream into multiple streams and constrains the residual mixing matrix to the Birkhoff polytope (doubly stochastic mixing). IQ does not approximate this with an unconstrained learned residual mixer.
+Block AttnRes is the frozen production choice for the Mamba/Transformer hybrid. Its parameters are recipient-native and are learned during hybrid bootstrap/adaptation; donor transfer does not fabricate or copy depth-query vectors.
 
-Implementation requirements before enabling mHC in training:
+**mHC is retained only as an ablation/reference module.** Its exact Sinkhorn/Birkhoff implementation and tests stay in `iq_model/residual/mhc.py` / `tests/test_mhc_indexer.py`, but `IQHybridForCausalLM` does not compose mHC with AttnRes in the production path. An mHC experiment must remain isolated from the canonical checkpoint/config and cannot block the transfer pipeline.
 
-- exact reference forward/backward implementation (**implemented in `iq_model/residual/mhc.py`**);
-- verified doubly-stochastic constraint tolerance (**covered by reference tests**);
-- identity/near-identity initialization;
-- memory-bandwidth profiling;
-- fused or recomputed projection only after reference parity;
-- standard-residual vs mHC ablation under equal active compute.
+The canonical hybrid backbone is validated by `validate_canonical_hybrid_backbone()`, which requires:
+- Mamba-3 MIMO rank 4;
+- Stable LatentMoE + SiTU-GLU;
+- Block AttnRes;
+- at least one CSA/HCA context layer.
 
-mHC changes within-depth residual topology, while Block AttnRes retrieves across depth. Their combination is an explicit experiment: AttnRes owns inter-block depth memory; mHC owns within-block residual streams. Neither changes the role of Mamba, attention, or MoE in the heterogeneous schedule.
 
 ## 8. Recurrent control flow
 
