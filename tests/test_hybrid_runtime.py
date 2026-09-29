@@ -12,6 +12,7 @@ from iq_model import (
     IQHybridConfig,
     IQModelConfig,
     Mamba3MIMOConfig,
+    MHCConfig,
     ReasoningEnergyCriticConfig,
     ReasoningRecurrenceConfig,
     RoutedMoEConfig,
@@ -103,6 +104,49 @@ class HeterogeneousHybridRuntimeTests(unittest.TestCase):
                     chunk_size=16,
                 ),
                 moe=config.moe,
+            )
+
+
+    def test_mhc_config_serializes_and_rejects_ambiguous_joint_topology(self):
+        base = self.hybrid_config()
+        mhc_config = IQHybridConfig(
+            model=base.model,
+            schedule=base.schedule,
+            mamba3=base.mamba3,
+            moe=base.moe,
+            mhc=MHCConfig(
+                hidden_size=16,
+                streams=4,
+                sinkhorn_iters=20,
+            ),
+            reasoning=base.reasoning,
+            energy_critic=base.energy_critic,
+        )
+        restored = IQHybridConfig.from_dict(mhc_config.to_dict())
+        self.assertIsNotNone(restored.mhc)
+        self.assertEqual(restored.to_dict(), mhc_config.to_dict())
+        self.assertNotEqual(restored.fingerprint, base.fingerprint)
+
+        from iq_model import BlockAttnResConfig
+
+        with self.assertRaisesRegex(
+            HybridModelError,
+            "joint composition is not enabled",
+        ):
+            IQHybridConfig(
+                model=base.model,
+                schedule=base.schedule,
+                mamba3=base.mamba3,
+                moe=base.moe,
+                attnres=BlockAttnResConfig(
+                    hidden_size=16,
+                    num_layers=len(base.schedule.layers),
+                    block_size=2,
+                ),
+                mhc=MHCConfig(
+                    hidden_size=16,
+                    streams=4,
+                ),
             )
 
     def test_varlen_pack_resets_at_rows_and_document_boundaries(self):
