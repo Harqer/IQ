@@ -31,7 +31,6 @@ def _parser() -> argparse.ArgumentParser:
         help="compile the pinned official Mamba-3 MIMO 1.5B weights into IQ Mamba-3 slots without distillation",
     )
     mamba.add_argument("--checkpoint", required=True)
-    mamba.add_argument("--recipient-config", required=True)
     mamba.add_argument("--output", required=True)
     mamba.add_argument(
         "--checkpoint-revision",
@@ -95,7 +94,6 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "mamba3-direct":
         result = compile_official_mamba3_mimo_15b_transplant(
             checkpoint=args.checkpoint,
-            recipient_config_path=args.recipient_config,
             output_dir=args.output,
             checkpoint_revision=args.checkpoint_revision,
             verify_checkpoint_hash=not args.skip_checkpoint_hash,
@@ -105,9 +103,9 @@ def main(argv: list[str] | None = None) -> int:
                 {
                     "output_dir": str(result.output_dir),
                     "donor_sha256": result.donor_sha256,
-                    "recipient_fingerprint": result.recipient_fingerprint,
+                    "target_fingerprint": result.target_fingerprint,
                     "transplanted_layers": len(result.placements),
-                    "identity_layers": list(result.identity_physical_layers),
+                    "identity_mamba_ordinals": list(result.identity_mamba_ordinals),
                 },
                 sort_keys=True,
             )
