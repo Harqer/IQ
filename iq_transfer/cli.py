@@ -6,6 +6,8 @@ import json
 from .job import run_phi_dense_transfer
 from .glm53_job import validate_glm53_donor
 from .mamba3_direct import compile_official_mamba3_mimo_15b_transplant
+from .complete_transplant import compile_complete_iq_checkpoint
+from .gpt_oss20b import GPT_OSS_20B_REVISION
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -40,6 +42,24 @@ def _parser() -> argparse.ArgumentParser:
         "--skip-checkpoint-hash",
         action="store_true",
         help="skip the 3 GB donor SHA-256 pass (not recommended for production)",
+    )
+
+    complete = sub.add_parser(
+        "complete-iq",
+        help="compile a complete IQ checkpoint from gpt-oss-20b plus official Mamba-3 MIMO weights",
+    )
+    complete.add_argument("--gpt-oss-original", required=True)
+    complete.add_argument("--mamba3-checkpoint", required=True)
+    complete.add_argument("--output", required=True)
+    complete.add_argument("--gpt-oss-revision", default=GPT_OSS_20B_REVISION)
+    complete.add_argument(
+        "--mamba3-revision",
+        default="bc6b5d0f7994fe4cb3478242e92da8daf9ee29ec",
+    )
+    complete.add_argument(
+        "--skip-checkpoint-hashes",
+        action="store_true",
+        help="skip donor SHA-256 verification (not recommended)",
     )
 
     phi = sub.add_parser("phi-dense", help="build a transported dense IQ artifact from a local Phi checkpoint")
@@ -110,6 +130,17 @@ def main(argv: list[str] | None = None) -> int:
                 sort_keys=True,
             )
         )
+        return 0
+    if args.command == "complete-iq":
+        output = compile_complete_iq_checkpoint(
+            gpt_oss_original_dir=args.gpt_oss_original,
+            mamba3_checkpoint_dir=args.mamba3_checkpoint,
+            output_dir=args.output,
+            gpt_oss_revision=args.gpt_oss_revision,
+            mamba3_revision=args.mamba3_revision,
+            verify_hashes=not args.skip_checkpoint_hashes,
+        )
+        print(json.dumps({"output_dir": str(output)}, sort_keys=True))
         return 0
     if args.command == "phi-dense":
         result = run_phi_dense_transfer(

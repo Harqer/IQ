@@ -25,6 +25,8 @@ class StableLatentMoEConfig:
     situ_linear_beta: float = 25.0
     routed_scaling_factor: float = 1.0
     rms_norm_eps: float = 1e-6
+    expert_bias: bool = False
+    router_bias: bool = False
 
     def __post_init__(self) -> None:
         ints = {
@@ -66,11 +68,12 @@ class SiTUExpert(nn.Module):
         *,
         beta: float,
         linear_beta: float,
+        bias: bool = False,
     ) -> None:
         super().__init__()
-        self.gate_proj = nn.Linear(hidden_size, intermediate_size, bias=False)
-        self.up_proj = nn.Linear(hidden_size, intermediate_size, bias=False)
-        self.down_proj = nn.Linear(intermediate_size, hidden_size, bias=False)
+        self.gate_proj = nn.Linear(hidden_size, intermediate_size, bias=bias)
+        self.up_proj = nn.Linear(hidden_size, intermediate_size, bias=bias)
+        self.down_proj = nn.Linear(intermediate_size, hidden_size, bias=bias)
         self.activation = SiTUAndMul(
             beta=beta,
             linear_beta=linear_beta,
@@ -106,7 +109,7 @@ class StableLatentMoE(nn.Module):
         self.router = nn.Linear(
             config.hidden_size,
             config.num_experts,
-            bias=False,
+            bias=config.router_bias,
         )
         self.latent_down = nn.Linear(
             config.hidden_size,
@@ -129,6 +132,7 @@ class StableLatentMoE(nn.Module):
                 config.expert_intermediate_size,
                 beta=config.situ_beta,
                 linear_beta=config.situ_linear_beta,
+                bias=config.expert_bias,
             )
             for _ in range(config.num_experts)
         )
@@ -138,6 +142,7 @@ class StableLatentMoE(nn.Module):
                 config.expert_intermediate_size,
                 beta=config.situ_beta,
                 linear_beta=config.situ_linear_beta,
+                bias=config.expert_bias,
             )
             for _ in range(config.num_shared_experts)
         )
