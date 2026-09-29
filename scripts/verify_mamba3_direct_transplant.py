@@ -133,47 +133,84 @@ def main() -> int:
             device=device,
             dtype=torch.bfloat16,
         )
-        x_target = torch.zeros(
-            1,
-            args.sequence_length,
-            recipient.mamba3.d_model,
-            device=device,
-            dtype=torch.bfloat16,
-        )
-        x_target[..., : donor_config.d_model].copy_(x_source)
+        factor = recipient.mamba3.d_model // donor_config.d_model
+        x_target = x_source.repeat((1, 1, factor))
+
+        source_norm_weight = state[
+            f"backbone.layers.{source_layer}.norm.weight"
+        ].to(device=device)
+        target_norm_weight = shard[
+            f"layers.{int(placement['target_physical_layer'])}.norm.weight"
+        ].to(device=device)
+
+        def rms_norm(
+            value: torch.Tensor,
+            weight: torch.Tensor,
+        ) -> torch.Tensor:
+            normalized = value.float() * torch.rsqrt(
+                value.float().pow(2).mean(dim=-1, keepdim=True) + 1e-5
+            )
+            return (normalized * weight.float()).to(value.dtype)
+
+        source_input = rms_norm(x_source, source_norm_weight)
+        target_input = rms_norm(x_target, target_norm_weight)
 
         with torch.inference_mode():
-            y_source = source(x_source)
-            y_target = target(x_target)
+            y_source = source(source_input)
+            y_target = target(target_input)
 
-        donor_view = y_target[..., : donor_config.d_model]
-        extra_view = y_target[..., donor_config.d_model :]
-        max_abs = float(
-            (donor_view.float() - y_source.float()).abs().max().item()
+        expected_mixed = y_source.repeat((1, 1, factor))
+        source_residual = x_source + y_source
+        target_residual = x_target + y_target
+        expected_residual = source_residual.repeat((1, 1, factor))
+        mixed_max_abs = float(
+            (y_target.float() - expected_mixed.float()).abs().max().item()
         )
-        extra_max_abs = float(extra_view.float().abs().max().item())
-        parity = torch.allclose(
-            donor_view.float(),
-            y_source.float(),
-            rtol=args.rtol,
-            atol=args.atol,
+        residual_max_abs = float(
+            (target_residual.float() - expected_residual.float()).abs().max().item()
         )
-        neutral = extra_max_abs == 0.0
+        normalized_max_abs = float(
+            (
+                target_input.float()
+                - source_input.repeat((1, 1, factor)).float()
+            ).abs().max().item()
+        )
+        parity = (
+            torch.allclose(
+                target_input.float(),
+                source_input.repeat((1, 1, factor)).float(),
+                rtol=args.rtol,
+                atol=args.atol,
+            )
+            and torch.allclose(
+                y_target.float(),
+                expected_mixed.float(),
+                rtol=args.rtol,
+                atol=args.atol,
+            )
+            and torch.allclose(
+                target_residual.float(),
+                expected_residual.float(),
+                rtol=args.rtol,
+                atol=args.atol,
+            )
+        )
         reports.append(
             {
                 "source_layer": source_layer,
                 "target_physical_layer": int(placement["target_physical_layer"]),
-                "max_abs_error": max_abs,
-                "extra_subspace_max_abs": extra_max_abs,
+                "norm_max_abs_error": normalized_max_abs,
+                "mixer_max_abs_error": mixed_max_abs,
+                "residual_max_abs_error": residual_max_abs,
+                "replication_factor": factor,
                 "parity": bool(parity),
-                "extra_subspace_neutral": bool(neutral),
             }
         )
         del source, target, x_source, x_target, y_source, y_target
         torch.cuda.empty_cache()
 
     print(json.dumps({"layers": reports}, indent=2, sort_keys=True))
-    if not all(r["parity"] and r["extra_subspace_neutral"] for r in reports):
+    if not all(r["parity"] for r in reports):
         raise SystemExit(2)
     return 0
 
