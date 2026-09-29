@@ -1,34 +1,47 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-GPT_OSS_REPO="${GPT_OSS_REPO:-openai/gpt-oss-20b}"
+# Remote-only weight-transfer contract.
+# Donor checkpoints MUST be mounted read-only by the compute platform.
+# The IQ destination MUST be a remote writable mount.
+# This script never downloads or copies donor/final model weights to worker-local disk.
+
+GPT_OSS_ROOT="${GPT_OSS_MOUNT:-/mnt/donors/gpt-oss-20b}"
+GPT_OSS_ORIGINAL="${GPT_OSS_ORIGINAL:-$GPT_OSS_ROOT/original}"
+MAMBA3_ROOT="${MAMBA3_MOUNT:-/mnt/donors/mamba3-mimo-1.5b}"
+IQ_REMOTE_ROOT="${IQ_REMOTE_MOUNT:-/mnt/iq-output}"
+OUTPUT_DIR="${IQ_COMPLETE_OUTPUT:-$IQ_REMOTE_ROOT}"
+
 GPT_OSS_REVISION="${GPT_OSS_REVISION:-0d1f28dce7d3a8794b20345f496dfabb28d51e70}"
-MAMBA3_REPO="${MAMBA3_REPO:-state-spaces/mamba3-mimo-1.5b}"
 MAMBA3_REVISION="${MAMBA3_REVISION:-bc6b5d0f7994fe4cb3478242e92da8daf9ee29ec}"
-ROOT="${IQ_TRANSFER_ROOT:-$PWD/.iq-complete-transfer}"
-GPT_ROOT="$ROOT/gpt-oss-20b"
-GPT_ORIGINAL="$GPT_ROOT/original"
-MAMBA_DIR="$ROOT/mamba3"
-OUTPUT_DIR="${IQ_COMPLETE_OUTPUT:-$ROOT/IQ-complete}"
 
-: "${HF_TOKEN:?Set HF_TOKEN from an OpenShift Secret}"
+require_file() {
+  if [[ ! -f "$1" ]]; then
+    echo "Required remote-mounted donor file missing: $1" >&2
+    exit 2
+  fi
+}
 
-mkdir -p "$GPT_ROOT" "$MAMBA_DIR" "$OUTPUT_DIR"
-python -m pip install -r requirements-model.txt
+require_file "$GPT_OSS_ORIGINAL/config.json"
+require_file "$GPT_OSS_ORIGINAL/model.safetensors"
+require_file "$MAMBA3_ROOT/config.json"
+require_file "$MAMBA3_ROOT/pytorch_model.bin"
 
-hf download "$GPT_OSS_REPO"   original/config.json   original/model.safetensors   tokenizer.json   tokenizer_config.json   special_tokens_map.json   generation_config.json   LICENSE   USAGE_POLICY   --revision "$GPT_OSS_REVISION"   --local-dir "$GPT_ROOT"   --token "$HF_TOKEN"
+case "$OUTPUT_DIR" in
+  "$IQ_REMOTE_ROOT"|"$IQ_REMOTE_ROOT"/*) ;;
+  *)
+    echo "IQ_COMPLETE_OUTPUT must remain under IQ_REMOTE_MOUNT ($IQ_REMOTE_ROOT)." >&2
+    exit 2
+    ;;
+esac
 
-# chat_template.jinja exists on current donor revisions but older pinned snapshots
-# may keep the template inside tokenizer_config.json, so fetch it opportunistically.
-hf download "$GPT_OSS_REPO" chat_template.jinja   --revision "$GPT_OSS_REVISION"   --local-dir "$GPT_ROOT"   --token "$HF_TOKEN" >/dev/null 2>&1 || true
+mkdir -p "$OUTPUT_DIR"
 
-hf download "$MAMBA3_REPO"   config.json pytorch_model.bin   --revision "$MAMBA3_REVISION"   --local-dir "$MAMBA_DIR"   --token "$HF_TOKEN"
+python -m iq_transfer.cli complete-iq \
+  --gpt-oss-original "$GPT_OSS_ORIGINAL" \
+  --mamba3-checkpoint "$MAMBA3_ROOT" \
+  --gpt-oss-revision "$GPT_OSS_REVISION" \
+  --mamba3-revision "$MAMBA3_REVISION" \
+  --output "$OUTPUT_DIR"
 
-python -m iq_transfer.cli complete-iq   --gpt-oss-original "$GPT_ORIGINAL"   --mamba3-checkpoint "$MAMBA_DIR"   --gpt-oss-revision "$GPT_OSS_REVISION"   --mamba3-revision "$MAMBA3_REVISION"   --output "$OUTPUT_DIR"
-
-if [[ -n "${HF_TARGET_REPO:-}" ]]; then
-  hf upload "$HF_TARGET_REPO" "$OUTPUT_DIR" . --token "$HF_TOKEN"
-  echo "Uploaded complete IQ checkpoint to https://huggingface.co/$HF_TARGET_REPO"
-else
-  echo "HF_TARGET_REPO is unset; complete checkpoint remains at $OUTPUT_DIR"
-fi
+echo "Complete IQ checkpoint written directly to remote mount: $OUTPUT_DIR"
