@@ -16,6 +16,7 @@ from .donor import DonorConfig, DonorError, DonorInspector, LayerRef, MappingTen
 from .manifest import CheckpointFile, DonorManifest, ManifestError, TensorInventoryItem, build_donor_manifest
 from .phi4 import Phi4Inspector
 from .glm53 import GLM53Inspector, GLM53Layout
+from .glm53_job import GLM53DonorArtifact, GLM53TransferError, validate_glm53_donor
 from .scaling import ScaleGate, TransferMetrics
 from .shadows import FunctionalShadow, MeasurementPlan, ShadowError, extract_shadow, match_layers_monotonic, shadow_distance
 from .slots import SlotError, TargetAssignment, TargetRegistry, TargetSlot, TransferMethod
@@ -46,7 +47,9 @@ __all__ = [
     "FunctionalShadow",
     "GQAProjection",
     "GQATransportError",
+    "GLM53DonorArtifact",
     "GLM53Inspector",
+    "GLM53TransferError",
     "GLM53Layout",
     "LayerCorrespondence",
     "LayerRef",
@@ -128,4 +131,5 @@ __all__ = [
     "save_coordinate_map",
     "shadow_distance",
     "transport_linear",
+    "validate_glm53_donor",
 ]
