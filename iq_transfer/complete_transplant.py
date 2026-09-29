@@ -7,7 +7,6 @@ from typing import Mapping
 import json
 import math
 import shutil
-import tempfile
 
 import torch
 
@@ -747,6 +746,12 @@ def compile_complete_iq_checkpoint(
             },
         },
         "recipient_config_fingerprint": config.fingerprint,
+        "storage_policy": {
+            "persistent_weight_storage": "remote_output_volume_only",
+            "worker_local_weight_files": false,
+            "donor_access": "read_only_remote_mount",
+            "transformation_workspace": "memory_plus_remote_output_staging",
+        },
         "residual_embedding": {
             "source_width": 2880,
             "target_width": 4096,
@@ -807,8 +812,15 @@ def compile_complete_iq_checkpoint(
             f"{GPT_OSS_20B_REPO}:moe:{donor_layer}"
         )
 
-    with tempfile.TemporaryDirectory(prefix="iq-mamba-overlay-") as temporary:
-        overlay = Path(temporary)
+    # Keep all weight-bearing staging on the caller-provided output volume.
+    # This allows remote-mounted buckets/model repos to be the only persistent
+    # storage used during compilation. Worker-local disk is never used for
+    # donor, staging, or final weight files.
+    overlay = output / ".staging" / "mamba-overlay"
+    if overlay.exists():
+        shutil.rmtree(overlay)
+    overlay.mkdir(parents=True, exist_ok=True)
+    try:
         mamba_result = compile_official_mamba3_mimo_15b_transplant(
             checkpoint=mamba3_checkpoint_dir,
             output_dir=overlay,
@@ -824,6 +836,13 @@ def compile_complete_iq_checkpoint(
         provenance["mamba_target_fingerprint"] = mamba_result.target_fingerprint
         for physical, source in mamba_provenance.items():
             provenance["layers"][str(physical)] = source
+    finally:
+        shutil.rmtree(overlay, ignore_errors=True)
+        staging_root = output / ".staging"
+        try:
+            staging_root.rmdir()
+        except OSError:
+            pass
 
     _save_shard(
         output,
