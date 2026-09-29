@@ -1,3 +1,5 @@
+from .complete_transplant import CompleteTransplantError, RESIDUAL_EMBED_SCALE, canonical_complete_config, canonical_complete_schedule, compile_complete_iq_checkpoint, donor_layer_positions, load_complete_iq_checkpoint
+from .gpt_oss20b import GPT_OSS_20B_ORIGINAL_SHA256, GPT_OSS_20B_REPO, GPT_OSS_20B_REVISION, GptOss20BConfig, GptOss20BError, GptOss20BOriginalCheckpoint
 from .batches import BatchArtifactError, TokenBatchArtifact, load_token_batches, save_token_batches
 from .job import PhiTransferJobResult, TransferJobError, hash_tokenizer_files, load_transferred_iq_artifact, run_phi_dense_transfer, run_phi_dense_transfer_loaded
 from .capture_runner import ActivationBundle, CaptureRunnerError, PhiCaptureLayout, build_phi_layer_calibration_from_bundles, capture_iq_activations, capture_phi_activations, iq_capture_taps, load_local_phi_causal_lm, make_activation_pair, phi_capture_taps
@@ -26,6 +28,19 @@ from .transport import CoordinateMap, MapDiagnostics, TransportError, fit_ridge_
 
 __all__ = [
     "ActivationBundle",
+    "CompleteTransplantError",
+    "GPT_OSS_20B_ORIGINAL_SHA256",
+    "GPT_OSS_20B_REPO",
+    "GPT_OSS_20B_REVISION",
+    "GptOss20BConfig",
+    "GptOss20BError",
+    "GptOss20BOriginalCheckpoint",
+    "RESIDUAL_EMBED_SCALE",
+    "canonical_complete_config",
+    "canonical_complete_schedule",
+    "compile_complete_iq_checkpoint",
+    "donor_layer_positions",
+    "load_complete_iq_checkpoint",
     "ActivationPair",
     "ActivationTap",
     "ApplyError",
