@@ -5,6 +5,7 @@ import json
 
 from .job import run_phi_dense_transfer
 from .glm53_job import validate_glm53_donor
+from .mamba3_direct import compile_official_mamba3_mimo_15b_transplant
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -23,6 +24,22 @@ def _parser() -> argparse.ArgumentParser:
         "--allow-quantized",
         action="store_true",
         help="allow an FP8/quantized checkpoint for inspection only",
+    )
+
+    mamba = sub.add_parser(
+        "mamba3-direct",
+        help="compile the pinned official Mamba-3 MIMO 1.5B weights into IQ Mamba-3 slots without distillation",
+    )
+    mamba.add_argument("--checkpoint", required=True)
+    mamba.add_argument("--output", required=True)
+    mamba.add_argument(
+        "--checkpoint-revision",
+        default="bc6b5d0f7994fe4cb3478242e92da8daf9ee29ec",
+    )
+    mamba.add_argument(
+        "--skip-checkpoint-hash",
+        action="store_true",
+        help="skip the 3 GB donor SHA-256 pass (not recommended for production)",
     )
 
     phi = sub.add_parser("phi-dense", help="build a transported dense IQ artifact from a local Phi checkpoint")
@@ -69,6 +86,26 @@ def main(argv: list[str] | None = None) -> int:
                     "num_layers": artifact.manifest.num_layers,
                     "hidden_size": artifact.manifest.hidden_size,
                     "vocab_size": artifact.manifest.vocab_size,
+                },
+                sort_keys=True,
+            )
+        )
+        return 0
+    if args.command == "mamba3-direct":
+        result = compile_official_mamba3_mimo_15b_transplant(
+            checkpoint=args.checkpoint,
+            output_dir=args.output,
+            checkpoint_revision=args.checkpoint_revision,
+            verify_checkpoint_hash=not args.skip_checkpoint_hash,
+        )
+        print(
+            json.dumps(
+                {
+                    "output_dir": str(result.output_dir),
+                    "donor_sha256": result.donor_sha256,
+                    "target_fingerprint": result.target_fingerprint,
+                    "transplanted_layers": len(result.placements),
+                    "identity_mamba_ordinals": list(result.identity_mamba_ordinals),
                 },
                 sort_keys=True,
             )
