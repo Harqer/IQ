@@ -8,6 +8,7 @@ from .executor import DonorRuntime, ExecutionError, TransportExecutionReport, ex
 from .apply import ApplyError, ParameterUpdate, apply_parameter_updates
 from .alignment import AlignmentError, ByteSpan, PairedSpanActivations, TokenByteSpan, align_token_activations_by_bytes, pool_activations_by_byte_spans
 from .mamba3_init import Mamba3BootstrapReport, Mamba3BootstrapWeights, Mamba3InitError, Mamba3Layout, TRANSFORMER_TO_MAMBA3, apply_mamba3_bootstrap
+from .mohawk import MohawkConfig, MohawkStage, hidden_alignment_loss, logits_distillation_loss, matrix_orientation_loss, mohawk_loss
 from .plan import PlanError, TransportPlan
 from .provenance import ParameterProvenance, ProvenanceError, ProvenanceLedger
 from .capture import ActivationTap, CaptureError, TorchActivationCapture, load_capture_records, save_capture_records
@@ -77,6 +78,8 @@ __all__ = [
     "MapDiagnostics",
     "MappingTensorSource",
     "MeasurementPlan",
+    "MohawkConfig",
+    "MohawkStage",
     "OperatorRef",
     "Phi4Inspector",
     "PhiCaptureLayout",
@@ -116,12 +119,16 @@ __all__ = [
     "fit_gqa_group_projection",
     "fit_ridge_coordinate_map",
     "hash_tokenizer_files",
+    "hidden_alignment_loss",
     "iq_capture_taps",
     "load_capture_records",
+    "logits_distillation_loss",
     "load_token_batches",
     "load_transferred_iq_artifact",
     "load_local_phi_causal_lm",
     "make_activation_pair",
+    "matrix_orientation_loss",
+    "mohawk_loss",
     "load_coordinate_map",
     "match_layers_monotonic",
     "merge_coordinate_maps",
