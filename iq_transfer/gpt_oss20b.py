@@ -11,6 +11,7 @@ import torch
 
 
 GPT_OSS_20B_REPO = "openai/gpt-oss-20b"
+GPT_OSS_20B_REVISION = "0d1f28dce7d3a8794b20345f496dfabb28d51e70"
 GPT_OSS_20B_ORIGINAL_SHA256 = "3340a61d1a0391e8c5b5d3463d18d4c48129a84bbc04a554c762c99020aa06ed"
 FP4_VALUES = (
     +0.0, +0.5, +1.0, +1.5, +2.0, +3.0, +4.0, +6.0,
