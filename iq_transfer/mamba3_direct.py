@@ -145,6 +145,12 @@ class Mamba3DirectTransferResult:
     identity_physical_layers: tuple[int, ...]
 
 
+@dataclass(frozen=True)
+class Mamba3OverlayApplyReport:
+    copied_parameters: tuple[str, ...]
+    identity_parameters: tuple[str, ...]
+
+
 def _sha256_file(path: Path, *, chunk_size: int = 8 * 1024 * 1024) -> str:
     digest = sha256()
     with path.open("rb") as handle:
@@ -486,6 +492,75 @@ def _save_safetensors(path: Path, tensors: Mapping[str, torch.Tensor]) -> None:
         ) from exc
     path.parent.mkdir(parents=True, exist_ok=True)
     save_file({key: value.contiguous() for key, value in tensors.items()}, str(path))
+
+
+def apply_mamba3_transplant_overlay(
+    model: torch.nn.Module,
+    overlay_dir: str | Path,
+) -> Mamba3OverlayApplyReport:
+    """Apply a compiled Mamba-3 overlay to an instantiated IQ model in-place.
+
+    Only parameters present in transplant shards are copied. Mamba layers that
+    intentionally fill donor-depth gaps are made exact residual identities by
+    zeroing their output projection. All other IQ parameters are untouched.
+    """
+    root = Path(overlay_dir)
+    try:
+        manifest = json.loads(
+            (root / "mamba3_transplant.json").read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError) as exc:
+        raise Mamba3DirectTransferError(
+            f"invalid Mamba-3 transplant manifest in {root}"
+        ) from exc
+    if manifest.get("artifact_type") != "iq_mamba3_direct_transplant":
+        raise Mamba3DirectTransferError("overlay artifact_type is not Mamba-3 direct transplant")
+
+    try:
+        from safetensors.torch import load_file
+    except ImportError as exc:
+        raise Mamba3DirectTransferError(
+            "safetensors is required to apply transplant artifacts"
+        ) from exc
+
+    parameters = dict(model.named_parameters())
+    copied: list[str] = []
+    with torch.no_grad():
+        for placement in manifest.get("placements", []):
+            if not isinstance(placement, dict) or "shard" not in placement:
+                raise Mamba3DirectTransferError("invalid placement entry in transplant manifest")
+            shard = load_file(str(root / str(placement["shard"])), device="cpu")
+            for key, value in shard.items():
+                try:
+                    target = parameters[key]
+                except KeyError as exc:
+                    raise Mamba3DirectTransferError(
+                        f"recipient model is missing overlay parameter: {key}"
+                    ) from exc
+                if _shape(target) != _shape(value):
+                    raise Mamba3DirectTransferError(
+                        f"overlay shape mismatch for {key}: got {_shape(value)}, "
+                        f"recipient expects {_shape(target)}"
+                    )
+                target.copy_(value.to(device=target.device, dtype=target.dtype))
+                copied.append(key)
+
+        identity_parameters: list[str] = []
+        for physical in manifest.get("identity_physical_layers", []):
+            key = f"layers.{int(physical)}.mamba.core.out_proj.weight"
+            try:
+                target = parameters[key]
+            except KeyError as exc:
+                raise Mamba3DirectTransferError(
+                    f"recipient model is missing identity Mamba parameter: {key}"
+                ) from exc
+            target.zero_()
+            identity_parameters.append(key)
+
+    return Mamba3OverlayApplyReport(
+        copied_parameters=tuple(copied),
+        identity_parameters=tuple(identity_parameters),
+    )
 
 
 def compile_official_mamba3_mimo_15b_transplant(
