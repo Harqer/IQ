@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+from dataclasses import asdict
+from types import SimpleNamespace
 import tempfile
 import unittest
 from pathlib import Path
@@ -17,6 +19,7 @@ from iq_transfer.mamba3_direct import (
     validate_official_mamba3_mimo_15b_config,
 )
 from iq_transfer.mamba3_init import Mamba3Layout
+from iq_model import HybridLayerType, Mamba3MIMOConfig
 
 
 class Mamba3DirectTransferTests(unittest.TestCase):
@@ -133,12 +136,12 @@ class Mamba3DirectTransferTests(unittest.TestCase):
             source_config=config,
             target_layout=target,
             source_layer=0,
-            target_physical_layer=3,
+            target_mamba_ordinal=3,
             state=state,
         )
         source_layout = config.layout
         source_in = state["backbone.layers.0.mixer.in_proj.weight"]
-        target_in = result["layers.3.mamba.core.in_proj.weight"]
+        target_in = result["mamba_layers.3.core.in_proj.weight"]
         for name in ("z", "x", "B", "C", "dd_dt", "dd_A", "trap", "angle"):
             source_rows = source_in[source_layout.slices()[name], :]
             mapped = target_in[target.slices()[name], :]
@@ -166,11 +169,11 @@ class Mamba3DirectTransferTests(unittest.TestCase):
             source_config=config,
             target_layout=target,
             source_layer=0,
-            target_physical_layer=1,
+            target_mamba_ordinal=1,
             state=state,
         )
         source = state["backbone.layers.0.mixer.out_proj.weight"]
-        mapped = result["layers.1.mamba.core.out_proj.weight"]
+        mapped = result["mamba_layers.1.core.out_proj.weight"]
         expected = source.repeat((2, 2)) / 2
         self.assertTrue(torch.equal(mapped, expected))
 
@@ -191,24 +194,24 @@ class Mamba3DirectTransferTests(unittest.TestCase):
             source_config=config,
             target_layout=target,
             source_layer=0,
-            target_physical_layer=2,
+            target_mamba_ordinal=2,
             state=state,
         )
-        d_value = result["layers.2.mamba.core.D"]
+        d_value = result["mamba_layers.2.core.D"]
         self.assertTrue(
             torch.equal(
                 d_value,
                 state["backbone.layers.0.mixer.D"].repeat(2),
             )
         )
-        norm = result["layers.2.norm.weight"]
+        norm = result["mamba_layers.2.norm.weight"]
         self.assertTrue(
             torch.equal(
                 norm,
                 state["backbone.layers.0.norm.weight"].repeat(2),
             )
         )
-        b_bias = result["layers.2.mamba.core.B_bias"]
+        b_bias = result["mamba_layers.2.core.B_bias"]
         self.assertTrue(
             torch.equal(
                 b_bias,
@@ -237,11 +240,11 @@ class Mamba3DirectTransferTests(unittest.TestCase):
                 source_config=config,
                 target_layout=target,
                 source_layer=0,
-                target_physical_layer=0,
+                target_mamba_ordinal=0,
                 state=state,
             )
 
-    def test_overlay_applicator_copies_and_zeroes_identity_gap(self):
+    def test_overlay_applicator_resolves_ordinals_and_zeroes_identity_gap(self):
         try:
             from safetensors.torch import save_file
         except ImportError:
@@ -263,10 +266,31 @@ class Mamba3DirectTransferTests(unittest.TestCase):
                 self.norm = nn.Linear(2, 2, bias=False)
                 self.mamba = Mamba()
 
+        class Schedule:
+            def positions(self, layer_type):
+                self.assert_type = layer_type
+                return (0, 1)
+
+        target = Mamba3MIMOConfig(
+            d_model=2,
+            num_layers=2,
+            d_state=2,
+            headdim=2,
+            mimo_rank=2,
+            expand=1.0,
+            rope_fraction=1.0,
+            chunk_size=1,
+        )
+
         class TinyRecipient(nn.Module):
             def __init__(self):
                 super().__init__()
                 self.layers = nn.ModuleList([Layer(), Layer()])
+                self.config = SimpleNamespace(
+                    mamba3=target,
+                    schedule=Schedule(),
+                )
+                self.model_config = SimpleNamespace(rms_norm_eps=1e-5)
 
         model = TinyRecipient()
         self.assertNotEqual(
@@ -282,7 +306,7 @@ class Mamba3DirectTransferTests(unittest.TestCase):
             shard.parent.mkdir(parents=True)
             save_file(
                 {
-                    "layers.0.norm.weight": torch.full((2, 2), 3.0),
+                    "mamba_layers.0.norm.weight": torch.full((2, 2), 3.0),
                 },
                 str(shard),
             )
@@ -290,10 +314,17 @@ class Mamba3DirectTransferTests(unittest.TestCase):
                 json.dumps(
                     {
                         "artifact_type": "iq_mamba3_direct_transplant",
+                        "target": {
+                            "mamba3": asdict(target),
+                            "rms_norm_eps": 1e-5,
+                        },
                         "placements": [
-                            {"shard": "mamba/layer-000.safetensors"}
+                            {
+                                "target_mamba_ordinal": 0,
+                                "shard": "mamba/layer-000.safetensors",
+                            }
                         ],
-                        "identity_physical_layers": [1],
+                        "identity_mamba_ordinals": [1],
                     }
                 ),
                 encoding="utf-8",
