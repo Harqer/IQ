@@ -493,15 +493,68 @@ def _save_safetensors(path: Path, tensors: Mapping[str, torch.Tensor]) -> None:
     save_file({key: value.contiguous() for key, value in tensors.items()}, str(path))
 
 
+def _mamba_target_fingerprint(config: Mamba3MIMOConfig) -> str:
+    payload = json.dumps(
+        asdict(config),
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return sha256(payload).hexdigest()
+
+
+def _target_layout(config: Mamba3MIMOConfig) -> Mamba3Layout:
+    return Mamba3Layout(
+        d_model=config.d_model,
+        d_state=config.d_state,
+        expand=config.expand,
+        headdim=config.headdim,
+        ngroups=1,
+        rope_fraction=config.rope_fraction,
+        is_mimo=True,
+        mimo_rank=config.mimo_rank,
+    )
+
+
+def _overlay_key_to_recipient(
+    key: str,
+    mamba_positions: tuple[int, ...],
+) -> str:
+    parts = key.split(".", 2)
+    if len(parts) != 3 or parts[0] != "mamba_layers":
+        raise Mamba3DirectTransferError(
+            f"invalid canonical Mamba overlay key: {key}"
+        )
+    try:
+        ordinal = int(parts[1])
+    except ValueError as exc:
+        raise Mamba3DirectTransferError(
+            f"invalid Mamba ordinal in overlay key: {key}"
+        ) from exc
+    if ordinal < 0 or ordinal >= len(mamba_positions):
+        raise Mamba3DirectTransferError(
+            f"overlay Mamba ordinal {ordinal} outside recipient Mamba depth"
+        )
+    physical = mamba_positions[ordinal]
+    suffix = parts[2]
+    if suffix == "norm.weight":
+        return f"layers.{physical}.norm.weight"
+    if suffix.startswith("core."):
+        return f"layers.{physical}.mamba.{suffix}"
+    raise Mamba3DirectTransferError(
+        f"unsupported canonical Mamba overlay suffix: {suffix}"
+    )
+
+
 def apply_mamba3_transplant_overlay(
     model: torch.nn.Module,
     overlay_dir: str | Path,
 ) -> Mamba3OverlayApplyReport:
-    """Apply a compiled Mamba-3 overlay to an instantiated IQ model in-place.
+    """Apply a schedule-independent Mamba overlay to an IQ hybrid model.
 
-    Only parameters present in transplant shards are copied. Mamba layers that
-    intentionally fill donor-depth gaps are made exact residual identities by
-    zeroing their output projection. All other IQ parameters are untouched.
+    The compiled artifact is indexed by Mamba ordinal, not physical hybrid-layer
+    position. At application time the model's explicit HybridSchedule resolves
+    those ordinals to physical IQ layers. Donor-depth gaps become exact residual
+    identities by zeroing only their Mamba output projection.
     """
     root = Path(overlay_dir)
     try:
@@ -513,7 +566,41 @@ def apply_mamba3_transplant_overlay(
             f"invalid Mamba-3 transplant manifest in {root}"
         ) from exc
     if manifest.get("artifact_type") != "iq_mamba3_direct_transplant":
-        raise Mamba3DirectTransferError("overlay artifact_type is not Mamba-3 direct transplant")
+        raise Mamba3DirectTransferError(
+            "overlay artifact_type is not Mamba-3 direct transplant"
+        )
+
+    model_config = getattr(model, "config", None)
+    if model_config is None:
+        raise Mamba3DirectTransferError(
+            "recipient model must expose IQHybridConfig as .config"
+        )
+    mamba_config = getattr(model_config, "mamba3", None)
+    schedule = getattr(model_config, "schedule", None)
+    if mamba_config is None or schedule is None:
+        raise Mamba3DirectTransferError(
+            "recipient model config must expose mamba3 and schedule"
+        )
+
+    target = manifest.get("target")
+    if not isinstance(target, dict) or not isinstance(target.get("mamba3"), dict):
+        raise Mamba3DirectTransferError("transplant manifest is missing target Mamba config")
+    expected_target = Mamba3MIMOConfig(**target["mamba3"])
+    if asdict(mamba_config) != asdict(expected_target):
+        raise Mamba3DirectTransferError(
+            "recipient Mamba-3 config does not match compiled transplant target"
+        )
+    model_rms_eps = float(getattr(getattr(model, "model_config", None), "rms_norm_eps", -1))
+    if abs(model_rms_eps - float(target.get("rms_norm_eps", 1e-5))) > 1e-12:
+        raise Mamba3DirectTransferError(
+            "recipient RMSNorm epsilon does not match transplant target"
+        )
+
+    mamba_positions = tuple(schedule.positions(HybridLayerType.MAMBA3))
+    if len(mamba_positions) != expected_target.num_layers:
+        raise Mamba3DirectTransferError(
+            "recipient schedule Mamba count does not match compiled target"
+        )
 
     try:
         from safetensors.torch import load_file
@@ -527,33 +614,47 @@ def apply_mamba3_transplant_overlay(
     with torch.no_grad():
         for placement in manifest.get("placements", []):
             if not isinstance(placement, dict) or "shard" not in placement:
-                raise Mamba3DirectTransferError("invalid placement entry in transplant manifest")
+                raise Mamba3DirectTransferError(
+                    "invalid placement entry in transplant manifest"
+                )
             shard = load_file(str(root / str(placement["shard"])), device="cpu")
-            for key, value in shard.items():
+            for overlay_key, value in shard.items():
+                key = _overlay_key_to_recipient(overlay_key, mamba_positions)
                 try:
-                    target = parameters[key]
+                    recipient_parameter = parameters[key]
                 except KeyError as exc:
                     raise Mamba3DirectTransferError(
                         f"recipient model is missing overlay parameter: {key}"
                     ) from exc
-                if _shape(target) != _shape(value):
+                if _shape(recipient_parameter) != _shape(value):
                     raise Mamba3DirectTransferError(
                         f"overlay shape mismatch for {key}: got {_shape(value)}, "
-                        f"recipient expects {_shape(target)}"
+                        f"recipient expects {_shape(recipient_parameter)}"
                     )
-                target.copy_(value.to(device=target.device, dtype=target.dtype))
+                recipient_parameter.copy_(
+                    value.to(
+                        device=recipient_parameter.device,
+                        dtype=recipient_parameter.dtype,
+                    )
+                )
                 copied.append(key)
 
         identity_parameters: list[str] = []
-        for physical in manifest.get("identity_physical_layers", []):
-            key = f"layers.{int(physical)}.mamba.core.out_proj.weight"
+        for ordinal in manifest.get("identity_mamba_ordinals", []):
+            ordinal = int(ordinal)
+            if ordinal < 0 or ordinal >= len(mamba_positions):
+                raise Mamba3DirectTransferError(
+                    f"identity Mamba ordinal {ordinal} outside recipient depth"
+                )
+            physical = mamba_positions[ordinal]
+            key = f"layers.{physical}.mamba.core.out_proj.weight"
             try:
-                target = parameters[key]
+                recipient_parameter = parameters[key]
             except KeyError as exc:
                 raise Mamba3DirectTransferError(
                     f"recipient model is missing identity Mamba parameter: {key}"
                 ) from exc
-            target.zero_()
+            recipient_parameter.zero_()
             identity_parameters.append(key)
 
     return Mamba3OverlayApplyReport(
@@ -565,11 +666,16 @@ def apply_mamba3_transplant_overlay(
 def compile_official_mamba3_mimo_15b_transplant(
     *,
     checkpoint: str | Path,
-    recipient_config_path: str | Path,
     output_dir: str | Path,
     checkpoint_revision: str = MAMBA3_MIMO_15B_REVISION,
     verify_checkpoint_hash: bool = True,
 ) -> Mamba3DirectTransferResult:
+    """Compile the official 1.5B donor into IQ's frozen 4096x32 Mamba target.
+
+    This stage intentionally does not depend on the hybrid schedule. It emits
+    Mamba-ordinal shards, so the same compiled artifact can later be applied to
+    any IQ schedule that contains the frozen 32 Mamba-3 MIMO slots.
+    """
     checkpoint_dir = Path(checkpoint)
     config_path = checkpoint_dir / "config.json"
     weights_path = checkpoint_dir / "pytorch_model.bin"
@@ -593,34 +699,12 @@ def compile_official_mamba3_mimo_15b_transplant(
             f"got {donor_sha}, expected {MAMBA3_MIMO_15B_BIN_SHA256}"
         )
 
-    recipient = validate_canonical_hybrid_backbone(
-        IQHybridConfig.from_json(str(recipient_config_path))
-    )
-    if abs(float(recipient.model.rms_norm_eps) - 1e-5) > 1e-12:
-        raise Mamba3DirectTransferError(
-            "exact Mamba-3 replication embedding requires recipient RMSNorm eps=1e-5 "
-            "to match the official donor runtime"
-        )
-    target_layout = Mamba3Layout(
-        d_model=recipient.mamba3.d_model,
-        d_state=recipient.mamba3.d_state,
-        expand=recipient.mamba3.expand,
-        headdim=recipient.mamba3.headdim,
-        ngroups=1,
-        rope_fraction=recipient.mamba3.rope_fraction,
-        is_mimo=True,
-        mimo_rank=recipient.mamba3.mimo_rank,
-    )
+    target_config = Mamba3MIMOConfig.production_4096x32()
+    target_layout = _target_layout(target_config)
     _replication_factor(donor.layout, target_layout)
-
-    mamba_positions = recipient.schedule.positions(HybridLayerType.MAMBA3)
-    if len(mamba_positions) != recipient.mamba3.num_layers:
-        raise Mamba3DirectTransferError(
-            "recipient Mamba schedule/config disagreement"
-        )
     ordinals = evenly_spaced_layer_placements(
         donor.n_layer,
-        len(mamba_positions),
+        target_config.num_layers,
     )
 
     state = _load_official_state_dict(weights_path)
@@ -631,13 +715,12 @@ def compile_official_mamba3_mimo_15b_transplant(
     placements: list[Mamba3LayerPlacement] = []
     populated_ordinals = set(ordinals)
     for source_layer, target_ordinal in enumerate(ordinals):
-        physical = mamba_positions[target_ordinal]
-        shard = f"mamba/layer-{target_ordinal:03d}-physical-{physical:03d}.safetensors"
+        shard = f"mamba/layer-{target_ordinal:03d}.safetensors"
         tensors = expand_mamba3_layer(
             source_config=donor,
             target_layout=target_layout,
             source_layer=source_layer,
-            target_physical_layer=physical,
+            target_mamba_ordinal=target_ordinal,
             state=state,
         )
         _save_safetensors(output / shard, tensors)
@@ -645,20 +728,20 @@ def compile_official_mamba3_mimo_15b_transplant(
             Mamba3LayerPlacement(
                 source_layer=source_layer,
                 target_mamba_ordinal=target_ordinal,
-                target_physical_layer=physical,
                 shard=shard,
             )
         )
         del tensors
 
-    identity_physical = tuple(
-        physical
-        for ordinal, physical in enumerate(mamba_positions)
+    identity_ordinals = tuple(
+        ordinal
+        for ordinal in range(target_config.num_layers)
         if ordinal not in populated_ordinals
     )
+    target_fingerprint = _mamba_target_fingerprint(target_config)
 
     manifest = {
-        "schema_version": 1,
+        "schema_version": 2,
         "artifact_type": "iq_mamba3_direct_transplant",
         "method": "exact_replication_embedding_plus_identity_depth_expansion",
         "teacher_student_distillation": False,
@@ -668,14 +751,14 @@ def compile_official_mamba3_mimo_15b_transplant(
             "checkpoint_sha256": donor_sha,
             "config": asdict(donor),
         },
-        "recipient": {
-            "config_fingerprint": recipient.fingerprint,
-            "hidden_size": recipient.model.hidden_size,
-            "mamba3": asdict(recipient.mamba3),
-            "schedule_fingerprint": recipient.schedule.fingerprint,
+        "target": {
+            "fingerprint": target_fingerprint,
+            "mamba3": asdict(target_config),
+            "rms_norm_eps": 1e-5,
+            "schedule_independent": True,
         },
         "placements": [asdict(item) for item in placements],
-        "identity_physical_layers": list(identity_physical),
+        "identity_mamba_ordinals": list(identity_ordinals),
         "identity_rule": "zero_mamba_out_proj",
         "scope": {
             "transferred": ["mamba3_mixer", "mamba_pre_norm"],
@@ -699,7 +782,7 @@ def compile_official_mamba3_mimo_15b_transplant(
     return Mamba3DirectTransferResult(
         output_dir=output,
         donor_sha256=donor_sha,
-        recipient_fingerprint=recipient.fingerprint,
+        target_fingerprint=target_fingerprint,
         placements=tuple(placements),
-        identity_physical_layers=identity_physical,
+        identity_mamba_ordinals=identity_ordinals,
     )
