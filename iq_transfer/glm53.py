@@ -378,6 +378,7 @@ class GLM53Inspector:
         cls,
         refs: list[OperatorRef],
         source: TensorSource,
+        available: frozenset[str],
         layer: int,
         role: str,
         key: str,
