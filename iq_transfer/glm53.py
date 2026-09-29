@@ -103,6 +103,10 @@ class GLM53Layout:
             raise DonorError("first_k_dense_replace is outside the layer range")
         if layout.num_experts_per_tok > layout.n_routed_experts:
             raise DonorError("num_experts_per_tok exceeds n_routed_experts")
+        if layout.n_shared_experts != 1:
+            raise DonorError(
+                "GLM-5.3 checkpoint layout currently requires one shared expert"
+            )
         if layout.scoring_func != "sigmoid":
             raise DonorError(
                 "GLM-5.3 inspector requires sigmoid MoE routing"
@@ -236,6 +240,37 @@ class GLM53Inspector:
                 f"{prefix}.self_attn.o_proj.weight",
                 hidden, heads * self.layout.v_head_dim,
             )
+
+            if self.layout.indexer_types[layer] != "shared":
+                indexer = f"{prefix}.self_attn.indexer"
+                self._add(
+                    refs, source, layer, "dsa.indexer.q",
+                    f"{indexer}.wq_b.weight",
+                    self.layout.index_n_heads * self.layout.index_head_dim,
+                    self.layout.q_lora_rank,
+                )
+                self._add(
+                    refs, source, layer, "dsa.indexer.k",
+                    f"{indexer}.wk.weight",
+                    self.layout.index_head_dim,
+                    hidden,
+                )
+                self._add(
+                    refs, source, layer, "dsa.indexer.head_weights",
+                    f"{indexer}.weights_proj.weight",
+                    self.layout.index_n_heads,
+                    hidden,
+                )
+                self._add_vector(
+                    refs, source, layer, "dsa.indexer.k_norm",
+                    f"{indexer}.k_norm.weight",
+                    self.layout.index_head_dim,
+                )
+                self._add_vector(
+                    refs, source, layer, "dsa.indexer.k_norm_bias",
+                    f"{indexer}.k_norm.bias",
+                    self.layout.index_head_dim,
+                )
 
             if layer < self.layout.first_k_dense_replace:
                 self._add(
