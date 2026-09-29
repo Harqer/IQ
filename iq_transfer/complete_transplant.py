@@ -529,6 +529,85 @@ def _native_controller_state(config: IQHybridConfig) -> dict[str, torch.Tensor]:
     return result
 
 
+def expected_complete_state_keys(
+    config: IQHybridConfig | None = None,
+) -> frozenset[str]:
+    """Derive the exact serialized state schema without allocating model weights."""
+    if config is None:
+        config = canonical_complete_config()
+    keys: set[str] = {
+        "embed_tokens.weight",
+        "norm.weight",
+        "lm_head.weight",
+    }
+    with torch.device("meta"):
+        from iq_model import (
+            CompressedContextResidualLayer,
+            StableLatentMoELayer,
+        )
+        for physical, layer_type in enumerate(config.schedule.layers):
+            if layer_type is HybridLayerType.MAMBA3:
+                q = f"layers.{physical}"
+                keys.update(
+                    {
+                        f"{q}.norm.weight",
+                        f"{q}.mamba.core.in_proj.weight",
+                        f"{q}.mamba.core.dt_bias",
+                        f"{q}.mamba.core.B_bias",
+                        f"{q}.mamba.core.C_bias",
+                        f"{q}.mamba.core.B_norm.weight",
+                        f"{q}.mamba.core.C_norm.weight",
+                        f"{q}.mamba.core.mimo_x",
+                        f"{q}.mamba.core.mimo_z",
+                        f"{q}.mamba.core.mimo_o",
+                        f"{q}.mamba.core.D",
+                        f"{q}.mamba.core.out_proj.weight",
+                    }
+                )
+            elif layer_type is HybridLayerType.MOE:
+                assert config.stable_moe is not None
+                module = StableLatentMoELayer(
+                    config.stable_moe,
+                    norm_eps=config.model.rms_norm_eps,
+                    residual_dropout=config.model.residual_dropout,
+                )
+                keys.update(
+                    f"layers.{physical}.{name}"
+                    for name in module.state_dict().keys()
+                )
+            elif layer_type in {HybridLayerType.CSA, HybridLayerType.HCA}:
+                assert config.compressed_context is not None
+                module = CompressedContextResidualLayer(
+                    config.model,
+                    config.compressed_context,
+                    mode=layer_type,
+                )
+                keys.update(
+                    f"layers.{physical}.{name}"
+                    for name in module.state_dict().keys()
+                )
+            else:
+                raise CompleteTransplantError(
+                    f"unsupported canonical layer type: {layer_type}"
+                )
+
+        if config.attnres is not None:
+            module = BlockAttentionResidual(config.attnres)
+            keys.update(f"attnres.{name}" for name in module.state_dict().keys())
+        if config.reasoning is not None:
+            module = ReasoningRecurrence(config.reasoning)
+            keys.update(f"reasoning.{name}" for name in module.state_dict().keys())
+            injector = ReasoningStateInjector(
+                config.model.hidden_size,
+                config.reasoning.state_dim,
+            )
+            keys.update(
+                f"reasoning_injector.{name}"
+                for name in injector.state_dict().keys()
+            )
+    return frozenset(keys)
+
+
 def _save_shard(
     output_dir: Path,
     filename: str,
@@ -752,6 +831,16 @@ def compile_complete_iq_checkpoint(
         _native_controller_state(config),
         weight_map,
     )
+
+    expected_keys = expected_complete_state_keys(config)
+    actual_keys = frozenset(weight_map)
+    if actual_keys != expected_keys:
+        missing = sorted(expected_keys - actual_keys)
+        unexpected = sorted(actual_keys - expected_keys)
+        raise CompleteTransplantError(
+            "compiled checkpoint state coverage mismatch: "
+            f"missing={missing[:50]} unexpected={unexpected[:50]}"
+        )
 
     config.write_json(str(output / "iq_config.json"))
     _copy_tokenizer_assets(Path(gpt_oss_original_dir), output)
