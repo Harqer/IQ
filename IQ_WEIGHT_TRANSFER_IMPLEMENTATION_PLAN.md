@@ -81,7 +81,7 @@ All Mamba-3-specific recurrence parameters that do not have a justified Transfor
 
 ### 1.5 Future larger donors
 
-After the Phi proof passes the scale gate:
+After the GLM-5.3 transfer/retention gate passes:
 
 ```text
 larger dense donor
