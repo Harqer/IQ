@@ -173,6 +173,7 @@ class GLM53Inspector:
 
     def operators(self, source: TensorSource) -> tuple[OperatorRef, ...]:
         refs: list[OperatorRef] = []
+        available = frozenset(source.keys())
         hidden = self.config.hidden_size
         heads = self.config.num_attention_heads
         q_width = heads * self.layout.qk_head_dim
@@ -181,15 +182,15 @@ class GLM53Inspector:
         )
 
         self._add(
-            refs, source, -1, "embedding",
+            refs, source, available, -1, "embedding",
             "model.embed_tokens.weight",
             self.config.vocab_size, hidden,
         )
         self._add_vector(
-            refs, source, -1, "norm.final", "model.norm.weight", hidden
+            refs, source, available, -1, "norm.final", "model.norm.weight", hidden
         )
         self._add(
-            refs, source, -1, "lm_head",
+            refs, source, available, -1, "lm_head",
             "lm_head.weight",
             self.config.vocab_size, hidden,
         )
@@ -197,46 +198,46 @@ class GLM53Inspector:
         for layer in range(self.config.num_hidden_layers):
             prefix = f"model.layers.{layer}"
             self._add_vector(
-                refs, source, layer, "norm.input",
+                refs, source, available, layer, "norm.input",
                 f"{prefix}.input_layernorm.weight", hidden,
             )
             self._add_vector(
-                refs, source, layer, "norm.post_attention",
+                refs, source, available, layer, "norm.post_attention",
                 f"{prefix}.post_attention_layernorm.weight", hidden,
             )
             self._add(
-                refs, source, layer, "attn.q_a",
+                refs, source, available, layer, "attn.q_a",
                 f"{prefix}.self_attn.q_a_proj.weight",
                 self.layout.q_lora_rank, hidden,
             )
             self._add_vector(
-                refs, source, layer, "attn.q_a_norm",
+                refs, source, available, layer, "attn.q_a_norm",
                 f"{prefix}.self_attn.q_a_layernorm.weight",
                 self.layout.q_lora_rank,
             )
             self._add(
-                refs, source, layer, "attn.q_b",
+                refs, source, available, layer, "attn.q_b",
                 f"{prefix}.self_attn.q_b_proj.weight",
                 q_width, self.layout.q_lora_rank,
             )
             self._add(
-                refs, source, layer, "attn.kv_a_mqa",
+                refs, source, available, layer, "attn.kv_a_mqa",
                 f"{prefix}.self_attn.kv_a_proj_with_mqa.weight",
                 self.layout.kv_lora_rank + self.layout.qk_rope_head_dim,
                 hidden,
             )
             self._add_vector(
-                refs, source, layer, "attn.kv_a_norm",
+                refs, source, available, layer, "attn.kv_a_norm",
                 f"{prefix}.self_attn.kv_a_layernorm.weight",
                 self.layout.kv_lora_rank,
             )
             self._add(
-                refs, source, layer, "attn.kv_b",
+                refs, source, available, layer, "attn.kv_b",
                 f"{prefix}.self_attn.kv_b_proj.weight",
                 kv_width, self.layout.kv_lora_rank,
             )
             self._add(
-                refs, source, layer, "attn.o",
+                refs, source, available, layer, "attn.o",
                 f"{prefix}.self_attn.o_proj.weight",
                 hidden, heads * self.layout.v_head_dim,
             )
@@ -244,53 +245,53 @@ class GLM53Inspector:
             if self.layout.indexer_types[layer] != "shared":
                 indexer = f"{prefix}.self_attn.indexer"
                 self._add(
-                    refs, source, layer, "dsa.indexer.q",
+                    refs, source, available, layer, "dsa.indexer.q",
                     f"{indexer}.wq_b.weight",
                     self.layout.index_n_heads * self.layout.index_head_dim,
                     self.layout.q_lora_rank,
                 )
                 self._add(
-                    refs, source, layer, "dsa.indexer.k",
+                    refs, source, available, layer, "dsa.indexer.k",
                     f"{indexer}.wk.weight",
                     self.layout.index_head_dim,
                     hidden,
                 )
                 self._add(
-                    refs, source, layer, "dsa.indexer.head_weights",
+                    refs, source, available, layer, "dsa.indexer.head_weights",
                     f"{indexer}.weights_proj.weight",
                     self.layout.index_n_heads,
                     hidden,
                 )
                 self._add_vector(
-                    refs, source, layer, "dsa.indexer.k_norm",
+                    refs, source, available, layer, "dsa.indexer.k_norm",
                     f"{indexer}.k_norm.weight",
                     self.layout.index_head_dim,
                 )
                 self._add_vector(
-                    refs, source, layer, "dsa.indexer.k_norm_bias",
+                    refs, source, available, layer, "dsa.indexer.k_norm_bias",
                     f"{indexer}.k_norm.bias",
                     self.layout.index_head_dim,
                 )
 
             if layer < self.layout.first_k_dense_replace:
                 self._add(
-                    refs, source, layer, "mlp.gate",
+                    refs, source, available, layer, "mlp.gate",
                     f"{prefix}.mlp.gate_proj.weight",
                     self.config.intermediate_size, hidden,
                 )
                 self._add(
-                    refs, source, layer, "mlp.up",
+                    refs, source, available, layer, "mlp.up",
                     f"{prefix}.mlp.up_proj.weight",
                     self.config.intermediate_size, hidden,
                 )
                 self._add(
-                    refs, source, layer, "mlp.down",
+                    refs, source, available, layer, "mlp.down",
                     f"{prefix}.mlp.down_proj.weight",
                     hidden, self.config.intermediate_size,
                 )
             else:
                 self._add(
-                    refs, source, layer, "moe.router",
+                    refs, source, available, layer, "moe.router",
                     f"{prefix}.mlp.gate.weight",
                     self.layout.n_routed_experts, hidden,
                 )
@@ -302,17 +303,17 @@ class GLM53Inspector:
                         else f"moe.shared.{shared}"
                     )
                     self._add(
-                        refs, source, layer, f"{role_prefix}.gate",
+                        refs, source, available, layer, f"{role_prefix}.gate",
                         f"{shared_prefix}.gate_proj.weight",
                         self.layout.moe_intermediate_size, hidden,
                     )
                     self._add(
-                        refs, source, layer, f"{role_prefix}.up",
+                        refs, source, available, layer, f"{role_prefix}.up",
                         f"{shared_prefix}.up_proj.weight",
                         self.layout.moe_intermediate_size, hidden,
                     )
                     self._add(
-                        refs, source, layer, f"{role_prefix}.down",
+                        refs, source, available, layer, f"{role_prefix}.down",
                         f"{shared_prefix}.down_proj.weight",
                         hidden, self.layout.moe_intermediate_size,
                     )
@@ -320,17 +321,17 @@ class GLM53Inspector:
                     expert_prefix = f"{prefix}.mlp.experts.{expert}"
                     role_prefix = f"moe.expert.{expert}"
                     self._add(
-                        refs, source, layer, f"{role_prefix}.gate",
+                        refs, source, available, layer, f"{role_prefix}.gate",
                         f"{expert_prefix}.gate_proj.weight",
                         self.layout.moe_intermediate_size, hidden,
                     )
                     self._add(
-                        refs, source, layer, f"{role_prefix}.up",
+                        refs, source, available, layer, f"{role_prefix}.up",
                         f"{expert_prefix}.up_proj.weight",
                         self.layout.moe_intermediate_size, hidden,
                     )
                     self._add(
-                        refs, source, layer, f"{role_prefix}.down",
+                        refs, source, available, layer, f"{role_prefix}.down",
                         f"{expert_prefix}.down_proj.weight",
                         hidden, self.layout.moe_intermediate_size,
                     )
@@ -340,10 +341,11 @@ class GLM53Inspector:
     @staticmethod
     def _expect(
         source: TensorSource,
+        available: frozenset[str],
         key: str,
         shape: tuple[int, ...],
     ) -> None:
-        if key not in source.keys():
+        if key not in available:
             raise DonorError(f"missing GLM-5.3 checkpoint tensor: {key}")
         actual = source.shape(key)
         if actual != shape:
@@ -356,6 +358,7 @@ class GLM53Inspector:
         cls,
         refs: list[OperatorRef],
         source: TensorSource,
+        available: frozenset[str],
         layer: int,
         role: str,
         key: str,
@@ -367,7 +370,7 @@ class GLM53Inspector:
                 f"GLM-5.3 {role} requires vocab_size in donor config"
             )
         shape = (rows, cols)
-        cls._expect(source, key, shape)
+        cls._expect(source, available, key, shape)
         refs.append(OperatorRef(layer, role, key, shape))
 
     @classmethod
@@ -381,5 +384,5 @@ class GLM53Inspector:
         size: int,
     ) -> None:
         shape = (size,)
-        cls._expect(source, key, shape)
+        cls._expect(source, available, key, shape)
         refs.append(OperatorRef(layer, role, key, shape))
