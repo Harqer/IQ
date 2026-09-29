@@ -2,7 +2,7 @@
 
 Status: canonical implementation plan for transferring pretrained donor capability into IQ v2.
 
-Current execution state (2026-09-28): the recipient architecture is frozen enough to start transfer. T1 transfers Phi into the dense `IQForCausalLM` retention/control model first; this stage is intentionally independent of the later heterogeneous runtime. The hybrid target is fixed as rank-4 Mamba-3 MIMO + Stable LatentMoE/SiTU + CSA/HCA + Block AttnRes. mHC is an ablation only and is not a transfer target. CSA/HCA kernel optimization and H200 Mamba validation are promotion gates after the transfer/bootstrap path, not prerequisites for beginning T1.
+Current execution state (2026-09-28): the recipient architecture is frozen and **GLM-5.3 is the primary pretrained donor**. Canonical transplantation uses `zai-org/GLM-5.3-BF16`; the quantized/FP8 release may be used for inference or behavioral reference but is not the source of transported operators. `GLM53Inspector` validates the MLA/DSA attention layout, dense prefix, sigmoid MoE router, shared expert, and routed experts without pretending those tensors are shape-compatible with IQ. The first executable gate is `python -m iq_transfer.cli glm53-validate`, which fingerprints the exact local snapshot and emits immutable donor provenance. Phi remains a regression/control path only.
 
 This document complements `SHADOW_TRANSFER.md` and `IQ_V2_IMPLEMENTATION_PLAN.md`. It defines exact donor roles, target parameter slots, calibration/alignment, operator transport, Mamba-3 bootstrap, code/MoE transfer, correction training, provenance, verification, and promotion gates.
 
@@ -24,21 +24,30 @@ No production path may contain fake checkpoints, random string/tensor placeholde
 
 ## 1. Donor roles
 
-### 1.1 Phi-4 — proof donor and dense Transformer base
+### 1.1 GLM-5.3 BF16 — primary donor
+
+Canonical source: `zai-org/GLM-5.3-BF16`, pinned to an immutable revision.
 
 Role:
 
-- token embeddings and lexical space for the first proof
-- residual-stream calibration
-- RMSNorm behavior
-- Q/K/V/O projections
-- gated MLP gate/up/down projections
-- LM head
-- baseline language/reasoning behavior
+- tokenizer/embedding and output lexical spaces;
+- residual-stream calibration;
+- RMSNorm behavior;
+- MLA/DSA attention activations and sparse-indexer behavior;
+- sigmoid MoE router behavior;
+- routed and shared expert specialization;
+- MTP behavior where compatible;
+- language, reasoning, code, and long-context teacher behavior.
 
-The first proof keeps the Phi tokenizer fixed so token alignment, logits, embeddings, and calibration spans are unambiguous.
+Transfer policy is semantic rather than positional: compatible matrices may use coordinate/operator transport; MLA/DSA → IQ CSA/HCA and GLM MoE → Stable LatentMoE use functional activation/routing transfer when tensor semantics differ. Do not reinterpret GLM tensor names as IQ tensor names.
 
-### 1.2 Mellum2 Base — code/MoE donor
+The FP8 `zai-org/GLM-5.3` checkpoint is allowed as a serving/reference teacher, not as the canonical operator-transport source.
+
+### 1.2 Phi-4 — regression/control donor
+
+The existing Phi path remains for transfer regression tests and controlled comparisons. It no longer gates production IQ initialization.
+
+### 1.3 Mellum2 Base — optional code-specialized donor
 
 Use the released base checkpoint for transferable pretrained structure, not an instruction/RL checkpoint unless a later post-training transfer explicitly requires it.
 
@@ -53,7 +62,7 @@ Role:
 
 FIM is treated primarily as a training/data behavior, not as a standalone tensor.
 
-### 1.3 Mamba-3 — recurrent architecture source
+### 1.4 Mamba-3 — recurrent architecture source
 
 The production Mamba-3 block implementation comes from the official architecture/reference implementation.
 
@@ -70,7 +79,7 @@ Transformer O -> Mamba output projection
 
 All Mamba-3-specific recurrence parameters that do not have a justified Transformer correspondence use the official Mamba-3 initialization and are learned by distillation/adaptation.
 
-### 1.4 Future larger donors
+### 1.5 Future larger donors
 
 After the Phi proof passes the scale gate:
 
