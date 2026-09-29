@@ -8,7 +8,7 @@ import json
 
 import torch
 
-from iq_model import HybridLayerType, IQHybridConfig, validate_canonical_hybrid_backbone
+from iq_model import HybridLayerType, Mamba3MIMOConfig
 
 from .mamba3_init import Mamba3Layout
 
@@ -132,7 +132,6 @@ class Mamba3DonorConfig:
 class Mamba3LayerPlacement:
     source_layer: int
     target_mamba_ordinal: int
-    target_physical_layer: int
     shard: str
 
 
@@ -140,9 +139,9 @@ class Mamba3LayerPlacement:
 class Mamba3DirectTransferResult:
     output_dir: Path
     donor_sha256: str
-    recipient_fingerprint: str
+    target_fingerprint: str
     placements: tuple[Mamba3LayerPlacement, ...]
-    identity_physical_layers: tuple[int, ...]
+    identity_mamba_ordinals: tuple[int, ...]
 
 
 @dataclass(frozen=True)
@@ -359,7 +358,7 @@ def expand_mamba3_layer(
     source_config: Mamba3DonorConfig,
     target_layout: Mamba3Layout,
     source_layer: int,
-    target_physical_layer: int,
+    target_mamba_ordinal: int,
     state: Mapping[str, torch.Tensor],
 ) -> dict[str, torch.Tensor]:
     """Embed one pretrained Mamba-3 layer by exact representation replication.
@@ -373,13 +372,13 @@ def expand_mamba3_layer(
     """
     if source_layer < 0 or source_layer >= source_config.n_layer:
         raise Mamba3DirectTransferError("source_layer is outside donor depth")
-    if target_physical_layer < 0:
-        raise Mamba3DirectTransferError("target_physical_layer must be non-negative")
+    if target_mamba_ordinal < 0:
+        raise Mamba3DirectTransferError("target_mamba_ordinal must be non-negative")
 
     source_layout = source_config.layout
     factor = _replication_factor(source_layout, target_layout)
     p = f"backbone.layers.{source_layer}"
-    q = f"layers.{target_physical_layer}"
+    q = f"mamba_layers.{target_mamba_ordinal}"
 
     source_in = _require_tensor(
         state,
@@ -469,17 +468,17 @@ def expand_mamba3_layer(
 
     return {
         f"{q}.norm.weight": target_norm,
-        f"{q}.mamba.core.in_proj.weight": target_in,
-        f"{q}.mamba.core.dt_bias": replicate_heads("dt_bias"),
-        f"{q}.mamba.core.B_bias": replicate_head_rank_state("B_bias"),
-        f"{q}.mamba.core.C_bias": replicate_head_rank_state("C_bias"),
-        f"{q}.mamba.core.B_norm.weight": b_norm,
-        f"{q}.mamba.core.C_norm.weight": c_norm,
-        f"{q}.mamba.core.mimo_x": replicate_head_rank_dim("mimo_x"),
-        f"{q}.mamba.core.mimo_z": replicate_head_rank_dim("mimo_z"),
-        f"{q}.mamba.core.mimo_o": replicate_head_rank_dim("mimo_o"),
-        f"{q}.mamba.core.D": replicate_heads("D"),
-        f"{q}.mamba.core.out_proj.weight": target_out,
+        f"{q}.core.in_proj.weight": target_in,
+        f"{q}.core.dt_bias": replicate_heads("dt_bias"),
+        f"{q}.core.B_bias": replicate_head_rank_state("B_bias"),
+        f"{q}.core.C_bias": replicate_head_rank_state("C_bias"),
+        f"{q}.core.B_norm.weight": b_norm,
+        f"{q}.core.C_norm.weight": c_norm,
+        f"{q}.core.mimo_x": replicate_head_rank_dim("mimo_x"),
+        f"{q}.core.mimo_z": replicate_head_rank_dim("mimo_z"),
+        f"{q}.core.mimo_o": replicate_head_rank_dim("mimo_o"),
+        f"{q}.core.D": replicate_heads("D"),
+        f"{q}.core.out_proj.weight": target_out,
     }
 
 
