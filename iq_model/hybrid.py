@@ -20,7 +20,14 @@ from .config import IQModelConfig
 from .energy import ReasoningEnergyCritic, ReasoningEnergyCriticConfig
 from .mlp import MoEOutput, RoutedMoEConfig, RoutedSwiGLUMoELayer, StableLatentMoEConfig, StableLatentMoELayer, StableLatentMoEOutput
 from .norm import RMSNorm
-from .residual import (\n    BlockAttentionResidual,\n    BlockAttnResConfig,\n    MHCConfig,\n    MHCHead,\n    ManifoldHyperConnection,\n    expand_mhc_streams,\n)
+from .residual import (
+    BlockAttentionResidual,
+    BlockAttnResConfig,
+    MHCConfig,
+    MHCHead,
+    ManifoldHyperConnection,
+    expand_mhc_streams,
+)
 from .reasoning import (
     ReasoningRecurrence,
     ReasoningRecurrenceConfig,
@@ -44,6 +51,7 @@ class IQHybridConfig:
     moe_variant: Literal["swiglu", "stable_latent"] = "swiglu"
     stable_moe: StableLatentMoEConfig | None = None
     attnres: BlockAttnResConfig | None = None
+    mhc: MHCConfig | None = None
     reasoning: ReasoningRecurrenceConfig | None = None
     energy_critic: ReasoningEnergyCriticConfig | None = None
     require_energy_stability: bool = False
