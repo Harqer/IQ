@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from typing import Any
 
 import numpy as np
@@ -365,7 +366,16 @@ def transform_glm53_mla(
             (k_expand.T @ q_nope, q_rope),
             axis=0,
         )
-        q_heads.append(projection.T @ effective_query)
+        # The recipient scores in target_head_dim coordinates while GLM
+        # scales attention by the original qk_head_dim. Compensate in Q so
+        # scaled logits are preserved:
+        #   (q_t·k_t)/sqrt(d_t) ~= (q_s·k_s)/sqrt(d_s).
+        scale_compensation = math.sqrt(
+            layout.target_head_dim / layout.qk_head_dim
+        )
+        q_heads.append(
+            scale_compensation * (projection.T @ effective_query)
+        )
 
         o_start = head * layout.v_head_dim
         o_head = o[:, o_start : o_start + layout.v_head_dim]
