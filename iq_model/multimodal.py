@@ -547,8 +547,19 @@ class IQMultimodalPathway(nn.Module):
         super().__init__()
         self.config = config
         self.vision = VisionTower(config, hidden_size, dtype=dtype, device=device)
-        self.visual_mamba = VisualMambaEncoder(
-            hidden_size, mamba_config, config.visual_mamba_layers, dtype=dtype, device=device
+        # Vamba advances visual state alongside decoder depth rather than
+        # treating Mamba as a one-shot visual front-end.
+        self.visual_mixers = nn.ModuleDict(
+            {
+                str(layer): VisualMambaEncoder(
+                    hidden_size,
+                    mamba_config,
+                    config.visual_mamba_layers,
+                    dtype=dtype,
+                    device=device,
+                )
+                for layer in config.fusion_layers
+            }
         )
         self.fusion = nn.ModuleDict(
             {
@@ -578,11 +589,10 @@ class IQMultimodalPathway(nn.Module):
         )
         if memory is None:
             return None
-        memory = _merge_video_frames(
+        return _merge_video_frames(
             memory,
             self.config.tokens_per_video_frame,
         )
-        return self.visual_mamba(memory)
 
     def fuse(
         self,
@@ -594,6 +604,7 @@ class IQMultimodalPathway(nn.Module):
     ) -> tuple[torch.Tensor, VisualMemory | None]:
         if memory is None or layer_index not in self.config.fusion_layers:
             return text, memory
+        memory = self.visual_mixers[str(layer_index)](memory)
         fusion = self.fusion[str(layer_index)]
         if layer_index in self.config.transv_layers:
             deep = layer_index == self.config.transv_layers[-1]
