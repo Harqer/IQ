@@ -23,6 +23,7 @@ class MultimodalTests(unittest.TestCase):
             min_visual_tokens=2,
         )
         self.assertEqual(IQMultimodalConfig.from_dict(config.to_dict()), config)
+        self.assertEqual(config.temporal_dilations, (1, 2, 4))
 
         hidden = torch.arange(2 * 8 * 4, dtype=torch.float32).view(2, 8, 4)
         mask = torch.tensor([
@@ -93,6 +94,24 @@ class MultimodalTests(unittest.TestCase):
                 memory,
                 relevance_scores=None,
                 deep=True,
+            )
+
+    def test_config_rejects_invalid_temporal_dilations(self):
+        with self.assertRaisesRegex(ValueError, "temporal_dilations"):
+            IQMultimodalConfig(
+                vision_model_name="example/vision",
+                fusion_layers=(2,),
+                transv_layers=(),
+                temporal_dilations=(1, 0, 4),
+            )
+
+    def test_query_projector_token_count_must_be_positive(self):
+        with self.assertRaisesRegex(ValueError, "query_projector_tokens"):
+            IQMultimodalConfig(
+                vision_model_name="example/vision",
+                fusion_layers=(2,),
+                transv_layers=(),
+                query_projector_tokens=0,
             )
 
     def test_tome_merges_to_exact_target(self):
