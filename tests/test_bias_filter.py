@@ -141,6 +141,7 @@ class BiasFilterTests(unittest.TestCase):
             proj_right=torch.zeros(1, 2),
             bias=torch.zeros(2),
             protected_modalities=("vision",),
+            required_capability_metrics=("coding", "nlp", "vision_vqa"),
         )
         metrics = BiasFilterMetrics(1.0, 0.1, 0.9, 0.0, 1.0, 0)
 
@@ -170,6 +171,7 @@ class BiasFilterTests(unittest.TestCase):
             proj_right=torch.randn(1, 3),
             bias=torch.randn(3),
             protected_modalities=("vision",),
+            required_capability_metrics=("coding", "nlp", "vision_vqa"),
         )
         with tempfile.TemporaryDirectory() as temp:
             artifact.write(temp)
@@ -177,6 +179,10 @@ class BiasFilterTests(unittest.TestCase):
 
         self.assertEqual(loaded.fingerprint, artifact.fingerprint)
         self.assertEqual(loaded.protected_modalities, ("vision",))
+        self.assertEqual(
+            loaded.required_capability_metrics,
+            ("coding", "nlp", "vision_vqa"),
+        )
         torch.testing.assert_close(loaded.proj_left, artifact.proj_left)
 
     def test_approved_filter_requires_matching_artifact(self):
