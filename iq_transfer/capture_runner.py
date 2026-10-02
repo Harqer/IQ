@@ -186,6 +186,19 @@ def glm53_capture_taps(layout: GLM53CaptureLayout) -> tuple[ActivationTap, ...]:
                     tensor_index=2,
                 )
             )
+        else:
+            taps.extend(
+                [
+                    ActivationTap(
+                        f"{name}.mlp_gate",
+                        f"{prefix}.mlp.gate_proj",
+                    ),
+                    ActivationTap(
+                        f"{name}.mlp_up",
+                        f"{prefix}.mlp.up_proj",
+                    ),
+                ]
+            )
     taps.append(ActivationTap("final", "model.norm"))
     return tuple(taps)
 
@@ -454,6 +467,14 @@ def capture_glm53_activations(
                 f"{prefix}.router_topk",
                 masks,
             )
+        else:
+            gate = _masked_concat(records, f"{prefix}.mlp_gate", masks)
+            up = _masked_concat(records, f"{prefix}.mlp_up", masks)
+            spaces[f"{prefix}.mlp_gate"] = gate
+            spaces[f"{prefix}.mlp_up"] = up
+            spaces[f"{prefix}.mlp_hidden"] = (
+                torch.nn.functional.silu(gate) * up
+            ).contiguous()
     sample_count = int(spaces["embedding"].shape[0])
     return ActivationBundle(
         spaces=spaces,
