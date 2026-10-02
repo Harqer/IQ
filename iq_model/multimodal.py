@@ -35,6 +35,9 @@ class IQMultimodalConfig:
     transv_deep_keep_ratio: float = 0.1
     min_visual_tokens: int = 16
     max_frames: int = 16384
+    temporal_dilations: tuple[int, ...] = (1, 2, 4)
+    use_bidirectional_video: bool = True
+    query_projector_tokens: int = 64
     freeze_vision_tower: bool = True
     drop_cls_token: bool = True
 
@@ -57,6 +60,10 @@ class IQMultimodalConfig:
                 raise ValueError(f"{name} must be in (0, 1]")
         if self.min_visual_tokens <= 0 or self.max_frames <= 0:
             raise ValueError("min_visual_tokens and max_frames must be positive")
+        if self.query_projector_tokens <= 0:
+            raise ValueError("query_projector_tokens must be positive")
+        if not self.temporal_dilations or any(int(x) <= 0 for x in self.temporal_dilations):
+            raise ValueError("temporal_dilations must contain positive strides")
         if tuple(sorted(set(self.fusion_layers))) != self.fusion_layers:
             raise ValueError("fusion_layers must be sorted and unique")
         if tuple(sorted(set(self.transv_layers))) != self.transv_layers:
@@ -68,6 +75,7 @@ class IQMultimodalConfig:
         data = asdict(self)
         data["fusion_layers"] = list(self.fusion_layers)
         data["transv_layers"] = list(self.transv_layers)
+        data["temporal_dilations"] = list(self.temporal_dilations)
         return data
 
     @classmethod
@@ -75,6 +83,7 @@ class IQMultimodalConfig:
         payload = dict(data)
         payload["fusion_layers"] = tuple(int(x) for x in payload.get("fusion_layers", ()))
         payload["transv_layers"] = tuple(int(x) for x in payload.get("transv_layers", ()))
+        payload["temporal_dilations"] = tuple(int(x) for x in payload.get("temporal_dilations", (1, 2, 4)))
         return cls(**payload)
 
 
