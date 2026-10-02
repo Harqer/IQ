@@ -226,6 +226,7 @@ def canonical_glm53_config() -> IQHybridConfig:
         normalize_query_output=False,
         normalize_candidate_nonrotary_only=True,
         direct_token_indexer=True,
+        projection_bias=False,
     )
     return validate_canonical_hybrid_backbone(
         replace(
