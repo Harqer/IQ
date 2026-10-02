@@ -68,6 +68,7 @@ class GLM53InspectorTests(unittest.TestCase):
 
         p = "model.layers.1.mlp"
         tensors[f"{p}.gate.weight"] = torch.empty(2, 16)
+        tensors[f"{p}.gate.e_score_correction_bias"] = torch.empty(2)
         tensors[f"{p}.shared_experts.gate_proj.weight"] = torch.empty(6, 16)
         tensors[f"{p}.shared_experts.up_proj.weight"] = torch.empty(6, 16)
         tensors[f"{p}.shared_experts.down_proj.weight"] = torch.empty(16, 6)
@@ -90,6 +91,7 @@ class GLM53InspectorTests(unittest.TestCase):
         self.assertIn("dsa.indexer.q", roles)
         self.assertIn("mlp.gate", roles)
         self.assertIn("moe.router", roles)
+        self.assertIn("moe.routing_bias", roles)
         self.assertIn("moe.expert.1.down", roles)
         self.assertIn("embedding", roles)
         self.assertIn("lm_head", roles)
