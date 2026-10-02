@@ -183,19 +183,43 @@ def fit_ot_coordinate_map(
     matrix = np.zeros((source_features, target_features), dtype=np.float64)
     for target_index in range(target_features):
         scores = coupling[:, target_index]
-        support = np.argpartition(scores, -support_size)[-support_size:]
-        support.sort()
-        design = xs[:, support]
-        gram = design.T @ design
-        gram.flat[:: gram.shape[0] + 1] += ridge
-        rhs = design.T @ xt[:, target_index]
-        try:
-            coefficients = np.linalg.solve(gram, rhs)
-        except np.linalg.LinAlgError as exc:
+        # OT narrows the candidate set; residual-aware greedy selection then
+        # recovers weaker directions that marginal correlation can hide behind
+        # a dominant source channel.
+        pool_size = min(
+            source_features,
+            max(support_size, support_size * 4),
+        )
+        pool = np.argpartition(scores, -pool_size)[-pool_size:]
+        selected: list[int] = []
+        residual = xt[:, target_index].copy()
+        coefficients = np.empty(0, dtype=np.float64)
+        for _ in range(support_size):
+            available = np.asarray(
+                [index for index in pool if int(index) not in selected],
+                dtype=np.int64,
+            )
+            if available.size == 0:
+                break
+            correlations = np.abs(xs[:, available].T @ residual)
+            chosen = int(available[int(np.argmax(correlations))])
+            selected.append(chosen)
+            design = xs[:, selected]
+            gram = design.T @ design
+            gram.flat[:: gram.shape[0] + 1] += ridge
+            rhs = design.T @ xt[:, target_index]
+            try:
+                coefficients = np.linalg.solve(gram, rhs)
+            except np.linalg.LinAlgError as exc:
+                raise TransportError(
+                    f"failed OT-supported ridge solve for target feature {target_index}"
+                ) from exc
+            residual = xt[:, target_index] - design @ coefficients
+        if not selected:
             raise TransportError(
-                f"failed OT-supported ridge solve for target feature {target_index}"
-            ) from exc
-        matrix[support, target_index] = coefficients
+                f"OT support selection failed for target feature {target_index}"
+            )
+        matrix[np.asarray(selected), target_index] = coefficients
 
     fit_rmse = _rmse(xs @ matrix, xt)
     validation_rmse: float | None = None
