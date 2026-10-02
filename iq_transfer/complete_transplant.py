@@ -191,7 +191,7 @@ def canonical_multimodal_config() -> IQHybridConfig:
         vision_backend="glm5_next",
         fusion_layers=fusion_layers,
         transv_layers=(7, 39),
-        visual_mamba_layers=2,
+        visual_mamba_layers=1,
         cross_attention_heads=8,
         transv_shallow_keep_ratio=0.5,
         transv_deep_keep_ratio=0.1,
