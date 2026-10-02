@@ -20,10 +20,16 @@ class GLM53TransferPolicyTests(unittest.TestCase):
             GLM53TransferDisposition.OPERATOR_TRANSPORT,
         )
 
-    def test_mla_dsa_and_moe_require_functional_transfer(self):
+    def test_mla_dsa_and_moe_use_direct_weight_paths(self):
+        self.assertEqual(
+            classify_glm53_source_role("attn.q_a").disposition,
+            GLM53TransferDisposition.OPERATOR_TRANSPORT,
+        )
         for role in (
-            "attn.q_a",
+            "attn.q_b",
+            "attn.kv_a_mqa",
             "attn.kv_b",
+            "attn.o",
             "dsa.indexer.q",
             "mlp.gate",
             "moe.router",
@@ -33,7 +39,7 @@ class GLM53TransferPolicyTests(unittest.TestCase):
             with self.subTest(role=role):
                 self.assertEqual(
                     classify_glm53_source_role(role).disposition,
-                    GLM53TransferDisposition.FUNCTIONAL_TRANSFER,
+                    GLM53TransferDisposition.DIRECT_REFACTOR,
                 )
 
     def test_norms_and_iq_only_state_are_recipient_native(self):
