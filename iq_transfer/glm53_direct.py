@@ -25,6 +25,82 @@ def _array(value: Any) -> np.ndarray:
     return result
 
 
+@dataclass(frozen=True)
+class SubcloningMap:
+    coordinate_map: CoordinateMap
+    source_indices: tuple[int, ...]
+
+
+def fit_importance_subcloning_map(
+    activations: Any,
+    *,
+    target_features: int,
+) -> SubcloningMap:
+    """Select the highest-energy donor residual channels as an exact sub-basis.
+
+    The initial GLM->IQ skeleton needs a recipient basis before paired target
+    activations exist. A one-hot subcloning map preserves selected donor
+    coordinates exactly and is therefore safer for bootstrap than fitting
+    against a random recipient basis.
+    """
+    x = _array(activations)
+    if x.ndim != 2 or x.shape[0] == 0:
+        raise GLM53DirectTransformError(
+            "subcloning activations must be a non-empty rank-2 matrix"
+        )
+    if target_features <= 0 or target_features > x.shape[1]:
+        raise GLM53DirectTransformError(
+            "target_features must be in [1, donor_feature_count]"
+        )
+    energy = np.mean(x * x, axis=0)
+    # Descending importance, with source index as deterministic tie-breaker.
+    order = np.lexsort((np.arange(x.shape[1]), -energy))
+    selected = order[:target_features]
+    matrix = np.zeros((x.shape[1], target_features), dtype=np.float64)
+    matrix[selected, np.arange(target_features)] = 1.0
+    return SubcloningMap(
+        coordinate_map=CoordinateMap(
+            matrix=matrix,
+            ridge=1e-12,
+            source_space="glm53.residual",
+            target_space="iq.bootstrap_residual",
+            diagnostics=None,
+        ),
+        source_indices=tuple(int(x) for x in selected),
+    )
+
+
+def transport_embedding_and_lm_head(
+    embedding_weight: Any,
+    lm_head_weight: Any,
+    residual_map: CoordinateMap,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Project lexical input/output weights into the IQ residual basis."""
+    embedding = _array(embedding_weight)
+    lm_head = _array(lm_head_weight)
+    if embedding.ndim != 2 or lm_head.ndim != 2:
+        raise GLM53DirectTransformError(
+            "embedding and LM-head weights must be rank-2"
+        )
+    if embedding.shape != lm_head.shape:
+        raise GLM53DirectTransformError(
+            "GLM embedding and LM-head shapes must match for lexical transport"
+        )
+    if embedding.shape[1] != residual_map.matrix.shape[0]:
+        raise GLM53DirectTransformError(
+            "residual map source width does not match lexical weights"
+        )
+    # For x_t = x_s P, embedding rows use the same forward basis map. The
+    # output head uses pinv(P)^T so logits approximate the donor function.
+    target_embedding = embedding @ residual_map.matrix
+    target_lm = lm_head @ np.linalg.pinv(residual_map.matrix).T
+    if not np.isfinite(target_embedding).all() or not np.isfinite(target_lm).all():
+        raise GLM53DirectTransformError(
+            "lexical transport produced non-finite weights"
+        )
+    return target_embedding, target_lm
+
+
 def fit_orthogonal_subspace(
     activations: Any,
     *,
