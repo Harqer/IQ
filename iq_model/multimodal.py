@@ -25,6 +25,7 @@ class IQMultimodalConfig:
     """
     vision_model_name: str
     fusion_layers: tuple[int, ...]
+    vision_backend: str = "auto"
     transv_layers: tuple[int, ...]
     visual_mamba_layers: int = 2
     cross_attention_heads: int = 8
@@ -38,6 +39,8 @@ class IQMultimodalConfig:
     def __post_init__(self) -> None:
         if not self.vision_model_name.strip():
             raise ValueError("vision_model_name must be non-empty")
+        if self.vision_backend not in {"auto", "glm5_next"}:
+            raise ValueError("vision_backend must be 'auto' or 'glm5_next'")
         if self.visual_mamba_layers <= 0 or self.cross_attention_heads <= 0:
             raise ValueError("visual_mamba_layers and cross_attention_heads must be positive")
         if self.projector_hidden_multiplier <= 0:
@@ -91,22 +94,36 @@ def _sinusoidal_positions(length: int, width: int, device: torch.device, dtype: 
 class VisionTower(nn.Module):
     def __init__(self, config: IQMultimodalConfig, hidden_size: int, *, dtype: torch.dtype, device: torch.device) -> None:
         super().__init__()
-        try:
-            from transformers import AutoModel
-        except ImportError as exc:
-            raise MultimodalError("transformers is required for IQ multimodal vision") from exc
         self.config = config
-        self.encoder = AutoModel.from_pretrained(
-            config.vision_model_name,
-            dtype=dtype,
-        ).to(device=device)
+        self.is_glm5 = config.vision_backend == "glm5_next"
+        try:
+            if self.is_glm5:
+                from transformers import AutoConfig, Glm5NextVisionModel
+                composite = AutoConfig.from_pretrained(config.vision_model_name)
+                vision_config = getattr(composite, "vision_config", None)
+                if vision_config is None:
+                    raise MultimodalError("GLM-5.3 donor config has no vision_config")
+                self.encoder = Glm5NextVisionModel.from_pretrained(
+                    config.vision_model_name,
+                    config=vision_config,
+                    dtype=dtype,
+                ).to(device=device)
+                vision_width = getattr(vision_config, "out_hidden_size", None)
+            else:
+                from transformers import AutoModel
+                self.encoder = AutoModel.from_pretrained(
+                    config.vision_model_name,
+                    dtype=dtype,
+                ).to(device=device)
+                vision_width = getattr(self.encoder.config, "hidden_size", None)
+                if vision_width is None:
+                    vision_width = getattr(self.encoder.config, "vision_embed_dim", None)
+        except ImportError as exc:
+            raise MultimodalError("Transformers with the configured vision backend is required") from exc
         if config.freeze_vision_tower:
             self.encoder.requires_grad_(False)
-        vision_width = getattr(self.encoder.config, "hidden_size", None)
-        if vision_width is None:
-            vision_width = getattr(self.encoder.config, "vision_embed_dim", None)
         if not isinstance(vision_width, int) or vision_width <= 0:
-            raise MultimodalError("vision encoder must expose config.hidden_size or config.vision_embed_dim")
+            raise MultimodalError("vision encoder does not expose a usable output width")
         mid = max(hidden_size, int(hidden_size * config.projector_hidden_multiplier))
         self.projector = nn.Sequential(
             nn.Linear(vision_width, mid, bias=False),
@@ -115,14 +132,70 @@ class VisionTower(nn.Module):
             RMSNorm(hidden_size),
         ).to(device=device, dtype=dtype)
 
-    def _encode_frames(self, frames: torch.Tensor) -> torch.Tensor:
+    def _generic_frames(self, frames: torch.Tensor) -> torch.Tensor:
         output = self.encoder(pixel_values=frames)
         hidden = getattr(output, "last_hidden_state", None)
         if hidden is None or hidden.ndim != 3:
-            raise MultimodalError("vision encoder must return rank-3 last_hidden_state")
+            raise MultimodalError("generic vision encoder must return rank-3 last_hidden_state")
         if self.config.drop_cls_token and hidden.shape[1] > 1:
             hidden = hidden[:, 1:]
         return self.projector(hidden)
+
+    def _glm_features(
+        self,
+        values: torch.Tensor,
+        grid_thw: torch.Tensor,
+        *,
+        video: bool,
+    ) -> tuple[torch.Tensor, list[int], torch.Tensor]:
+        if grid_thw is None or grid_thw.ndim != 2 or grid_thw.shape[1] != 3:
+            raise MultimodalError("GLM-5.3 vision requires grid_thw with shape [items, 3]")
+        if video:
+            t = grid_thw[:, 0]
+            hw = grid_thw[:, 1:]
+            flat_hw = torch.repeat_interleave(hw, t, dim=0)
+            ones = grid_thw.new_ones(flat_hw.shape[0], 1)
+            encoder_grid = torch.cat((ones, flat_hw), dim=1)
+        else:
+            encoder_grid = grid_thw
+        output = self.encoder(values.to(dtype=self.encoder.dtype), grid_thw=encoder_grid)
+        pooled = getattr(output, "pooler_output", None)
+        if pooled is None or pooled.ndim != 2:
+            raise MultimodalError("GLM-5.3 vision tower did not return pooler_output")
+        merge = int(self.encoder.spatial_merge_size)
+        split_sizes = (grid_thw.prod(-1) // (merge * merge)).tolist()
+        if sum(split_sizes) != pooled.shape[0]:
+            raise MultimodalError("GLM-5.3 grid metadata does not match visual feature count")
+        return self.projector(pooled), [int(x) for x in split_sizes], grid_thw
+
+    @staticmethod
+    def _pad_items(
+        features: torch.Tensor,
+        split_sizes: list[int],
+        grid_thw: torch.Tensor,
+        *,
+        source: str,
+    ) -> VisualMemory:
+        batch = len(split_sizes)
+        width = features.shape[-1]
+        max_tokens = max(split_sizes)
+        hidden = features.new_zeros((batch, max_tokens, width))
+        mask = torch.zeros((batch, max_tokens), dtype=torch.bool, device=features.device)
+        frame_ids = torch.zeros((batch, max_tokens), dtype=torch.long, device=features.device)
+        cursor = 0
+        for row, count in enumerate(split_sizes):
+            item = features[cursor : cursor + count]
+            hidden[row, :count] = item
+            mask[row, :count] = True
+            if source == "video":
+                frames = max(1, int(grid_thw[row, 0]))
+                per_frame = max(1, count // frames)
+                ids = torch.arange(frames, device=features.device).repeat_interleave(per_frame)
+                if ids.numel() < count:
+                    ids = F.pad(ids, (0, count - ids.numel()), value=frames - 1)
+                frame_ids[row, :count] = ids[:count]
+            cursor += count
+        return VisualMemory(hidden, mask, frame_ids, source)
 
     def forward(
         self,
@@ -130,43 +203,59 @@ class VisionTower(nn.Module):
         pixel_values: torch.Tensor | None,
         video_values: torch.Tensor | None,
         frame_mask: torch.Tensor | None,
+        image_grid_thw: torch.Tensor | None = None,
+        video_grid_thw: torch.Tensor | None = None,
     ) -> VisualMemory | None:
         if pixel_values is not None and video_values is not None:
             raise MultimodalError("provide pixel_values or video_values, not both")
         if pixel_values is None and video_values is None:
-            if frame_mask is not None:
-                raise MultimodalError("frame_mask requires video_values")
+            if frame_mask is not None or image_grid_thw is not None or video_grid_thw is not None:
+                raise MultimodalError("visual masks/grid metadata require visual values")
             return None
 
+        if self.is_glm5:
+            if frame_mask is not None:
+                raise MultimodalError("GLM-5.3 processed video uses video_grid_thw, not frame_mask")
+            if pixel_values is not None:
+                features, sizes, grid = self._glm_features(
+                    pixel_values, image_grid_thw, video=False
+                )
+                return self._pad_items(features, sizes, grid, source="image")
+            assert video_values is not None
+            features, sizes, grid = self._glm_features(
+                video_values, video_grid_thw, video=True
+            )
+            if any(int(x) > self.config.max_frames for x in grid[:, 0].tolist()):
+                raise MultimodalError("processed video exceeds configured max_frames")
+            return self._pad_items(features, sizes, grid, source="video")
+
+        if image_grid_thw is not None or video_grid_thw is not None:
+            raise MultimodalError("grid_thw metadata is only valid for the glm5_next vision backend")
         if pixel_values is not None:
             if pixel_values.ndim != 4:
                 raise MultimodalError("pixel_values must have shape [batch, channels, height, width]")
-            batch = pixel_values.shape[0]
-            projected = self._encode_frames(pixel_values)
-            tokens = projected
-            mask = torch.ones(tokens.shape[:2], dtype=torch.bool, device=tokens.device)
-            frame_ids = torch.zeros(tokens.shape[:2], dtype=torch.long, device=tokens.device)
-            return VisualMemory(tokens, mask, frame_ids, "image")
+            projected = self._generic_frames(pixel_values)
+            mask = torch.ones(projected.shape[:2], dtype=torch.bool, device=projected.device)
+            frame_ids = torch.zeros(projected.shape[:2], dtype=torch.long, device=projected.device)
+            return VisualMemory(projected, mask, frame_ids, "image")
 
         assert video_values is not None
         if video_values.ndim != 5:
             raise MultimodalError("video_values must have shape [batch, frames, channels, height, width]")
         batch, frames = video_values.shape[:2]
         if frames > self.config.max_frames:
-            raise MultimodalError(
-                f"video has {frames} frames; configured maximum is {self.config.max_frames}"
-            )
-        if frame_mask is None:
-            valid_frames = torch.ones((batch, frames), dtype=torch.bool, device=video_values.device)
-        else:
-            if frame_mask.shape != (batch, frames):
-                raise MultimodalError(f"frame_mask must have shape {(batch, frames)}")
-            valid_frames = frame_mask.to(device=video_values.device, dtype=torch.bool)
+            raise MultimodalError(f"video has {frames} frames; configured maximum is {self.config.max_frames}")
+        valid_frames = (
+            torch.ones((batch, frames), dtype=torch.bool, device=video_values.device)
+            if frame_mask is None
+            else frame_mask.to(device=video_values.device, dtype=torch.bool)
+        )
+        if valid_frames.shape != (batch, frames):
+            raise MultimodalError(f"frame_mask must have shape {(batch, frames)}")
         if bool((valid_frames.sum(dim=1) == 0).any()):
             raise MultimodalError("every video row must contain at least one valid frame")
-
         flat = video_values.reshape(batch * frames, *video_values.shape[2:])
-        projected = self._encode_frames(flat)
+        projected = self._generic_frames(flat)
         patches = projected.shape[1]
         projected = projected.view(batch, frames, patches, -1)
         temporal = _sinusoidal_positions(frames, projected.shape[-1], projected.device, projected.dtype)
@@ -176,7 +265,6 @@ class VisionTower(nn.Module):
         frame_ids = torch.arange(frames, device=tokens.device).view(1, frames, 1)
         frame_ids = frame_ids.expand(batch, frames, patches).reshape(batch, frames * patches)
         return VisualMemory(tokens, mask, frame_ids, "video")
-
 
 class VisualMambaEncoder(nn.Module):
     """Linear-complexity visual-token processor; no visual self-attention."""
@@ -336,11 +424,15 @@ class IQMultimodalPathway(nn.Module):
         pixel_values: torch.Tensor | None,
         video_values: torch.Tensor | None,
         frame_mask: torch.Tensor | None,
+        image_grid_thw: torch.Tensor | None = None,
+        video_grid_thw: torch.Tensor | None = None,
     ) -> VisualMemory | None:
         memory = self.vision(
             pixel_values=pixel_values,
             video_values=video_values,
             frame_mask=frame_mask,
+            image_grid_thw=image_grid_thw,
+            video_grid_thw=video_grid_thw,
         )
         return self.visual_mamba(memory) if memory is not None else None
 
