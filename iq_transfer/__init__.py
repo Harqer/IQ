@@ -1,4 +1,4 @@
-from .complete_transplant import CompleteTransplantError, RESIDUAL_EMBED_SCALE, canonical_complete_config, canonical_complete_schedule, compile_complete_iq_checkpoint, donor_layer_positions, load_complete_iq_checkpoint
+from .complete_transplant import CompleteTransplantError, RESIDUAL_EMBED_SCALE, canonical_complete_config, canonical_complete_schedule, canonical_glm53_config, canonical_glm53_multimodal_config, compile_complete_iq_checkpoint, donor_layer_positions, load_complete_iq_checkpoint
 from .gpt_oss20b import GPT_OSS_20B_ORIGINAL_SHA256, GPT_OSS_20B_REPO, GPT_OSS_20B_REVISION, GptOss20BConfig, GptOss20BError, GptOss20BOriginalCheckpoint
 from .batches import BatchArtifactError, TokenBatchArtifact, load_token_batches, save_token_batches
 from .job import PhiTransferJobResult, TransferJobError, hash_tokenizer_files, load_transferred_iq_artifact, run_phi_dense_transfer, run_phi_dense_transfer_loaded
@@ -18,7 +18,7 @@ from .checkpoint import SafetensorsSource
 from .donor import DonorConfig, DonorError, DonorInspector, LayerRef, MappingTensorSource, OperatorRef, TensorSource, ValidationReport
 from .manifest import CheckpointFile, DonorManifest, ManifestError, TensorInventoryItem, build_donor_manifest
 from .phi4 import Phi4Inspector
-from .glm53 import GLM53Inspector, GLM53Layout
+from .glm53 import GLM53_BF16_REPO, GLM53_FLASH_BF16_REPO, GLM53Inspector, GLM53Layout
 from .glm53_job import GLM53DonorArtifact, GLM53TransferError, validate_glm53_donor
 from .glm53_direct import GLM53DirectTransformError, GLM53MLALayout, GLM53MLATransform, fit_mla_compressed_subspace, fit_orthogonal_subspace, grouped_output_identity, transform_glm53_mla
 from .glm53_policy import GLM53SourcePolicy, GLM53TransferDisposition, GLM53_SOURCE_POLICIES, IQ_RECIPIENT_NATIVE_FAMILIES, classify_glm53_source_role
@@ -39,6 +39,8 @@ __all__ = [
     "RESIDUAL_EMBED_SCALE",
     "canonical_complete_config",
     "canonical_complete_schedule",
+    "canonical_glm53_config",
+    "canonical_glm53_multimodal_config",
     "compile_complete_iq_checkpoint",
     "donor_layer_positions",
     "load_complete_iq_checkpoint",
@@ -68,6 +70,8 @@ __all__ = [
     "GLM53DirectTransformError",
     "GLM53MLALayout",
     "GLM53MLATransform",
+    "GLM53_BF16_REPO",
+    "GLM53_FLASH_BF16_REPO",
     "GLM53DonorArtifact",
     "GLM53Inspector",
     "GLM53TransferError",
