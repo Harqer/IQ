@@ -176,6 +176,9 @@ class IQPretrainingModel(nn.Module):
         frame_mask: torch.Tensor | None = None,
         image_grid_thw: torch.Tensor | None = None,
         video_grid_thw: torch.Tensor | None = None,
+        audio_features: torch.Tensor | None = None,
+        audio_attention_mask: torch.Tensor | None = None,
+        audio_streaming: bool = False,
         media_document_ids: torch.Tensor | None = None,
     ) -> PretrainingOutput:
         use_mtp = (
@@ -195,6 +198,8 @@ class IQPretrainingModel(nn.Module):
             "frame_mask": frame_mask,
             "image_grid_thw": image_grid_thw,
             "video_grid_thw": video_grid_thw,
+            "audio_features": audio_features,
+            "audio_attention_mask": audio_attention_mask,
             "media_document_ids": media_document_ids,
         }
         main_kwargs.update(
@@ -202,6 +207,8 @@ class IQPretrainingModel(nn.Module):
             for name, value in optional_multimodal.items()
             if value is not None
         )
+        if audio_features is not None:
+            main_kwargs["audio_streaming"] = audio_streaming
         reasoning_config = getattr(
             getattr(self.main_model, "config", None),
             "reasoning",
