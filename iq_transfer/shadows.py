@@ -73,6 +73,7 @@ def match_layers_monotonic(
     target: Mapping[int, FunctionalShadow],
     *,
     depth_prior: float = 0.05,
+    allowed_sources: Mapping[int, frozenset[int]] | None = None,
 ) -> dict[int, int]:
     """Unique order-preserving target->source layer assignment.
 
@@ -88,7 +89,11 @@ def match_layers_monotonic(
         t_depth = ti / max(1, nt - 1)
         for si, s in enumerate(s_layers):
             s_depth = si / max(1, ns - 1)
-            costs[ti, si] = shadow_distance(target[t], source[s]) + depth_prior * abs(t_depth - s_depth)
+            allowed = None if allowed_sources is None else allowed_sources.get(t)
+            if allowed is not None and s not in allowed:
+                costs[ti, si] = float("inf")
+            else:
+                costs[ti, si] = shadow_distance(target[t], source[s]) + depth_prior * abs(t_depth - s_depth)
 
     inf = float("inf")
     dp = np.full((nt, ns), inf, dtype=np.float64)
