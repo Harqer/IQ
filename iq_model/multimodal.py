@@ -27,7 +27,7 @@ class IQMultimodalConfig:
     fusion_layers: tuple[int, ...]
     transv_layers: tuple[int, ...]
     vision_backend: str = "auto"
-    visual_mamba_layers: int = 2
+    visual_mamba_layers: int = 1
     tokens_per_video_frame: int = 16
     cross_attention_heads: int = 8
     projector_hidden_multiplier: float = 2.0
