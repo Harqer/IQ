@@ -98,22 +98,26 @@ def select_experts_by_usage(
 
 
 def latent_codec_weights(
-    residual_map: CoordinateMap,
+    input_map: CoordinateMap,
     latent_map: CoordinateMap,
+    output_map: CoordinateMap | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Construct IQ latent_down/latent_up from two donor-coordinate maps."""
-    pres = np.asarray(residual_map.matrix, dtype=np.float64)
+    """Construct latent_down/up across normalized-input and residual-output bases."""
+    pin = np.asarray(input_map.matrix, dtype=np.float64)
     plat = np.asarray(latent_map.matrix, dtype=np.float64)
-    if pres.shape[0] != plat.shape[0]:
+    pout = np.asarray(
+        (output_map if output_map is not None else input_map).matrix,
+        dtype=np.float64,
+    )
+    if pin.shape[0] != plat.shape[0] or pout.shape[0] != plat.shape[0]:
         raise GLM53MoETransformError(
-            "residual and latent maps must share the donor residual width"
+            "input, latent, and output maps must share the donor feature width"
         )
-    latent_down = plat.T @ np.linalg.pinv(pres).T
-    latent_up = pres.T @ np.linalg.pinv(plat).T
+    latent_down = plat.T @ np.linalg.pinv(pin).T
+    latent_up = pout.T @ np.linalg.pinv(plat).T
     if not np.isfinite(latent_down).all() or not np.isfinite(latent_up).all():
         raise GLM53MoETransformError("latent codec contains non-finite values")
     return latent_down, latent_up
-
 
 def _transport_expert(
     expert: ExpertWeights,
@@ -150,6 +154,7 @@ def transform_glm53_dense_mlp(
     residual_map: CoordinateMap,
     latent_map: CoordinateMap,
     intermediate_map: CoordinateMap,
+    input_map: CoordinateMap | None = None,
 ) -> GLM53DenseMLPTransform:
     """Morph a dense GLM SwiGLU block into one active IQ shared expert.
 
@@ -160,15 +165,17 @@ def transform_glm53_dense_mlp(
     """
     if target_experts <= 0:
         raise GLM53MoETransformError("target_experts must be positive")
+    source_input = input_map if input_map is not None else residual_map
     shared = _transport_expert(
         dense_expert,
-        input_map=residual_map,
+        input_map=source_input,
         intermediate_map=intermediate_map,
         output_map=residual_map,
     )
     latent_down, latent_up = latent_codec_weights(
-        residual_map,
+        source_input,
         latent_map,
+        residual_map,
     )
     latent_width = latent_map.matrix.shape[1]
     expert_width = intermediate_map.matrix.shape[1]
@@ -185,7 +192,7 @@ def transform_glm53_dense_mlp(
         latent_down_weight=latent_down,
         latent_up_weight=latent_up,
         router_weight=np.zeros(
-            (target_experts, residual_map.matrix.shape[1]),
+            (target_experts, source_input.matrix.shape[1]),
             dtype=np.float64,
         ),
         routing_bias=np.zeros(target_experts, dtype=np.float64),
@@ -204,6 +211,7 @@ def transform_glm53_moe(
     residual_map: CoordinateMap,
     latent_map: CoordinateMap,
     intermediate_map: CoordinateMap,
+    input_map: CoordinateMap | None = None,
 ) -> GLM53MoETransform:
     """Directly compress GLM routed MoE into IQ Stable LatentMoE weights.
 
@@ -225,9 +233,10 @@ def transform_glm53_moe(
         raise GLM53MoETransformError(
             "routing_bias must have one entry per donor expert"
         )
-    if residual_map.matrix.shape[0] != router.shape[1]:
+    source_input = input_map if input_map is not None else residual_map
+    if source_input.matrix.shape[0] != router.shape[1]:
         raise GLM53MoETransformError(
-            "residual map source width must equal router input width"
+            "input map source width must equal router input width"
         )
     selected = select_experts_by_usage(
         expert_usage,
@@ -239,13 +248,14 @@ def transform_glm53_moe(
     selection = np.asarray(selected)
     selected_router = router[selection]
     target_router = selected_router @ np.linalg.pinv(
-        residual_map.matrix
+        source_input.matrix
     ).T
     target_bias = source_bias[selection].copy()
     target_bias -= target_bias.mean()
     latent_down, latent_up = latent_codec_weights(
-        residual_map,
+        source_input,
         latent_map,
+        residual_map,
     )
 
     target_routed = tuple(
@@ -259,7 +269,7 @@ def transform_glm53_moe(
     )
     target_shared = _transport_expert(
         shared_expert,
-        input_map=residual_map,
+        input_map=source_input,
         intermediate_map=intermediate_map,
         output_map=residual_map,
     )
