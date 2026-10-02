@@ -70,7 +70,7 @@ class GLM53CalibrationSolution:
             raise GLM53CalibrationError("calibration solution has no stages")
         stage_ids = [stage.stage for stage in self.stages]
         source_ids = [stage.source_layer for stage in self.stages]
-        if stage_ids != list(range(len(self.stages)):
+        if stage_ids != list(range(len(self.stages))):
             raise GLM53CalibrationError("calibration stages must be contiguous from zero")
         if source_ids != sorted(source_ids) or len(source_ids) != len(set(source_ids)):
             raise GLM53CalibrationError(
