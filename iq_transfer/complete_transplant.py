@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from hashlib import sha256
 from pathlib import Path
 from typing import Mapping
@@ -20,6 +20,7 @@ from iq_model import (
     IQHybridConfig,
     IQHybridForCausalLM,
     IQModelConfig,
+    IQMultimodalConfig,
     Mamba3MIMOConfig,
     ReasoningRecurrence,
     ReasoningRecurrenceConfig,
@@ -173,6 +174,35 @@ def canonical_complete_config() -> IQHybridConfig:
         )
     )
 
+
+
+def canonical_multimodal_config() -> IQHybridConfig:
+    """Canonical IQ backbone plus native GLM-5.3 vision and long-video fusion.
+
+    Vamba-style cross-modal fusion is attached to every CSA/HCA depth. TransV
+    follows the documented shallow/deep placement pattern at physical depths
+    7 and 39: 50% uniform retention, then 10% attention-guided retention.
+    """
+    base = canonical_complete_config()
+    context_layers = tuple(base.schedule.attention_positions)
+    fusion_layers = tuple(sorted(set((*context_layers, 39))))
+    multimodal = IQMultimodalConfig(
+        vision_model_name="zai-org/GLM-5.3-Flash-BF16",
+        vision_backend="glm5_next",
+        fusion_layers=fusion_layers,
+        transv_layers=(7, 39),
+        visual_mamba_layers=1,
+        cross_attention_heads=8,
+        transv_shallow_keep_ratio=0.5,
+        transv_deep_keep_ratio=0.1,
+        min_visual_tokens=16,
+        max_frames=16384,
+        freeze_vision_tower=True,
+        drop_cls_token=False,
+    )
+    return validate_canonical_hybrid_backbone(
+        replace(base, multimodal=multimodal)
+    )
 
 def donor_layer_positions(
     config: IQHybridConfig,

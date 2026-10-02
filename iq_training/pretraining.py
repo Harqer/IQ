@@ -171,6 +171,12 @@ class IQPretrainingModel(nn.Module):
         attention_mask: torch.Tensor | None = None,
         document_ids: torch.Tensor | None = None,
         reasoning_context_lengths: torch.Tensor | None = None,
+        pixel_values: torch.Tensor | None = None,
+        video_values: torch.Tensor | None = None,
+        frame_mask: torch.Tensor | None = None,
+        image_grid_thw: torch.Tensor | None = None,
+        video_grid_thw: torch.Tensor | None = None,
+        media_document_ids: torch.Tensor | None = None,
     ) -> PretrainingOutput:
         use_mtp = (
             self.mtp is not None
@@ -183,6 +189,19 @@ class IQPretrainingModel(nn.Module):
             "document_ids": document_ids,
             "return_hidden_states": use_mtp,
         }
+        optional_multimodal = {
+            "pixel_values": pixel_values,
+            "video_values": video_values,
+            "frame_mask": frame_mask,
+            "image_grid_thw": image_grid_thw,
+            "video_grid_thw": video_grid_thw,
+            "media_document_ids": media_document_ids,
+        }
+        main_kwargs.update(
+            (name, value)
+            for name, value in optional_multimodal.items()
+            if value is not None
+        )
         reasoning_config = getattr(
             getattr(self.main_model, "config", None),
             "reasoning",
