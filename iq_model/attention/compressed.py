@@ -49,6 +49,8 @@ class CompressedContextConfig:
     rms_norm_eps: float = 1e-6
     attention_dropout: float = 0.0
     projection_bias: bool = False
+    normalize_query_output: bool = True
+    normalize_candidate_nonrotary_only: bool = False
 
     def __post_init__(self) -> None:
         ints = {
@@ -195,7 +197,16 @@ class _V4CompressedContextAttention(nn.Module):
             config.head_dim,
             bias=config.projection_bias,
         )
-        self.kv_norm = HeadRMSNorm(config.head_dim, config.rms_norm_eps)
+        candidate_norm_dim = (
+            config.head_dim - config.partial_rotary_dim
+            if config.normalize_candidate_nonrotary_only
+            else config.head_dim
+        )
+        if candidate_norm_dim <= 0:
+            raise ValueError(
+                "non-rotary candidate normalization requires head_dim > partial_rotary_dim"
+            )
+        self.kv_norm = HeadRMSNorm(candidate_norm_dim, config.rms_norm_eps)
 
         compressor_width = config.head_dim * (2 if mode == "csa" else 1)
         self.compressor_kv_proj = nn.Linear(
@@ -215,7 +226,7 @@ class _V4CompressedContextAttention(nn.Module):
             torch.zeros(compress_rate, compressor_width)
         )
         self.compressor_kv_norm = HeadRMSNorm(
-            config.head_dim,
+            candidate_norm_dim,
             config.rms_norm_eps,
         )
 
@@ -271,6 +282,18 @@ class _V4CompressedContextAttention(nn.Module):
             hidden_size=config.hidden_size,
             bias=config.projection_bias,
         )
+
+    def _normalize_main_candidate(
+        self,
+        value: torch.Tensor,
+        norm: HeadRMSNorm,
+    ) -> torch.Tensor:
+        if not self.config.normalize_candidate_nonrotary_only:
+            return norm(value)
+        split = self.config.head_dim - self.config.partial_rotary_dim
+        nonrot = norm(value[..., :split])
+        rotary = value[..., split:]
+        return torch.cat((nonrot, rotary), dim=-1)
 
     @property
     def compress_rate(self) -> int:
@@ -334,7 +357,10 @@ class _V4CompressedContextAttention(nn.Module):
         )
         gate = gate + self.compressor_position_bias
         weights = gate.softmax(dim=1, dtype=torch.float32).to(kv.dtype)
-        compressed = self.compressor_kv_norm((kv * weights).sum(dim=1))
+        compressed = self._normalize_main_candidate(
+            (kv * weights).sum(dim=1),
+            self.compressor_kv_norm,
+        )
         representative = positions[:usable:rate]
         return self._rope(
             compressed.unsqueeze(1),
@@ -374,7 +400,14 @@ class _V4CompressedContextAttention(nn.Module):
             combined_gate[1:, :rate] = gate[:-1, :, :head_dim]
 
         weights = combined_gate.softmax(dim=1, dtype=torch.float32).to(kv.dtype)
-        compressed = norm((combined_kv * weights).sum(dim=1))
+        compressed = (combined_kv * weights).sum(dim=1)
+        if (
+            head_dim == self.config.head_dim
+            and self.config.normalize_candidate_nonrotary_only
+        ):
+            compressed = self._normalize_main_candidate(compressed, norm)
+        else:
+            compressed = norm(compressed)
         representative = positions[:usable:rate]
         return self._rope(
             compressed.unsqueeze(1),
@@ -602,10 +635,14 @@ class _V4CompressedContextAttention(nn.Module):
             self.config.num_attention_heads,
             self.config.head_dim,
         )
-        q = self.q_b_norm(q)
+        if self.config.normalize_query_output:
+            q = self.q_b_norm(q)
         q = self._rope(q, positions)
 
-        local_kv = self.kv_norm(self.kv_proj(hidden))
+        local_kv = self._normalize_main_candidate(
+            self.kv_proj(hidden),
+            self.kv_norm,
+        )
         local_kv = self._rope(
             local_kv.unsqueeze(1),
             positions,
