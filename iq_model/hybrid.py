@@ -19,6 +19,7 @@ from .attention import (
 from .config import IQModelConfig
 from .energy import ReasoningEnergyCritic, ReasoningEnergyCriticConfig
 from .mlp import MoEOutput, RoutedMoEConfig, RoutedSwiGLUMoELayer, StableLatentMoEConfig, StableLatentMoELayer, StableLatentMoEOutput
+from .multimodal import IQMultimodalConfig, IQMultimodalPathway
 from .norm import RMSNorm
 from .residual import BlockAttentionResidual, BlockAttnResConfig
 from .reasoning import (
@@ -46,6 +47,7 @@ class IQHybridConfig:
     attnres: BlockAttnResConfig | None = None
     reasoning: ReasoningRecurrenceConfig | None = None
     energy_critic: ReasoningEnergyCriticConfig | None = None
+    multimodal: IQMultimodalConfig | None = None
     require_energy_stability: bool = False
 
     def __post_init__(self) -> None:
@@ -131,6 +133,20 @@ class IQHybridConfig:
             raise HybridModelError(
                 "require_energy_stability requires energy_critic"
             )
+        if self.multimodal is not None:
+            layer_count = len(self.schedule.layers)
+            invalid = [
+                i for i in (*self.multimodal.fusion_layers, *self.multimodal.transv_layers)
+                if i < 0 or i >= layer_count
+            ]
+            if invalid:
+                raise HybridModelError(
+                    f"multimodal layer indices outside physical schedule: {sorted(set(invalid))}"
+                )
+            if hidden % self.multimodal.cross_attention_heads != 0:
+                raise HybridModelError(
+                    "hidden_size must be divisible by multimodal cross_attention_heads"
+                )
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -165,6 +181,11 @@ class IQHybridConfig:
                 if self.energy_critic is not None
                 else None
             ),
+            "multimodal": (
+                self.multimodal.to_dict()
+                if self.multimodal is not None
+                else None
+            ),
             "require_energy_stability": self.require_energy_stability,
         }
 
@@ -184,6 +205,7 @@ class IQHybridConfig:
         compressed_context = data.get("compressed_context")
         reasoning = data.get("reasoning")
         energy_critic = data.get("energy_critic")
+        multimodal = data.get("multimodal")
         require_energy_stability = bool(
             data.get("require_energy_stability", False)
         )
@@ -215,6 +237,10 @@ class IQHybridConfig:
             raise HybridModelError(
                 "hybrid config energy_critic must be an object or null"
             )
+        if multimodal is not None and not isinstance(multimodal, dict):
+            raise HybridModelError(
+                "hybrid config multimodal must be an object or null"
+            )
         try:
             return cls(
                 model=IQModelConfig.from_dict(model),
@@ -245,6 +271,11 @@ class IQHybridConfig:
                 energy_critic=(
                     ReasoningEnergyCriticConfig(**energy_critic)
                     if isinstance(energy_critic, dict)
+                    else None
+                ),
+                multimodal=(
+                    IQMultimodalConfig.from_dict(multimodal)
+                    if isinstance(multimodal, dict)
                     else None
                 ),
                 require_energy_stability=require_energy_stability,
@@ -781,6 +812,17 @@ class IQHybridForCausalLM(nn.Module):
             config.model.hidden_size,
             config.model.rms_norm_eps,
         ).to(device=device_obj, dtype=dtype)
+        self.multimodal = (
+            IQMultimodalPathway(
+                config.multimodal,
+                config.model.hidden_size,
+                config.mamba3,
+                dtype=dtype,
+                device=device_obj,
+            )
+            if config.multimodal is not None
+            else None
+        )
 
         self.reasoning: ReasoningRecurrence | None = None
         self.reasoning_injector: ReasoningStateInjector | None = None
@@ -827,6 +869,9 @@ class IQHybridForCausalLM(nn.Module):
         attention_mask: torch.Tensor | None = None,
         document_ids: torch.Tensor | None = None,
         reasoning_context_lengths: torch.Tensor | None = None,
+        pixel_values: torch.Tensor | None = None,
+        video_values: torch.Tensor | None = None,
+        frame_mask: torch.Tensor | None = None,
         return_hidden_states: bool = False,
     ) -> HybridCausalLMOutput:
         if input_ids.ndim != 2:
@@ -844,6 +889,22 @@ class IQHybridForCausalLM(nn.Module):
             if labels.dtype not in (torch.int32, torch.int64):
                 raise ValueError("labels must be integer token ids")
 
+        if self.multimodal is None and (
+            pixel_values is not None or video_values is not None or frame_mask is not None
+        ):
+            raise HybridModelError(
+                "visual inputs were provided but multimodal support is disabled"
+            )
+        visual_memory = (
+            self.multimodal.encode(
+                pixel_values=pixel_values,
+                video_values=video_values,
+                frame_mask=frame_mask,
+            )
+            if self.multimodal is not None
+            else None
+        )
+
         x = self.embed_tokens(input_ids)
         moe_outputs: list[MoEOutput | StableLatentMoEOutput] = []
         attnres_state = (
@@ -851,11 +912,11 @@ class IQHybridForCausalLM(nn.Module):
             if self.attnres is not None
             else None
         )
-        for layer_type, layer in zip(
+        for layer_index, (layer_type, layer) in enumerate(zip(
             self.config.schedule.layers,
             self.layers,
             strict=True,
-        ):
+        )):
             layer_input = (
                 self.attnres.read(attnres_state)
                 if self.attnres is not None and attnres_state is not None
@@ -885,6 +946,14 @@ class IQHybridForCausalLM(nn.Module):
             else:
                 raise HybridModelError(
                     f"unsupported runtime layer type: {layer_type.value}"
+                )
+
+            if self.multimodal is not None:
+                layer_output, visual_memory = self.multimodal.fuse(
+                    layer_index,
+                    layer_output,
+                    visual_memory,
+                    text_mask=attention_mask,
                 )
 
             if self.attnres is not None and attnres_state is not None:
