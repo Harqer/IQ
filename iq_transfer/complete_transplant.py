@@ -199,6 +199,7 @@ def canonical_glm53_config() -> IQHybridConfig:
         expert_intermediate_size=2048,
         top_k=8,
         shared_expert_intermediate_size=2048,
+        router_bias=False,
     )
     stable = replace(
         base.stable_moe,
@@ -208,6 +209,8 @@ def canonical_glm53_config() -> IQHybridConfig:
         situ_beta=1_000_000.0,
         situ_linear_beta=1_000_000.0,
         routed_scaling_factor=2.5,
+        expert_bias=False,
+        router_bias=False,
     )
     compressed = replace(
         base.compressed_context,
