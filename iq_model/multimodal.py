@@ -35,6 +35,9 @@ class IQMultimodalConfig:
     transv_deep_keep_ratio: float = 0.1
     min_visual_tokens: int = 16
     max_frames: int = 16384
+    temporal_dilations: tuple[int, ...] = (1, 2, 4)
+    use_bidirectional_video: bool = True
+    query_projector_tokens: int = 64
     freeze_vision_tower: bool = True
     drop_cls_token: bool = True
 
@@ -57,6 +60,10 @@ class IQMultimodalConfig:
                 raise ValueError(f"{name} must be in (0, 1]")
         if self.min_visual_tokens <= 0 or self.max_frames <= 0:
             raise ValueError("min_visual_tokens and max_frames must be positive")
+        if self.query_projector_tokens <= 0:
+            raise ValueError("query_projector_tokens must be positive")
+        if not self.temporal_dilations or any(int(x) <= 0 for x in self.temporal_dilations):
+            raise ValueError("temporal_dilations must contain positive strides")
         if tuple(sorted(set(self.fusion_layers))) != self.fusion_layers:
             raise ValueError("fusion_layers must be sorted and unique")
         if tuple(sorted(set(self.transv_layers))) != self.transv_layers:
@@ -68,6 +75,7 @@ class IQMultimodalConfig:
         data = asdict(self)
         data["fusion_layers"] = list(self.fusion_layers)
         data["transv_layers"] = list(self.transv_layers)
+        data["temporal_dilations"] = list(self.temporal_dilations)
         return data
 
     @classmethod
@@ -75,6 +83,7 @@ class IQMultimodalConfig:
         payload = dict(data)
         payload["fusion_layers"] = tuple(int(x) for x in payload.get("fusion_layers", ()))
         payload["transv_layers"] = tuple(int(x) for x in payload.get("transv_layers", ()))
+        payload["temporal_dilations"] = tuple(int(x) for x in payload.get("temporal_dilations", (1, 2, 4)))
         return cls(**payload)
 
 
@@ -395,6 +404,92 @@ class VisualMambaEncoder(nn.Module):
         return VisualMemory(output, valid, memory.frame_ids, memory.source)
 
 
+class QueryConditionedProjector(nn.Module):
+    """Q-Mamba-style query compression without introducing another SSM."""
+
+    def __init__(self, hidden_size: int, heads: int, num_queries: int, *, dtype: torch.dtype, device: torch.device) -> None:
+        super().__init__()
+        self.queries = nn.Parameter(torch.empty(num_queries, hidden_size, device=device, dtype=dtype))
+        nn.init.normal_(self.queries, std=hidden_size ** -0.5)
+        self.query_norm = RMSNorm(hidden_size).to(device=device, dtype=dtype)
+        self.visual_norm = RMSNorm(hidden_size).to(device=device, dtype=dtype)
+        self.attn = nn.MultiheadAttention(hidden_size, heads, batch_first=True, device=device, dtype=dtype)
+
+    def forward(self, memory: VisualMemory, text: torch.Tensor, text_mask: torch.Tensor | None) -> VisualMemory:
+        batch = text.shape[0]
+        if memory.hidden_states.shape[0] != batch:
+            raise MultimodalError("query projection requires one visual memory row per text row")
+        if text_mask is None:
+            instruction = text.mean(dim=1)
+        else:
+            mask = text_mask.to(text.dtype).unsqueeze(-1)
+            instruction = (text * mask).sum(dim=1) / mask.sum(dim=1).clamp_min(1)
+        queries = self.queries.unsqueeze(0).expand(batch, -1, -1) + instruction.unsqueeze(1)
+        projected, _ = self.attn(
+            self.query_norm(queries),
+            self.visual_norm(memory.hidden_states),
+            self.visual_norm(memory.hidden_states),
+            key_padding_mask=~memory.attention_mask,
+            need_weights=False,
+        )
+        mask = torch.ones(projected.shape[:2], dtype=torch.bool, device=projected.device)
+        frames = torch.zeros(projected.shape[:2], dtype=torch.long, device=projected.device)
+        return VisualMemory(projected, mask, frames, memory.source)
+
+
+class MultiScaleTemporalMamba3(nn.Module):
+    """MS-Temba-style multi-scale temporal views using IQ's single Mamba-3 primitive."""
+
+    def __init__(self, hidden_size: int, config: Mamba3MIMOConfig, dilations: tuple[int, ...], *, dtype: torch.dtype, device: torch.device) -> None:
+        super().__init__()
+        self.dilations = dilations
+        self.mixers = nn.ModuleList([
+            VisualMambaEncoder(hidden_size, config, 1, dtype=dtype, device=device)
+            for _ in dilations
+        ])
+        self.scale_logits = nn.Parameter(torch.zeros(len(dilations), device=device, dtype=dtype))
+
+    def forward(self, memory: VisualMemory) -> VisualMemory:
+        if memory.source != "video":
+            return memory
+        outputs = []
+        for dilation, mixer in zip(self.dilations, self.mixers, strict=True):
+            sampled_mask = memory.attention_mask & (memory.frame_ids.remainder(dilation) == 0)
+            if bool((sampled_mask.sum(dim=1) == 0).any()):
+                sampled_mask = memory.attention_mask
+            sampled = VisualMemory(memory.hidden_states, sampled_mask, memory.frame_ids, memory.source)
+            mixed = mixer(sampled)
+            outputs.append(mixed.hidden_states)
+        weights = torch.softmax(self.scale_logits.float(), dim=0).to(memory.hidden_states.dtype)
+        merged = sum(weight * output for weight, output in zip(weights, outputs, strict=True))
+        return VisualMemory(memory.hidden_states + merged, memory.attention_mask, memory.frame_ids, memory.source)
+
+
+class BidirectionalVideoMamba3(nn.Module):
+    """VideoMambaPro-style backward context and residual preservation on Mamba-3."""
+
+    def __init__(self, hidden_size: int, config: Mamba3MIMOConfig, *, dtype: torch.dtype, device: torch.device) -> None:
+        super().__init__()
+        self.forward_mixer = VisualMambaEncoder(hidden_size, config, 1, dtype=dtype, device=device)
+        self.backward_mixer = VisualMambaEncoder(hidden_size, config, 1, dtype=dtype, device=device)
+        self.gate = nn.Parameter(torch.zeros((), device=device, dtype=dtype))
+
+    def forward(self, memory: VisualMemory) -> VisualMemory:
+        if memory.source != "video":
+            return memory
+        forward = self.forward_mixer(memory)
+        reversed_memory = VisualMemory(
+            memory.hidden_states.flip(1),
+            memory.attention_mask.flip(1),
+            memory.frame_ids.flip(1),
+            memory.source,
+        )
+        backward = self.backward_mixer(reversed_memory).hidden_states.flip(1)
+        correction = 0.5 * (forward.hidden_states + backward)
+        hidden = memory.hidden_states + torch.tanh(self.gate) * correction
+        return VisualMemory(hidden, memory.attention_mask, memory.frame_ids, memory.source)
+
+
 class CrossModalFusion(nn.Module):
     """Text queries visual memory; visual tokens never enter quadratic self-attention."""
     def __init__(self, hidden_size: int, heads: int, *, dtype: torch.dtype, device: torch.device) -> None:
@@ -534,6 +629,51 @@ class TransVTransfer(nn.Module):
             out_frames[row, :count] = selected_frames
         return VisualMemory(out, out_mask, out_frames, memory.source)
 
+@dataclass
+class AudioMemory:
+    hidden_states: torch.Tensor
+    attention_mask: torch.Tensor
+    streaming: bool
+
+
+class AudioMamba3Pathway(nn.Module):
+    """SSAMBA/Speech-Mamba-inspired audio pathway implemented only with Mamba-3 MIMO."""
+
+    def __init__(self, hidden_size: int, mamba_config: Mamba3MIMOConfig, *, dtype: torch.dtype, device: torch.device) -> None:
+        super().__init__()
+        self.input_projection = nn.LazyLinear(hidden_size, bias=False, device=device, dtype=dtype)
+        self.forward_mixer = VisualMambaEncoder(hidden_size, mamba_config, 1, dtype=dtype, device=device)
+        self.backward_mixer = VisualMambaEncoder(hidden_size, mamba_config, 1, dtype=dtype, device=device)
+        self.global_attn = nn.MultiheadAttention(hidden_size, 8, batch_first=True, device=device, dtype=dtype)
+        self.gate = nn.Parameter(torch.zeros((), device=device, dtype=dtype))
+
+    def forward(self, features: torch.Tensor, mask: torch.Tensor | None, *, streaming: bool) -> VisualMemory:
+        if features.ndim != 3:
+            raise MultimodalError("audio_features must have shape [batch, time, features]")
+        hidden = self.input_projection(features)
+        valid = (
+            torch.ones(hidden.shape[:2], dtype=torch.bool, device=hidden.device)
+            if mask is None else mask.to(device=hidden.device, dtype=torch.bool)
+        )
+        if valid.shape != hidden.shape[:2] or bool((valid.sum(dim=1) == 0).any()):
+            raise MultimodalError("audio_attention_mask must match audio time and keep one valid step per row")
+        frames = torch.arange(hidden.shape[1], device=hidden.device).unsqueeze(0).expand(hidden.shape[0], -1)
+        memory = VisualMemory(hidden, valid, frames, "audio")
+        forward = self.forward_mixer(memory)
+        if streaming:
+            contextual = forward.hidden_states
+        else:
+            reverse = VisualMemory(hidden.flip(1), valid.flip(1), frames.flip(1), "audio")
+            backward = self.backward_mixer(reverse).hidden_states.flip(1)
+            contextual = 0.5 * (forward.hidden_states + backward)
+        attended, _ = self.global_attn(
+            contextual, contextual, contextual,
+            key_padding_mask=~valid, need_weights=False,
+        )
+        output = contextual + torch.tanh(self.gate) * attended
+        return VisualMemory(output, valid, frames, "audio")
+
+
 class IQMultimodalPathway(nn.Module):
     def __init__(
         self,
@@ -547,6 +687,23 @@ class IQMultimodalPathway(nn.Module):
         super().__init__()
         self.config = config
         self.vision = VisionTower(config, hidden_size, dtype=dtype, device=device)
+        self.temporal = MultiScaleTemporalMamba3(
+            hidden_size, mamba_config, config.temporal_dilations, dtype=dtype, device=device
+        )
+        self.video_context = (
+            BidirectionalVideoMamba3(hidden_size, mamba_config, dtype=dtype, device=device)
+            if config.use_bidirectional_video else nn.Identity()
+        )
+        self.query_projector = QueryConditionedProjector(
+            hidden_size,
+            config.cross_attention_heads,
+            config.query_projector_tokens,
+            dtype=dtype,
+            device=device,
+        )
+        self.audio = AudioMamba3Pathway(
+            hidden_size, mamba_config, dtype=dtype, device=device
+        )
         # Vamba advances visual state alongside decoder depth rather than
         # treating Mamba as a one-shot visual front-end.
         self.visual_mixers = nn.ModuleDict(
@@ -589,10 +746,27 @@ class IQMultimodalPathway(nn.Module):
         )
         if memory is None:
             return None
-        return _merge_video_frames(
+        memory = _merge_video_frames(
             memory,
             self.config.tokens_per_video_frame,
         )
+        memory = self.temporal(memory)
+        if isinstance(self.video_context, BidirectionalVideoMamba3):
+            memory = self.video_context(memory)
+        return memory
+
+    def encode_audio(
+        self,
+        *,
+        audio_features: torch.Tensor | None,
+        audio_attention_mask: torch.Tensor | None,
+        audio_streaming: bool,
+    ) -> VisualMemory | None:
+        if audio_features is None:
+            if audio_attention_mask is not None:
+                raise MultimodalError("audio_attention_mask requires audio_features")
+            return None
+        return self.audio(audio_features, audio_attention_mask, streaming=audio_streaming)
 
     def fuse(
         self,
@@ -605,6 +779,11 @@ class IQMultimodalPathway(nn.Module):
         if memory is None or layer_index not in self.config.fusion_layers:
             return text, memory
         memory = self.visual_mixers[str(layer_index)](memory)
+        # Query-conditioned compression is applied once, at the first fusion
+        # boundary, so it replaces the generic projector role rather than
+        # stacking another recurrent backbone.
+        if layer_index == self.config.fusion_layers[0]:
+            memory = self.query_projector(memory, text, text_mask)
         fusion = self.fusion[str(layer_index)]
         if layer_index in self.config.transv_layers:
             deep = layer_index == self.config.transv_layers[-1]

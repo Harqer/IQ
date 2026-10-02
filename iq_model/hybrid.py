@@ -874,6 +874,9 @@ class IQHybridForCausalLM(nn.Module):
         frame_mask: torch.Tensor | None = None,
         image_grid_thw: torch.Tensor | None = None,
         video_grid_thw: torch.Tensor | None = None,
+        audio_features: torch.Tensor | None = None,
+        audio_attention_mask: torch.Tensor | None = None,
+        audio_streaming: bool = False,
         media_document_ids: torch.Tensor | None = None,
         return_hidden_states: bool = False,
     ) -> HybridCausalLMOutput:
@@ -898,6 +901,8 @@ class IQHybridForCausalLM(nn.Module):
             or frame_mask is not None
             or image_grid_thw is not None
             or video_grid_thw is not None
+            or audio_features is not None
+            or audio_attention_mask is not None
             or media_document_ids is not None
         ):
             raise HybridModelError(
@@ -914,6 +919,26 @@ class IQHybridForCausalLM(nn.Module):
             if self.multimodal is not None
             else None
         )
+        audio_memory = (
+            self.multimodal.encode_audio(
+                audio_features=audio_features,
+                audio_attention_mask=audio_attention_mask,
+                audio_streaming=audio_streaming,
+            )
+            if self.multimodal is not None
+            else None
+        )
+        if visual_memory is not None and audio_memory is not None:
+            if visual_memory.hidden_states.shape[0] != audio_memory.hidden_states.shape[0]:
+                raise HybridModelError("visual and audio batch sizes must match")
+            visual_memory = type(visual_memory)(
+                hidden_states=torch.cat((visual_memory.hidden_states, audio_memory.hidden_states), dim=1),
+                attention_mask=torch.cat((visual_memory.attention_mask, audio_memory.attention_mask), dim=1),
+                frame_ids=torch.cat((visual_memory.frame_ids, audio_memory.frame_ids), dim=1),
+                source="multimodal",
+            )
+        elif audio_memory is not None:
+            visual_memory = audio_memory
 
         multimodal_text_mask = attention_mask
         if visual_memory is not None and document_ids is not None:
