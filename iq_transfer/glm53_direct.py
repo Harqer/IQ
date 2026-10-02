@@ -440,3 +440,71 @@ def transform_glm53_mla(
         output_group_weight=grouped_output_identity(layout),
         output_weight=target_output,
     )
+
+
+@dataclass(frozen=True)
+class GLM53DSATransform:
+    q_weight: np.ndarray
+    k_weight: np.ndarray
+    head_weight: np.ndarray
+    k_norm_weight: np.ndarray
+    k_norm_bias: np.ndarray
+
+
+def transform_glm53_dsa_indexer(
+    *,
+    wq_b_weight: Any,
+    wk_weight: Any,
+    head_weight: Any,
+    k_norm_weight: Any,
+    k_norm_bias: Any,
+    residual_input_map: CoordinateMap,
+    q_lora_rank: int,
+    index_n_heads: int,
+    index_head_dim: int,
+) -> GLM53DSATransform:
+    """Refactor GLM DSA's token indexer into IQ's direct-token CSA indexer.
+
+    IQ's GLM recipient intentionally keeps the donor DSA query/key geometry:
+    q_a remains in the donor 2048-D latent coordinate system and the indexer
+    uses 32 x 128 query heads with a 128-D token key. Only operators consuming
+    the residual stream need basis transport from GLM residual coordinates into
+    IQ residual coordinates. No window-compressed indexer is inserted here.
+    """
+    q = _array(wq_b_weight)
+    k = _array(wk_weight)
+    hw = _array(head_weight)
+    nw = _array(k_norm_weight).reshape(-1)
+    nb = _array(k_norm_bias).reshape(-1)
+    target_hidden = residual_input_map.matrix.shape[1]
+    source_hidden = residual_input_map.matrix.shape[0]
+    expected_q = (index_n_heads * index_head_dim, q_lora_rank)
+    if q.shape != expected_q:
+        raise GLM53DirectTransformError(
+            f"DSA query shape {q.shape} != {expected_q}"
+        )
+    if k.shape != (index_head_dim, source_hidden):
+        raise GLM53DirectTransformError(
+            "DSA key projection source width does not match residual map"
+        )
+    if hw.shape != (index_n_heads, source_hidden):
+        raise GLM53DirectTransformError(
+            "DSA head-weight projection source width does not match residual map"
+        )
+    if nw.shape != (index_head_dim,) or nb.shape != (index_head_dim,):
+        raise GLM53DirectTransformError("DSA key norm shape mismatch")
+
+    inverse = np.linalg.pinv(residual_input_map.matrix).T
+    target_k = k @ inverse
+    target_hw = hw @ inverse
+    if target_k.shape != (index_head_dim, target_hidden):
+        raise GLM53DirectTransformError("transported DSA key shape mismatch")
+    if target_hw.shape != (index_n_heads, target_hidden):
+        raise GLM53DirectTransformError("transported DSA head-weight shape mismatch")
+    return GLM53DSATransform(
+        q_weight=q.copy(),
+        k_weight=target_k,
+        head_weight=target_hw,
+        k_norm_weight=nw.copy(),
+        k_norm_bias=nb.copy(),
+    )
