@@ -176,6 +176,85 @@ def canonical_complete_config() -> IQHybridConfig:
 
 
 
+def canonical_glm53_config() -> IQHybridConfig:
+    """IQ recipient geometry for direct GLM-5.3-BF16 language transfer.
+
+    The recurrent schedule stays IQ-native/Mamba-3. Context geometry keeps the
+    donor's query-latent and rotary semantics where doing so enables direct
+    algebraic transfer, while Stable LatentMoE retains IQ's compressed expert
+    topology.
+    """
+    base = canonical_complete_config()
+    assert base.stable_moe is not None
+    assert base.compressed_context is not None
+    model = replace(
+        base.model,
+        vocab_size=154880,
+        num_key_value_heads=64,
+        max_position_embeddings=202752,
+        rope_theta=8_000_000.0,
+    )
+    control_moe = replace(
+        base.moe,
+        expert_intermediate_size=2048,
+        top_k=8,
+        shared_expert_intermediate_size=2048,
+    )
+    stable = replace(
+        base.stable_moe,
+        latent_size=2048,
+        expert_intermediate_size=2048,
+        top_k=8,
+        routed_scaling_factor=2.5,
+    )
+    compressed = replace(
+        base.compressed_context,
+        head_dim=128,
+        q_lora_rank=2048,
+        partial_rotary_dim=64,
+        max_position_embeddings=202752,
+        o_lora_rank=1024,
+        index_n_heads=32,
+        index_head_dim=128,
+        compress_rope_theta=8_000_000.0,
+        normalize_query_output=False,
+        normalize_candidate_nonrotary_only=True,
+    )
+    return validate_canonical_hybrid_backbone(
+        replace(
+            base,
+            model=model,
+            moe=control_moe,
+            stable_moe=stable,
+            compressed_context=compressed,
+        )
+    )
+
+
+def canonical_glm53_multimodal_config() -> IQHybridConfig:
+    base = canonical_glm53_config()
+    context_layers = tuple(base.schedule.attention_positions)
+    fusion_layers = tuple(sorted(set((*context_layers, 39))))
+    multimodal = IQMultimodalConfig(
+        vision_model_name="zai-org/GLM-5.3-Flash-BF16",
+        vision_backend="glm5_next",
+        fusion_layers=fusion_layers,
+        transv_layers=(7, 39),
+        visual_mamba_layers=1,
+        cross_attention_heads=8,
+        transv_shallow_keep_ratio=0.5,
+        transv_deep_keep_ratio=0.1,
+        min_visual_tokens=16,
+        max_frames=16384,
+        freeze_vision_tower=True,
+        drop_cls_token=False,
+    )
+    return validate_canonical_hybrid_backbone(
+        replace(base, multimodal=multimodal)
+    )
+
+
+
 def canonical_multimodal_config() -> IQHybridConfig:
     """Canonical IQ backbone plus native GLM-5.3 vision and long-video fusion.
 
