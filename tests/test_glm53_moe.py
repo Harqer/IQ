@@ -79,6 +79,7 @@ class GLM53MoETransformTests(unittest.TestCase):
         usage = np.array([0.1, 0.4, 0.2, 0.3])
         result = transform_glm53_moe(
             router_weight=router,
+            routing_bias=np.array([0.3, -0.1, 0.2, 0.7]),
             routed_experts=experts,
             shared_expert=shared,
             expert_usage=usage,
@@ -89,6 +90,7 @@ class GLM53MoETransformTests(unittest.TestCase):
         )
         self.assertEqual(result.source_expert_indices, (1, 3))
         self.assertTrue(np.array_equal(result.router_weight, router[[1, 3]]))
+        self.assertTrue(np.allclose(result.routing_bias, [-0.4, 0.4]))
         self.assertTrue(np.array_equal(result.latent_down_weight, np.eye(hidden)))
         self.assertTrue(np.array_equal(result.latent_up_weight, np.eye(hidden)))
         for target, source_index in zip(
