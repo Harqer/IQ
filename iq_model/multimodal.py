@@ -629,6 +629,51 @@ class TransVTransfer(nn.Module):
             out_frames[row, :count] = selected_frames
         return VisualMemory(out, out_mask, out_frames, memory.source)
 
+@dataclass
+class AudioMemory:
+    hidden_states: torch.Tensor
+    attention_mask: torch.Tensor
+    streaming: bool
+
+
+class AudioMamba3Pathway(nn.Module):
+    """SSAMBA/Speech-Mamba-inspired audio pathway implemented only with Mamba-3 MIMO."""
+
+    def __init__(self, hidden_size: int, mamba_config: Mamba3MIMOConfig, *, dtype: torch.dtype, device: torch.device) -> None:
+        super().__init__()
+        self.input_projection = nn.LazyLinear(hidden_size, bias=False, device=device, dtype=dtype)
+        self.forward_mixer = VisualMambaEncoder(hidden_size, mamba_config, 1, dtype=dtype, device=device)
+        self.backward_mixer = VisualMambaEncoder(hidden_size, mamba_config, 1, dtype=dtype, device=device)
+        self.global_attn = nn.MultiheadAttention(hidden_size, 8, batch_first=True, device=device, dtype=dtype)
+        self.gate = nn.Parameter(torch.zeros((), device=device, dtype=dtype))
+
+    def forward(self, features: torch.Tensor, mask: torch.Tensor | None, *, streaming: bool) -> VisualMemory:
+        if features.ndim != 3:
+            raise MultimodalError("audio_features must have shape [batch, time, features]")
+        hidden = self.input_projection(features)
+        valid = (
+            torch.ones(hidden.shape[:2], dtype=torch.bool, device=hidden.device)
+            if mask is None else mask.to(device=hidden.device, dtype=torch.bool)
+        )
+        if valid.shape != hidden.shape[:2] or bool((valid.sum(dim=1) == 0).any()):
+            raise MultimodalError("audio_attention_mask must match audio time and keep one valid step per row")
+        frames = torch.arange(hidden.shape[1], device=hidden.device).unsqueeze(0).expand(hidden.shape[0], -1)
+        memory = VisualMemory(hidden, valid, frames, "audio")
+        forward = self.forward_mixer(memory)
+        if streaming:
+            contextual = forward.hidden_states
+        else:
+            reverse = VisualMemory(hidden.flip(1), valid.flip(1), frames.flip(1), "audio")
+            backward = self.backward_mixer(reverse).hidden_states.flip(1)
+            contextual = 0.5 * (forward.hidden_states + backward)
+        attended, _ = self.global_attn(
+            contextual, contextual, contextual,
+            key_padding_mask=~valid, need_weights=False,
+        )
+        output = contextual + torch.tanh(self.gate) * attended
+        return VisualMemory(output, valid, frames, "audio")
+
+
 class IQMultimodalPathway(nn.Module):
     def __init__(
         self,
@@ -655,6 +700,9 @@ class IQMultimodalPathway(nn.Module):
             config.query_projector_tokens,
             dtype=dtype,
             device=device,
+        )
+        self.audio = AudioMamba3Pathway(
+            hidden_size, mamba_config, dtype=dtype, device=device
         )
         # Vamba advances visual state alongside decoder depth rather than
         # treating Mamba as a one-shot visual front-end.
