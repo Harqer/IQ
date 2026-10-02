@@ -22,6 +22,8 @@ class GLM53CalibrationTests(unittest.TestCase):
             context_physical_layer=1,
             moe_physical_layer=2,
             residual_map=CoordinateMap(np.eye(4), 1e-6, "glm.resid", "iq.resid"),
+            attention_input_map=CoordinateMap(np.eye(4), 1e-6, "glm.attn", "iq.attn"),
+            moe_input_map=CoordinateMap(np.eye(4), 1e-6, "glm.moe", "iq.moe"),
             compressed_kv_map=CoordinateMap(np.eye(3), 1e-6, "glm.kv", "iq.kv"),
             latent_map=CoordinateMap(np.eye(4, 2), 1e-6, "glm.resid", "iq.latent"),
             expert_usage=np.array([0.1, 0.2, 0.3, 0.4]) if sparse else None,
@@ -40,6 +42,8 @@ class GLM53CalibrationTests(unittest.TestCase):
                 context_physical_layer=1,
                 moe_physical_layer=2,
                 residual_map=CoordinateMap(np.eye(2), 1e-6),
+                attention_input_map=CoordinateMap(np.eye(2), 1e-6),
+                moe_input_map=CoordinateMap(np.eye(2), 1e-6),
                 compressed_kv_map=CoordinateMap(np.eye(2), 1e-6),
                 latent_map=CoordinateMap(np.eye(2), 1e-6),
             )
@@ -52,6 +56,8 @@ class GLM53CalibrationTests(unittest.TestCase):
             context_physical_layer=4,
             moe_physical_layer=5,
             residual_map=CoordinateMap(np.eye(4), 1e-6, "glm.r1", "iq.r1"),
+            attention_input_map=CoordinateMap(np.eye(4), 1e-6, "glm.a1", "iq.a1"),
+            moe_input_map=CoordinateMap(np.eye(4), 1e-6, "glm.moe1", "iq.moe1"),
             compressed_kv_map=CoordinateMap(np.eye(3), 1e-6, "glm.k1", "iq.k1"),
             latent_map=CoordinateMap(np.eye(4, 2), 1e-6, "glm.r1", "iq.l1"),
             dense_intermediate_map=CoordinateMap(
@@ -62,6 +68,8 @@ class GLM53CalibrationTests(unittest.TestCase):
             stages=(sparse, dense),
             source_layers=78,
             target_config_fingerprint="cfg",
+            lexical_input_map=CoordinateMap(np.eye(4), 1e-6, "glm.embed", "iq.embed"),
+            final_output_map=CoordinateMap(np.eye(4), 1e-6, "glm.final", "iq.final"),
         )
         with tempfile.TemporaryDirectory() as tmp:
             manifest = solution.write(tmp)
@@ -85,6 +93,8 @@ class GLM53CalibrationTests(unittest.TestCase):
             context_physical_layer=4,
             moe_physical_layer=5,
             residual_map=CoordinateMap(np.eye(4), 1e-6),
+            attention_input_map=CoordinateMap(np.eye(4), 1e-6),
+            moe_input_map=CoordinateMap(np.eye(4), 1e-6),
             compressed_kv_map=CoordinateMap(np.eye(3), 1e-6),
             latent_map=CoordinateMap(np.eye(4, 2), 1e-6),
             expert_usage=np.ones(4) / 4,
@@ -94,6 +104,8 @@ class GLM53CalibrationTests(unittest.TestCase):
                 stages=(a, b),
                 source_layers=78,
                 target_config_fingerprint="cfg",
+                lexical_input_map=CoordinateMap(np.eye(4), 1e-6),
+                final_output_map=CoordinateMap(np.eye(4), 1e-6),
             )
 
 
