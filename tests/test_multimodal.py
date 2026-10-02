@@ -9,7 +9,8 @@ def test_multimodal_config_roundtrip_and_transv_contract():
         vision_model_name="example/vision",
         fusion_layers=(2, 5, 8),
         transv_layers=(5, 8),
-        transv_keep_ratio=0.5,
+        transv_shallow_keep_ratio=0.5,
+        transv_deep_keep_ratio=0.5,
         min_visual_tokens=2,
     )
     assert IQMultimodalConfig.from_dict(config.to_dict()) == config
@@ -23,7 +24,13 @@ def test_multimodal_config_roundtrip_and_transv_contract():
         [0, 0, 1, 1, 2, 2, 3, 3],
         [0, 1, 2, 3, 0, 0, 0, 0],
     ])
-    out = TransVTransfer(config)(VisualMemory(hidden, mask, frames, "video"))
+    text = torch.randn(2, 3, 4)
+    out = TransVTransfer(config)(
+        VisualMemory(hidden, mask, frames, "video"),
+        text,
+        text_mask=None,
+        deep=False,
+    )
     assert out.attention_mask.sum(dim=1).tolist() == [4, 2]
     assert out.hidden_states.shape == (2, 4, 4)
     assert torch.isfinite(out.hidden_states).all()
