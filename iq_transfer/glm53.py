@@ -299,6 +299,11 @@ class GLM53Inspector:
                     f"{prefix}.mlp.gate.weight",
                     self.layout.n_routed_experts, hidden,
                 )
+                self._add_vector(
+                    refs, source, available, layer, "moe.routing_bias",
+                    f"{prefix}.mlp.gate.e_score_correction_bias",
+                    self.layout.n_routed_experts,
+                )
                 for shared in range(self.layout.n_shared_experts):
                     shared_prefix = f"{prefix}.mlp.shared_experts"
                     role_prefix = (
