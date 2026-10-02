@@ -2,7 +2,7 @@ from .complete_transplant import CompleteTransplantError, RESIDUAL_EMBED_SCALE, 
 from .gpt_oss20b import GPT_OSS_20B_ORIGINAL_SHA256, GPT_OSS_20B_REPO, GPT_OSS_20B_REVISION, GptOss20BConfig, GptOss20BError, GptOss20BOriginalCheckpoint
 from .batches import BatchArtifactError, TokenBatchArtifact, load_token_batches, save_token_batches
 from .job import PhiTransferJobResult, TransferJobError, hash_tokenizer_files, load_transferred_iq_artifact, run_phi_dense_transfer, run_phi_dense_transfer_loaded
-from .capture_runner import ActivationBundle, CaptureRunnerError, PhiCaptureLayout, build_phi_layer_calibration_from_bundles, capture_iq_activations, capture_phi_activations, iq_capture_taps, load_local_phi_causal_lm, make_activation_pair, phi_capture_taps
+from .capture_runner import ActivationBundle, CaptureRunnerError, GLM53CaptureLayout, PhiCaptureLayout, build_phi_layer_calibration_from_bundles, capture_glm53_activations, capture_iq_activations, capture_iq_hybrid_residuals, capture_phi_activations, glm53_capture_taps, iq_capture_taps, iq_hybrid_residual_taps, load_local_glm53_causal_lm, load_local_phi_causal_lm, make_activation_pair, phi_capture_taps
 from .calibration import ActivationPair, CalibrationError, CalibrationManifest, CalibrationRecord, CalibrationSplit, LayerCorrespondence, PhiLayerCalibration, PhiLayerMapSolution, merge_coordinate_maps, solve_activation_pair, solve_layer_correspondence, solve_phi_layer_maps
 from .gqa_transport import GQAProjection, GQATransportError, fit_gqa_group_projection
 from .phi_pipeline import PhiDensePlanSpec, PhiLayerMapIds, PhiPipelineError, build_phi_dense_plan_spec, build_phi_dense_transport_plan
@@ -56,6 +56,7 @@ __all__ = [
     "CalibrationRecord",
     "CalibrationSplit",
     "CaptureError",
+    "GLM53CaptureLayout",
     "CaptureRunnerError",
     "CheckpointFile",
     "CoordinateMap",
@@ -148,9 +149,11 @@ __all__ = [
     "execute_transport_plan",
     "evenly_spaced_layer_placements",
     "expand_mamba3_layer",
+    "capture_glm53_activations",
     "capture_iq_activations",
     "compile_official_mamba3_mimo_15b_transplant",
     "classify_glm53_source_role",
+    "capture_iq_hybrid_residuals",
     "capture_phi_activations",
     "channel_correlation_cost",
     "extract_shadow",
@@ -161,11 +164,14 @@ __all__ = [
     "fit_ridge_coordinate_map",
     "grouped_output_identity",
     "hash_tokenizer_files",
+    "glm53_capture_taps",
     "iq_capture_taps",
     "latent_codec_weights",
     "load_capture_records",
     "load_token_batches",
     "load_transferred_iq_artifact",
+    "iq_hybrid_residual_taps",
+    "load_local_glm53_causal_lm",
     "load_local_phi_causal_lm",
     "make_activation_pair",
     "load_coordinate_map",
