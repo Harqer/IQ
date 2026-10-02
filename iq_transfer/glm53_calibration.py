@@ -7,7 +7,7 @@ import json
 
 import numpy as np
 
-from iq_model import HybridLayerType, IQHybridConfig
+from iq_model import IQHybridConfig
 
 from .calibration import solve_layer_correspondence
 from .capture_runner import ActivationBundle
@@ -37,6 +37,8 @@ class GLM53StageCalibration:
     context_physical_layer: int
     moe_physical_layer: int
     residual_map: CoordinateMap
+    attention_input_map: CoordinateMap
+    moe_input_map: CoordinateMap
     compressed_kv_map: CoordinateMap
     latent_map: CoordinateMap
     expert_usage: np.ndarray | None = None
@@ -71,6 +73,8 @@ class GLM53CalibrationSolution:
     stages: tuple[GLM53StageCalibration, ...]
     source_layers: int
     target_config_fingerprint: str
+    lexical_input_map: CoordinateMap
+    final_output_map: CoordinateMap
 
     def __post_init__(self) -> None:
         if self.source_layers <= 0 or not self.target_config_fingerprint:
@@ -99,6 +103,14 @@ class GLM53CalibrationSolution:
         for stage in self.stages:
             prefix = root / f"stage-{stage.stage:02d}"
             save_coordinate_map(stage.residual_map, str(prefix) + "-residual")
+            save_coordinate_map(
+                stage.attention_input_map,
+                str(prefix) + "-attention-input",
+            )
+            save_coordinate_map(
+                stage.moe_input_map,
+                str(prefix) + "-moe-input",
+            )
             save_coordinate_map(stage.compressed_kv_map, str(prefix) + "-kv")
             save_coordinate_map(stage.latent_map, str(prefix) + "-latent")
             dense_name: str | None = None
@@ -119,16 +131,28 @@ class GLM53CalibrationSolution:
                     "context_physical_layer": stage.context_physical_layer,
                     "moe_physical_layer": stage.moe_physical_layer,
                     "residual_map": f"stage-{stage.stage:02d}-residual",
+                    "attention_input_map": f"stage-{stage.stage:02d}-attention-input",
+                    "moe_input_map": f"stage-{stage.stage:02d}-moe-input",
                     "compressed_kv_map": f"stage-{stage.stage:02d}-kv",
                     "latent_map": f"stage-{stage.stage:02d}-latent",
                     "expert_usage": usage_name,
                     "dense_intermediate_map": dense_name,
                 }
             )
+        save_coordinate_map(
+            self.lexical_input_map,
+            root / "lexical-input",
+        )
+        save_coordinate_map(
+            self.final_output_map,
+            root / "final-output",
+        )
         manifest = {
-            "schema_version": 1,
+            "schema_version": 2,
             "source_layers": self.source_layers,
             "target_config_fingerprint": self.target_config_fingerprint,
+            "lexical_input_map": "lexical-input",
+            "final_output_map": "final-output",
             "stages": records,
         }
         path = root / "glm53_calibration.json"
@@ -148,11 +172,30 @@ class GLM53CalibrationSolution:
             raise GLM53CalibrationError(
                 f"invalid GLM calibration manifest: {path}"
             ) from exc
-        if raw.get("schema_version") != 1:
+        if raw.get("schema_version") != 2:
             raise GLM53CalibrationError(
                 f"unsupported GLM calibration schema: {raw.get('schema_version')}"
             )
-        stages: list[GLM53StageCalibration] = []
+        lexical_input_map = fit_ridge_coordinate_map(
+        source_fit.require("embedding"),
+        target_fit.require("embedding"),
+        ridge=ridge,
+        source_space="glm53.embedding",
+        target_space="iq.embedding",
+        validation_source=source_validation.require("embedding"),
+        validation_target=target_validation.require("embedding"),
+    )
+    final_output_map = fit_ridge_coordinate_map(
+        source_fit.require("final"),
+        target_fit.require("final"),
+        ridge=ridge,
+        source_space="glm53.final",
+        target_space="iq.final",
+        validation_source=source_validation.require("final"),
+        validation_target=target_validation.require("final"),
+    )
+
+    stages: list[GLM53StageCalibration] = []
         for record in raw.get("stages", []):
             usage = (
                 np.load(root / record["expert_usage"])
@@ -171,6 +214,12 @@ class GLM53CalibrationSolution:
                     context_physical_layer=int(record["context_physical_layer"]),
                     moe_physical_layer=int(record["moe_physical_layer"]),
                     residual_map=load_coordinate_map(root / record["residual_map"]),
+                    attention_input_map=load_coordinate_map(
+                        root / record["attention_input_map"]
+                    ),
+                    moe_input_map=load_coordinate_map(
+                        root / record["moe_input_map"]
+                    ),
                     compressed_kv_map=load_coordinate_map(
                         root / record["compressed_kv_map"]
                     ),
@@ -183,6 +232,12 @@ class GLM53CalibrationSolution:
             stages=tuple(stages),
             source_layers=int(raw["source_layers"]),
             target_config_fingerprint=str(raw["target_config_fingerprint"]),
+            lexical_input_map=load_coordinate_map(
+                root / raw["lexical_input_map"]
+            ),
+            final_output_map=load_coordinate_map(
+                root / raw["final_output_map"]
+            ),
         )
 
 
@@ -255,6 +310,32 @@ def solve_glm53_calibration(
             validation_source=source_validation.require(source_space),
             validation_target=target_validation.require(target_space),
         )
+        attention_input_map = fit_ridge_coordinate_map(
+            source_fit.require(f"layer.{source_layer}.attn_in"),
+            target_fit.require(f"layer.{context_physical}.norm_out"),
+            ridge=ridge,
+            source_space=f"glm53.layer.{source_layer}.attn_in",
+            target_space=f"iq.layer.{context_physical}.norm_out",
+            validation_source=source_validation.require(
+                f"layer.{source_layer}.attn_in"
+            ),
+            validation_target=target_validation.require(
+                f"layer.{context_physical}.norm_out"
+            ),
+        )
+        moe_input_map = fit_ridge_coordinate_map(
+            source_fit.require(f"layer.{source_layer}.mlp_in"),
+            target_fit.require(f"layer.{moe_physical}.norm_out"),
+            ridge=ridge,
+            source_space=f"glm53.layer.{source_layer}.mlp_in",
+            target_space=f"iq.layer.{moe_physical}.norm_out",
+            validation_source=source_validation.require(
+                f"layer.{source_layer}.mlp_in"
+            ),
+            validation_target=target_validation.require(
+                f"layer.{moe_physical}.norm_out"
+            ),
+        )
 
         kv_map = fit_mla_compressed_subspace(
             source_fit.require(f"layer.{source_layer}.compressed_kv"),
@@ -277,7 +358,11 @@ def solve_glm53_calibration(
             dense_intermediate = dense.coordinate_map
         else:
             expert_usage = router_usage_from_topk(
-                [source_fit.require(f"layer.{source_layer}.router_topk").numpy()],
+                [
+                    source_fit.require(
+                        f"layer.{source_layer}.router_topk"
+                    ).detach().cpu().numpy()
+                ],
                 num_experts=source_num_experts,
             )
 
@@ -288,6 +373,8 @@ def solve_glm53_calibration(
                 context_physical_layer=context_physical,
                 moe_physical_layer=moe_physical,
                 residual_map=residual_map,
+                attention_input_map=attention_input_map,
+                moe_input_map=moe_input_map,
                 compressed_kv_map=kv_map,
                 latent_map=latent.coordinate_map,
                 expert_usage=expert_usage,
@@ -299,4 +386,6 @@ def solve_glm53_calibration(
         stages=tuple(stages),
         source_layers=source_layers,
         target_config_fingerprint=target_config.fingerprint,
+        lexical_input_map=lexical_input_map,
+        final_output_map=final_output_map,
     )
