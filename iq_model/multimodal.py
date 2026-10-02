@@ -408,6 +408,48 @@ class CrossModalFusion(nn.Module):
         )
         self.gate = nn.Parameter(torch.zeros((), device=device, dtype=dtype))
 
+    def last_instruction_attention(
+        self,
+        text: torch.Tensor,
+        memory: VisualMemory,
+        *,
+        text_mask: torch.Tensor | None,
+    ) -> torch.Tensor:
+        """Mean-head pre-softmax attention from the last valid instruction token."""
+        q_all = self.norm_q(text)
+        kv_all = self.norm_kv(memory.hidden_states)
+        batch, _, width = q_all.shape
+        heads = self.attn.num_heads
+        head_dim = width // heads
+        weight = self.attn.in_proj_weight
+        bias = self.attn.in_proj_bias
+        q_weight = weight[:width]
+        k_weight = weight[width : 2 * width]
+        q_bias = None if bias is None else bias[:width]
+        k_bias = None if bias is None else bias[width : 2 * width]
+        scores = memory.hidden_states.new_full(
+            memory.attention_mask.shape,
+            float("-inf"),
+        )
+        for row in range(batch):
+            valid_text = (
+                torch.ones(text.shape[1], dtype=torch.bool, device=text.device)
+                if text_mask is None
+                else text_mask[row].to(dtype=torch.bool, device=text.device)
+            )
+            positions = torch.nonzero(valid_text, as_tuple=False).flatten()
+            if positions.numel() == 0:
+                raise MultimodalError("TransV requires at least one valid instruction token")
+            last = q_all[row, positions[-1]]
+            q = F.linear(last, q_weight, q_bias).view(heads, head_dim)
+            valid_visual = memory.attention_mask[row]
+            keys = F.linear(kv_all[row, valid_visual], k_weight, k_bias)
+            keys = keys.view(-1, heads, head_dim).transpose(0, 1)
+            row_scores = torch.einsum("hd,hvd->hv", q, keys)
+            row_scores = row_scores / math.sqrt(head_dim)
+            scores[row, valid_visual] = row_scores.float().mean(dim=0).to(scores.dtype)
+        return scores
+
     def forward(
         self,
         text: torch.Tensor,
@@ -438,9 +480,8 @@ class TransVTransfer(nn.Module):
     def forward(
         self,
         memory: VisualMemory,
-        text: torch.Tensor,
         *,
-        text_mask: torch.Tensor | None,
+        relevance_scores: torch.Tensor | None,
         deep: bool,
     ) -> VisualMemory:
         batch, _, hidden = memory.hidden_states.shape
@@ -467,17 +508,13 @@ class TransVTransfer(nn.Module):
             if count == src.shape[0]:
                 indices = torch.arange(count, device=src.device)
             elif deep:
-                valid_text = (
-                    text[row]
-                    if text_mask is None
-                    else text[row, text_mask[row].to(dtype=torch.bool, device=text.device)]
-                )
-                if valid_text.numel() == 0:
-                    raise MultimodalError("attention-guided TransV requires valid text tokens")
-                query = F.normalize(valid_text.float(), dim=-1).mean(dim=0)
-                keys = F.normalize(src.float(), dim=-1)
-                scores = keys @ query
-                # Select by relevance, then restore temporal/token order for Mamba.
+                if relevance_scores is None:
+                    raise MultimodalError(
+                        "deep attention-guided TransV requires last-instruction attention scores"
+                    )
+                scores = relevance_scores[row, memory.attention_mask[row]]
+                # Select by learned cross-attention relevance, then restore
+                # temporal/token order for recurrent processing.
                 indices = torch.topk(scores, k=count, sorted=False).indices.sort().values
             else:
                 # TimeViper shallow TransV uses uniform token dropping.
@@ -557,13 +594,18 @@ class IQMultimodalPathway(nn.Module):
     ) -> tuple[torch.Tensor, VisualMemory | None]:
         if memory is None or layer_index not in self.config.fusion_layers:
             return text, memory
-        text = self.fusion[str(layer_index)](text, memory, text_mask=text_mask)
+        fusion = self.fusion[str(layer_index)]
         if layer_index in self.config.transv_layers:
             deep = layer_index == self.config.transv_layers[-1]
+            relevance_scores = (
+                fusion.last_instruction_attention(text, memory, text_mask=text_mask)
+                if deep
+                else None
+            )
             memory = self.transv(
                 memory,
-                text,
-                text_mask=text_mask,
+                relevance_scores=relevance_scores,
                 deep=deep,
             )
+        text = fusion(text, memory, text_mask=text_mask)
         return text, memory
