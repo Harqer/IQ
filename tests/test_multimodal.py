@@ -1,7 +1,7 @@
 import torch
 import pytest
 
-from iq_model.multimodal import IQMultimodalConfig, TransVTransfer, VisualMemory
+from iq_model.multimodal import IQMultimodalConfig, TransVTransfer, VisualMemory, _tome_merge
 
 
 def test_multimodal_config_roundtrip_and_transv_contract():
@@ -52,3 +52,10 @@ def test_multimodal_config_rejects_duplicate_or_unsorted_layers():
             fusion_layers=(4, 2),
             transv_layers=(),
         )
+
+
+def test_tome_merges_to_exact_target_without_nonfinite_values():
+    tokens = torch.randn(37, 8)
+    merged = _tome_merge(tokens, 16)
+    assert merged.shape == (16, 8)
+    assert torch.isfinite(merged).all()
