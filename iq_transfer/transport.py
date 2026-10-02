@@ -57,6 +57,182 @@ def _rmse(actual: np.ndarray, expected: np.ndarray) -> float:
     return float(np.sqrt(np.mean(diff * diff)))
 
 
+
+def _validate_activation_pair(
+    source_activations: Any,
+    target_activations: Any,
+) -> tuple[np.ndarray, np.ndarray]:
+    xs = _numpy(source_activations)
+    xt = _numpy(target_activations)
+    if xs.ndim != 2 or xt.ndim != 2:
+        raise TransportError("coordinate-map activations must be rank-2 [samples, features]")
+    if xs.shape[0] != xt.shape[0]:
+        raise TransportError("source and target activations must use paired samples")
+    if xs.shape[0] < 2 or xs.shape[1] == 0 or xt.shape[1] == 0:
+        raise TransportError("coordinate-map activations must contain samples and features")
+    if not np.isfinite(xs).all() or not np.isfinite(xt).all():
+        raise TransportError("coordinate-map activations contain non-finite values")
+    return xs, xt
+
+
+def channel_correlation_cost(
+    source_activations: Any,
+    target_activations: Any,
+    *,
+    eps: float = 1e-8,
+) -> np.ndarray:
+    """Transport-and-Merge style feature cost: 1 - Pearson correlation."""
+    xs, xt = _validate_activation_pair(source_activations, target_activations)
+    if eps <= 0:
+        raise TransportError("eps must be positive")
+    xs = xs - xs.mean(axis=0, keepdims=True)
+    xt = xt - xt.mean(axis=0, keepdims=True)
+    xs = xs / np.sqrt(np.sum(xs * xs, axis=0, keepdims=True) + eps)
+    xt = xt / np.sqrt(np.sum(xt * xt, axis=0, keepdims=True) + eps)
+    correlation = np.clip(xs.T @ xt, -1.0, 1.0)
+    cost = 1.0 - correlation
+    if not np.isfinite(cost).all():
+        raise TransportError("correlation transport cost contains non-finite values")
+    return cost
+
+
+def sinkhorn_transport(
+    cost: Any,
+    *,
+    regularization: float = 0.05,
+    max_iterations: int = 500,
+    tolerance: float = 1e-8,
+) -> np.ndarray:
+    """Stable log-domain Sinkhorn coupling with uniform feature marginals."""
+    c = _numpy(cost)
+    if c.ndim != 2 or c.shape[0] == 0 or c.shape[1] == 0:
+        raise TransportError("transport cost must be a non-empty matrix")
+    if not np.isfinite(c).all():
+        raise TransportError("transport cost contains non-finite values")
+    if regularization <= 0 or max_iterations <= 0 or tolerance <= 0:
+        raise TransportError("Sinkhorn controls must be positive")
+
+    rows, cols = c.shape
+    log_a = np.full(rows, -np.log(rows), dtype=np.float64)
+    log_b = np.full(cols, -np.log(cols), dtype=np.float64)
+    kernel = -c / regularization
+    log_u = np.zeros(rows, dtype=np.float64)
+    log_v = np.zeros(cols, dtype=np.float64)
+
+    def logsumexp(x: np.ndarray, axis: int) -> np.ndarray:
+        maximum = np.max(x, axis=axis, keepdims=True)
+        stable = maximum + np.log(np.sum(np.exp(x - maximum), axis=axis, keepdims=True))
+        return np.squeeze(stable, axis=axis)
+
+    for _ in range(max_iterations):
+        next_u = log_a - logsumexp(kernel + log_v[None, :], axis=1)
+        next_v = log_b - logsumexp(kernel.T + next_u[None, :], axis=1)
+        delta = max(
+            float(np.max(np.abs(next_u - log_u))),
+            float(np.max(np.abs(next_v - log_v))),
+        )
+        log_u, log_v = next_u, next_v
+        if delta <= tolerance:
+            break
+
+    coupling = np.exp(kernel + log_u[:, None] + log_v[None, :])
+    total = coupling.sum()
+    if not np.isfinite(total) or total <= 0:
+        raise TransportError("Sinkhorn produced an invalid coupling")
+    coupling /= total
+    if not np.isfinite(coupling).all():
+        raise TransportError("Sinkhorn coupling contains non-finite values")
+    return coupling
+
+
+def fit_ot_coordinate_map(
+    source_activations: Any,
+    target_activations: Any,
+    *,
+    ridge: float = 1e-3,
+    regularization: float = 0.05,
+    top_k_source: int | None = 64,
+    source_space: str = "generic_source",
+    target_space: str = "generic_target",
+    validation_source: Any | None = None,
+    validation_target: Any | None = None,
+) -> CoordinateMap:
+    """Fit a direct cross-architecture basis map with OT-supported sparse ridge.
+
+    Optimal transport discovers source/target channel correspondence from
+    activation correlation. For each target channel, ridge regression is then
+    solved only on its strongest transported source support. This preserves
+    signed scale information that a probability coupling alone cannot encode.
+    """
+    xs, xt = _validate_activation_pair(source_activations, target_activations)
+    if ridge <= 0:
+        raise TransportError("ridge must be positive")
+    if top_k_source is not None and top_k_source <= 0:
+        raise TransportError("top_k_source must be positive when configured")
+
+    coupling = sinkhorn_transport(
+        channel_correlation_cost(xs, xt),
+        regularization=regularization,
+    )
+    source_features, target_features = coupling.shape
+    support_size = (
+        source_features
+        if top_k_source is None
+        else min(int(top_k_source), source_features)
+    )
+    matrix = np.zeros((source_features, target_features), dtype=np.float64)
+    for target_index in range(target_features):
+        scores = coupling[:, target_index]
+        support = np.argpartition(scores, -support_size)[-support_size:]
+        support.sort()
+        design = xs[:, support]
+        gram = design.T @ design
+        gram.flat[:: gram.shape[0] + 1] += ridge
+        rhs = design.T @ xt[:, target_index]
+        try:
+            coefficients = np.linalg.solve(gram, rhs)
+        except np.linalg.LinAlgError as exc:
+            raise TransportError(
+                f"failed OT-supported ridge solve for target feature {target_index}"
+            ) from exc
+        matrix[support, target_index] = coefficients
+
+    fit_rmse = _rmse(xs @ matrix, xt)
+    validation_rmse: float | None = None
+    if (validation_source is None) != (validation_target is None):
+        raise TransportError("validation_source and validation_target must be provided together")
+    if validation_source is not None:
+        vs, vt = _validate_activation_pair(validation_source, validation_target)
+        if vs.shape[1] != xs.shape[1] or vt.shape[1] != xt.shape[1]:
+            raise TransportError("validation feature dimensions must match fit activations")
+        validation_rmse = _rmse(vs @ matrix, vt)
+
+    singular = np.linalg.svd(xs, compute_uv=False)
+    tolerance_rank = np.finfo(np.float64).eps * max(xs.shape) * singular[0]
+    effective_rank = int(np.sum(singular > tolerance_rank))
+    smallest = singular[-1]
+    condition_number = (
+        float("inf")
+        if smallest <= tolerance_rank
+        else float(singular[0] / smallest)
+    )
+    diagnostics = MapDiagnostics(
+        sample_count=xs.shape[0],
+        source_features=xs.shape[1],
+        target_features=xt.shape[1],
+        effective_rank=effective_rank,
+        condition_number=condition_number,
+        fit_rmse=fit_rmse,
+        validation_rmse=validation_rmse,
+    )
+    return CoordinateMap(
+        matrix=matrix,
+        ridge=ridge,
+        source_space=source_space,
+        target_space=target_space,
+        diagnostics=diagnostics,
+    )
+
 def fit_ridge_coordinate_map(
     source_activations: Any,
     target_activations: Any,
