@@ -353,8 +353,11 @@ def evaluate_filter(
     z: torch.Tensor,
 ) -> BiasFilterMetrics:
     clean = artifact.apply(x)
-    before = _cross_covariance_norm(x, z)
-    after = _cross_covariance_norm(clean, z)
+    active = artifact.active_dimensions.to(device=x.device)
+    editable_x = x.index_select(-1, active)
+    editable_clean = clean.index_select(-1, active)
+    before = _cross_covariance_norm(editable_x, z)
+    after = _cross_covariance_norm(editable_clean, z)
     reduction = 0.0 if before <= 0.0 else 1.0 - after / before
     x64 = x.to(torch.float64)
     clean64 = clean.to(torch.float64)
