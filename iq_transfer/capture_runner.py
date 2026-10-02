@@ -210,12 +210,18 @@ def iq_hybrid_residual_taps(num_layers: int) -> tuple[ActivationTap, ...]:
         ActivationTap("embedding", "embed_tokens")
     ]
     for layer in range(num_layers):
-        taps.append(
-            ActivationTap(
-                f"layer.{layer}.residual_in",
-                f"layers.{layer}.norm",
-                capture="input",
-            )
+        taps.extend(
+            [
+                ActivationTap(
+                    f"layer.{layer}.residual_in",
+                    f"layers.{layer}.norm",
+                    capture="input",
+                ),
+                ActivationTap(
+                    f"layer.{layer}.norm_out",
+                    f"layers.{layer}.norm",
+                ),
+            ]
         )
     taps.append(
         ActivationTap("final_in", "norm", capture="input")
@@ -511,6 +517,11 @@ def capture_iq_hybrid_residuals(
         spaces[f"layer.{layer}.residual_in"] = _masked_concat(
             records,
             f"layer.{layer}.residual_in",
+            masks,
+        )
+        spaces[f"layer.{layer}.norm_out"] = _masked_concat(
+            records,
+            f"layer.{layer}.norm_out",
             masks,
         )
         if layer + 1 < len(schedule.layers):
