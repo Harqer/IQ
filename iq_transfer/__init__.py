@@ -2,7 +2,7 @@ from .complete_transplant import CompleteTransplantError, RESIDUAL_EMBED_SCALE, 
 from .gpt_oss20b import GPT_OSS_20B_ORIGINAL_SHA256, GPT_OSS_20B_REPO, GPT_OSS_20B_REVISION, GptOss20BConfig, GptOss20BError, GptOss20BOriginalCheckpoint
 from .batches import BatchArtifactError, TokenBatchArtifact, load_token_batches, save_token_batches
 from .job import PhiTransferJobResult, TransferJobError, hash_tokenizer_files, load_transferred_iq_artifact, run_phi_dense_transfer, run_phi_dense_transfer_loaded
-from .capture_runner import ActivationBundle, CaptureRunnerError, GLM53CaptureLayout, PhiCaptureLayout, build_phi_layer_calibration_from_bundles, capture_glm53_activations, capture_iq_activations, capture_iq_hybrid_residuals, capture_phi_activations, glm53_capture_taps, iq_capture_taps, iq_hybrid_residual_taps, load_local_glm53_causal_lm, load_local_phi_causal_lm, make_activation_pair, phi_capture_taps
+from .capture_runner import ActivationBundle, CaptureRunnerError, GLM53CaptureLayout, PhiCaptureLayout, build_phi_layer_calibration_from_bundles, capture_glm53_activations, capture_iq_activations, capture_iq_hybrid_residuals, capture_phi_activations, glm53_capture_taps, iq_capture_taps, iq_hybrid_residual_taps, load_activation_bundle, load_local_glm53_causal_lm, load_local_phi_causal_lm, make_activation_pair, phi_capture_taps, save_activation_bundle
 from .calibration import ActivationPair, CalibrationError, CalibrationManifest, CalibrationRecord, CalibrationSplit, LayerCorrespondence, PhiLayerCalibration, PhiLayerMapSolution, merge_coordinate_maps, solve_activation_pair, solve_layer_correspondence, solve_phi_layer_maps
 from .gqa_transport import GQAProjection, GQATransportError, fit_gqa_group_projection
 from .phi_pipeline import PhiDensePlanSpec, PhiLayerMapIds, PhiPipelineError, build_phi_dense_plan_spec, build_phi_dense_transport_plan
@@ -19,7 +19,7 @@ from .donor import DonorConfig, DonorError, DonorInspector, LayerRef, MappingTen
 from .manifest import CheckpointFile, DonorManifest, ManifestError, TensorInventoryItem, build_donor_manifest
 from .phi4 import Phi4Inspector
 from .glm53 import GLM53_BF16_REPO, GLM53_FLASH_BF16_REPO, GLM53Inspector, GLM53Layout
-from .glm53_calibration import GLM53CalibrationError, GLM53CalibrationSolution, GLM53StageCalibration, solve_glm53_calibration
+from .glm53_calibration import GLM53CalibrationError, GLM53CalibrationSolution, GLM53StageCalibration, bootstrap_glm53_calibration, solve_glm53_calibration
 from .glm53_dsa import GLM53DSATransform, GLM53DSATransformError, resolve_indexer_source_layer, transform_glm53_dsa_indexer
 from .glm53_job import GLM53DonorArtifact, GLM53TransferError, validate_glm53_donor
 from .glm53_moe import ExpertWeights, GLM53DenseMLPTransform, GLM53MoETransform, GLM53MoETransformError, latent_codec_weights, router_usage_from_topk, select_experts_by_usage, transform_glm53_dense_mlp, transform_glm53_moe
@@ -215,5 +215,8 @@ __all__ = [
     "transform_glm53_mla",
     "validate_glm53_donor",
     "validate_official_mamba3_mimo_15b_config",
-    "validate_official_mamba3_mimo_state",
+    "validate_official_mamba3_mimo_state",    "bootstrap_glm53_calibration",
+    "load_activation_bundle",
+    "save_activation_bundle",
+
 ]
