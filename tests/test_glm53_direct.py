@@ -8,6 +8,7 @@ from iq_transfer import (
     CoordinateMap,
     GLM53DirectTransformError,
     GLM53MLALayout,
+    fit_mla_compressed_subspace,
     fit_orthogonal_subspace,
     transform_glm53_mla,
 )
@@ -37,6 +38,23 @@ class GLM53DirectTransformTests(unittest.TestCase):
         self.assertTrue(np.allclose(a.matrix, b.matrix))
         self.assertTrue(
             np.allclose(a.matrix.T @ a.matrix, np.eye(4), atol=1e-8)
+        )
+
+    def test_mla_subspace_preserves_rotary_tail_exactly(self):
+        rng = np.random.default_rng(73)
+        activations = rng.normal(size=(64, 10))
+        mapping = fit_mla_compressed_subspace(
+            activations,
+            kv_lora_rank=6,
+            rope_dim=4,
+            target_latent_dim=3,
+        )
+        self.assertEqual(mapping.matrix.shape, (10, 7))
+        self.assertTrue(np.allclose(mapping.matrix[:6, 3:], 0.0))
+        self.assertTrue(np.allclose(mapping.matrix[6:, :3], 0.0))
+        self.assertTrue(np.array_equal(mapping.matrix[6:, 3:], np.eye(4)))
+        self.assertTrue(
+            np.allclose(mapping.matrix.T @ mapping.matrix, np.eye(7), atol=1e-8)
         )
 
     def test_mla_refactor_preserves_scores_and_value_output_at_full_latent_rank(self):
