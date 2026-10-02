@@ -19,6 +19,7 @@ from .donor import DonorConfig, DonorError, DonorInspector, LayerRef, MappingTen
 from .manifest import CheckpointFile, DonorManifest, ManifestError, TensorInventoryItem, build_donor_manifest
 from .phi4 import Phi4Inspector
 from .glm53 import GLM53_BF16_REPO, GLM53_FLASH_BF16_REPO, GLM53Inspector, GLM53Layout
+from .glm53_calibration import GLM53CalibrationError, GLM53CalibrationSolution, GLM53StageCalibration, solve_glm53_calibration
 from .glm53_job import GLM53DonorArtifact, GLM53TransferError, validate_glm53_donor
 from .glm53_moe import ExpertWeights, GLM53MoETransform, GLM53MoETransformError, latent_codec_weights, router_usage_from_topk, select_experts_by_usage, transform_glm53_moe
 from .glm53_direct import GLM53DirectTransformError, GLM53MLALayout, GLM53MLATransform, SubcloningMap, fit_importance_subcloning_map, fit_mla_compressed_subspace, fit_orthogonal_subspace, grouped_output_identity, transform_embedding_and_lm_head, transform_glm53_mla
@@ -56,6 +57,9 @@ __all__ = [
     "CalibrationRecord",
     "CalibrationSplit",
     "CaptureError",
+    "GLM53CalibrationError",
+    "GLM53CalibrationSolution",
+    "GLM53StageCalibration",
     "GLM53CaptureLayout",
     "CaptureRunnerError",
     "CheckpointFile",
@@ -187,6 +191,7 @@ __all__ = [
     "save_capture_records",
     "save_token_batches",
     "solve_activation_pair",
+    "solve_glm53_calibration",
     "solve_layer_correspondence",
     "solve_phi_layer_maps",
     "save_coordinate_map",
