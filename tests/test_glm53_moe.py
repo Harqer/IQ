@@ -11,6 +11,7 @@ from iq_transfer import (
     latent_codec_weights,
     router_usage_from_topk,
     select_experts_by_usage,
+    transform_glm53_dense_mlp,
     transform_glm53_moe,
 )
 
@@ -52,6 +53,34 @@ class GLM53MoETransformTests(unittest.TestCase):
         self.assertTrue(
             np.allclose(reconstructed_residual, expected_residual_projection, atol=1e-9)
         )
+
+    def test_dense_mlp_morph_keeps_donor_in_shared_expert_and_neutralizes_routed_path(self):
+        rng = np.random.default_rng(83)
+        hidden = 4
+        intermediate = 3
+        dense = ExpertWeights(
+            gate=rng.normal(size=(intermediate, hidden)),
+            up=rng.normal(size=(intermediate, hidden)),
+            down=rng.normal(size=(hidden, intermediate)),
+        )
+        identity_hidden = CoordinateMap(np.eye(hidden), 1e-6)
+        identity_middle = CoordinateMap(np.eye(intermediate), 1e-6)
+        result = transform_glm53_dense_mlp(
+            dense_expert=dense,
+            target_experts=2,
+            residual_map=identity_hidden,
+            latent_map=identity_hidden,
+            intermediate_map=identity_middle,
+        )
+        self.assertTrue(np.allclose(result.shared_expert.gate, dense.gate))
+        self.assertTrue(np.allclose(result.shared_expert.up, dense.up))
+        self.assertTrue(np.allclose(result.shared_expert.down, dense.down))
+        self.assertTrue(np.array_equal(result.router_weight, np.zeros((2, hidden))))
+        self.assertTrue(np.array_equal(result.routing_bias, np.zeros(2)))
+        for expert in result.routed_experts:
+            self.assertFalse(np.any(expert.gate))
+            self.assertFalse(np.any(expert.up))
+            self.assertFalse(np.any(expert.down))
 
     def test_direct_moe_transform_preserves_selected_linear_experts_in_full_rank_control(self):
         rng = np.random.default_rng(82)
