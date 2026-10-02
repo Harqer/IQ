@@ -25,8 +25,8 @@ class IQMultimodalConfig:
     """
     vision_model_name: str
     fusion_layers: tuple[int, ...]
-    vision_backend: str = "auto"
     transv_layers: tuple[int, ...]
+    vision_backend: str = "auto"
     visual_mamba_layers: int = 2
     cross_attention_heads: int = 8
     projector_hidden_multiplier: float = 2.0
