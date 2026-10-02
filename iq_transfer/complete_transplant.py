@@ -218,9 +218,11 @@ def canonical_glm53_config() -> IQHybridConfig:
         o_lora_rank=1024,
         index_n_heads=32,
         index_head_dim=128,
+        index_topk=2048,
         compress_rope_theta=8_000_000.0,
         normalize_query_output=False,
         normalize_candidate_nonrotary_only=True,
+        direct_token_indexer=True,
     )
     return validate_canonical_hybrid_backbone(
         replace(
