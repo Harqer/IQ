@@ -20,7 +20,7 @@ from .manifest import CheckpointFile, DonorManifest, ManifestError, TensorInvent
 from .phi4 import Phi4Inspector
 from .glm53 import GLM53Inspector, GLM53Layout
 from .glm53_job import GLM53DonorArtifact, GLM53TransferError, validate_glm53_donor
-from .glm53_direct import GLM53DirectTransformError, GLM53MLALayout, GLM53MLATransform, fit_orthogonal_subspace, grouped_output_identity, transform_glm53_mla
+from .glm53_direct import GLM53DirectTransformError, GLM53MLALayout, GLM53MLATransform, fit_mla_compressed_subspace, fit_orthogonal_subspace, grouped_output_identity, transform_glm53_mla
 from .glm53_policy import GLM53SourcePolicy, GLM53TransferDisposition, GLM53_SOURCE_POLICIES, IQ_RECIPIENT_NATIVE_FAMILIES, classify_glm53_source_role
 from .scaling import ScaleGate, TransferMetrics
 from .shadows import FunctionalShadow, MeasurementPlan, ShadowError, extract_shadow, match_layers_monotonic, shadow_distance
@@ -147,6 +147,7 @@ __all__ = [
     "channel_correlation_cost",
     "extract_shadow",
     "fit_gqa_group_projection",
+    "fit_mla_compressed_subspace",
     "fit_orthogonal_subspace",
     "fit_ot_coordinate_map",
     "fit_ridge_coordinate_map",
