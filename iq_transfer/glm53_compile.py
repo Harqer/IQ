@@ -105,7 +105,7 @@ def _context_state(
         kv_a_weight=_tensor(source, f"{prefix}.self_attn.kv_a_proj_with_mqa.weight"),
         kv_b_weight=_tensor(source, f"{prefix}.self_attn.kv_b_proj.weight"),
         o_weight=_tensor(source, f"{prefix}.self_attn.o_proj.weight"),
-        residual_input_map=stage.residual_map,
+        residual_input_map=stage.attention_input_map,
         residual_output_map=stage.residual_map,
         compressed_kv_map=stage.compressed_kv_map,
         layout=GLM53MLALayout(
@@ -125,7 +125,7 @@ def _context_state(
 
     q_a = _transport_input_only(
         _tensor(source, f"{prefix}.self_attn.q_a_proj.weight"),
-        stage.residual_map,
+        stage.attention_input_map,
     )
     state: dict[str, torch.Tensor] = {
         f"layers.{physical}.norm.weight": torch.ones(config.model.hidden_size, dtype=torch.bfloat16),
@@ -178,7 +178,7 @@ def _context_state(
             head_weight=_tensor(source, f"{indexer}.weights_proj.weight"),
             k_norm_weight=_tensor(source, f"{indexer}.k_norm.weight"),
             k_norm_bias=_tensor(source, f"{indexer}.k_norm.bias"),
-            residual_input_map=stage.residual_map,
+            residual_input_map=stage.attention_input_map,
             q_lora_rank=c.q_lora_rank,
             index_n_heads=c.index_n_heads,
             index_head_dim=c.index_head_dim,
@@ -245,6 +245,7 @@ def _moe_state(
             residual_map=stage.residual_map,
             latent_map=stage.latent_map,
             intermediate_map=stage.dense_intermediate_map,
+            input_map=stage.moe_input_map,
         )
         state[f"{target}.router.weight"] = _as_tensor(transformed.router_weight)
         state[f"{target}.routing_bias"] = _as_tensor(
@@ -280,6 +281,7 @@ def _moe_state(
         residual_map=stage.residual_map,
         latent_map=stage.latent_map,
         intermediate_map=intermediate,
+        input_map=stage.moe_input_map,
     )
     state[f"{target}.router.weight"] = _as_tensor(transformed.router_weight)
     state[f"{target}.routing_bias"] = _as_tensor(
@@ -363,14 +365,15 @@ def compile_glm53_iq_checkpoint(
         "mamba": "official Mamba-3 MIMO donor; no GLM QKV-to-recurrence fabrication",
     }
 
-    first = calibration.stages[0].residual_map
-    last = calibration.stages[-1].residual_map
     embedding = _tensor(source, "model.embed_tokens.weight")
     lm_head = _tensor(source, "lm_head.weight")
-    target_embedding = embedding.detach().cpu().double().numpy() @ first.matrix
+    target_embedding = (
+        embedding.detach().cpu().double().numpy()
+        @ calibration.lexical_input_map.matrix
+    )
     target_lm = (
         lm_head.detach().cpu().double().numpy()
-        @ np.linalg.pinv(last.matrix).T
+        @ np.linalg.pinv(calibration.final_output_map.matrix).T
     )
     _save_shard(
         output,
