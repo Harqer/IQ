@@ -3,16 +3,69 @@ from __future__ import annotations
 import argparse
 import json
 
+import torch
+
 from .job import run_phi_dense_transfer
 from .glm53_job import validate_glm53_donor
 from .mamba3_direct import compile_official_mamba3_mimo_15b_transplant
 from .complete_transplant import compile_complete_iq_checkpoint
 from .gpt_oss20b import GPT_OSS_20B_REVISION
+from .bias_filter import (
+    detect_magnitude_outlier_dimensions,
+    fit_leace_bias_filter,
+    paired_counterfactual_batch,
+)
+from .capture import load_capture_records
+
+
+def _capture_tap_matrix(path: str, tap: str, pooling: str) -> torch.Tensor:
+    records = load_capture_records(path)
+    if tap not in records:
+        raise RuntimeError(f"capture artifact has no tap {tap!r}: {path}")
+    rows: list[torch.Tensor] = []
+    for value in records[tap]:
+        if value.ndim == 2:
+            row = value
+        elif value.ndim == 3:
+            if pooling == "last":
+                row = value[:, -1, :]
+            elif pooling == "mean":
+                row = value.mean(dim=1)
+            else:
+                raise RuntimeError(f"unsupported pooling mode: {pooling}")
+        else:
+            raise RuntimeError(
+                f"bias-fit expects [batch,hidden] or [batch,seq,hidden] captures; "
+                f"got {tuple(value.shape)}"
+            )
+        rows.append(row)
+    if not rows:
+        raise RuntimeError(f"capture tap {tap!r} is empty: {path}")
+    return torch.cat(rows, dim=0)
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m iq_transfer.cli")
     sub = parser.add_subparsers(dest="command", required=True)
+
+    bias = sub.add_parser(
+        "bias-fit",
+        help="fit a shrinkage-LEACE candidate from paired activation captures",
+    )
+    bias.add_argument("--fit-a", required=True)
+    bias.add_argument("--fit-b", required=True)
+    bias.add_argument("--validation-a", required=True)
+    bias.add_argument("--validation-b", required=True)
+    bias.add_argument("--tap", required=True)
+    bias.add_argument("--target-concept", required=True)
+    bias.add_argument("--space-name", required=True)
+    bias.add_argument("--output", required=True)
+    bias.add_argument("--pooling", choices=("last", "mean"), default="last")
+    bias.add_argument("--protect-magnitude-outliers", action="store_true")
+    bias.add_argument("--outlier-mad-threshold", type=float, default=8.0)
+    bias.add_argument("--protected-modality", action="append", default=[])
+    bias.add_argument("--required-capability-metric", action="append")
+    bias.add_argument("--svd-tol", type=float, default=0.01)
     glm = sub.add_parser(
         "glm53-validate",
         help="validate and fingerprint a local GLM-5.3 donor snapshot",
@@ -88,6 +141,65 @@ def _parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+    if args.command == "bias-fit":
+        fit_a = _capture_tap_matrix(args.fit_a, args.tap, args.pooling)
+        fit_b = _capture_tap_matrix(args.fit_b, args.tap, args.pooling)
+        validation_a = _capture_tap_matrix(
+            args.validation_a, args.tap, args.pooling
+        )
+        validation_b = _capture_tap_matrix(
+            args.validation_b, args.tap, args.pooling
+        )
+
+        fit_x, fit_z = paired_counterfactual_batch(fit_a, fit_b)
+        validation_x, validation_z = paired_counterfactual_batch(
+            validation_a, validation_b
+        )
+        protected = None
+        if args.protect_magnitude_outliers:
+            protected = detect_magnitude_outlier_dimensions(
+                torch.cat((fit_a, fit_b), dim=0),
+                mad_threshold=args.outlier_mad_threshold,
+            )
+        required_metrics = tuple(
+            args.required_capability_metric or ("coding", "nlp")
+        )
+        artifact, metrics = fit_leace_bias_filter(
+            fit_x,
+            fit_z,
+            validation_x=validation_x,
+            validation_z=validation_z,
+            target_concept=args.target_concept,
+            space_name=args.space_name,
+            protected_dimensions=protected,
+            protected_modalities=tuple(args.protected_modality),
+            required_capability_metrics=required_metrics,
+            svd_tol=args.svd_tol,
+        )
+        artifact.write(args.output)
+        print(
+            json.dumps(
+                {
+                    "output": args.output,
+                    "artifact_fingerprint": artifact.fingerprint,
+                    "target_concept": artifact.target_concept,
+                    "space_name": artifact.space_name,
+                    "protected_dimensions": artifact.protected_dimension_count,
+                    "protected_modalities": list(artifact.protected_modalities),
+                    "required_capability_metrics": list(
+                        artifact.required_capability_metrics
+                    ),
+                    "leakage_before": metrics.leakage_before,
+                    "leakage_after": metrics.leakage_after,
+                    "leakage_reduction": metrics.leakage_reduction,
+                    "relative_mse": metrics.relative_mse,
+                    "mean_cosine": metrics.mean_cosine,
+                    "approved": False,
+                },
+                sort_keys=True,
+            )
+        )
+        return 0
     if args.command == "glm53-validate":
         artifact = validate_glm53_donor(
             checkpoint=args.checkpoint,

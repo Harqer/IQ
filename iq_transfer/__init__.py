@@ -1,3 +1,4 @@
+from .bias_filter import BiasFilterApproval, BiasFilterArtifact, BiasFilterError, BiasFilterGate, BiasFilterMetrics, CapabilityGateResult, CapabilityMetricRule, CausalValidation, apply_approved_filter, approve_bias_filter, detect_magnitude_outlier_dimensions, evaluate_filter, fit_leace_bias_filter, paired_counterfactual_batch, require_activation_gate, sanitize_activation_pair, validate_capability_metrics
 from .complete_transplant import CompleteTransplantError, RESIDUAL_EMBED_SCALE, canonical_complete_config, canonical_complete_schedule, compile_complete_iq_checkpoint, donor_layer_positions, load_complete_iq_checkpoint
 from .gpt_oss20b import GPT_OSS_20B_ORIGINAL_SHA256, GPT_OSS_20B_REPO, GPT_OSS_20B_REVISION, GptOss20BConfig, GptOss20BError, GptOss20BOriginalCheckpoint
 from .batches import BatchArtifactError, TokenBatchArtifact, load_token_batches, save_token_batches
@@ -27,6 +28,23 @@ from .slots import SlotError, TargetAssignment, TargetRegistry, TargetSlot, Tran
 from .transport import CoordinateMap, MapDiagnostics, TransportError, fit_ridge_coordinate_map, load_coordinate_map, save_coordinate_map, transport_linear
 
 __all__ = [
+    "BiasFilterApproval",
+    "BiasFilterArtifact",
+    "BiasFilterError",
+    "BiasFilterGate",
+    "BiasFilterMetrics",
+    "CapabilityGateResult",
+    "CapabilityMetricRule",
+    "CausalValidation",
+    "apply_approved_filter",
+    "approve_bias_filter",
+    "detect_magnitude_outlier_dimensions",
+    "evaluate_filter",
+    "fit_leace_bias_filter",
+    "paired_counterfactual_batch",
+    "require_activation_gate",
+    "sanitize_activation_pair",
+    "validate_capability_metrics",
     "ActivationBundle",
     "CompleteTransplantError",
     "GPT_OSS_20B_ORIGINAL_SHA256",
