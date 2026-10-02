@@ -3,6 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping
 
+GLM53_BF16_REPO = "zai-org/GLM-5.3-BF16"
+GLM53_FLASH_BF16_REPO = "zai-org/GLM-5.3-Flash-BF16"
+
+
 from .donor import (
     DonorConfig,
     DonorError,
