@@ -67,6 +67,57 @@ def fit_orthogonal_subspace(
     )
 
 
+def fit_mla_compressed_subspace(
+    compressed_kv_activations: Any,
+    *,
+    kv_lora_rank: int,
+    rope_dim: int,
+    target_latent_dim: int,
+) -> CoordinateMap:
+    """Compress only MLA's non-positional latent and preserve RoPE coordinates.
+
+    The returned basis is block diagonal:
+      [ PCA(kv_latent)      0 ]
+      [      0          I_rope ]
+
+    This is important because arbitrary mixing of rotary and non-rotary
+    channels would destroy the positional operator that the recipient applies.
+    """
+    x = _array(compressed_kv_activations)
+    expected = kv_lora_rank + rope_dim
+    if x.ndim != 2 or x.shape[1] != expected:
+        raise GLM53DirectTransformError(
+            f"compressed KV activations must have shape [samples, {expected}]"
+        )
+    if kv_lora_rank <= 0 or rope_dim < 0 or target_latent_dim <= 0:
+        raise GLM53DirectTransformError("MLA subspace dimensions are invalid")
+    if target_latent_dim > kv_lora_rank:
+        raise GLM53DirectTransformError(
+            "target_latent_dim cannot exceed donor kv_lora_rank"
+        )
+    latent = fit_orthogonal_subspace(
+        x[:, :kv_lora_rank],
+        target_features=target_latent_dim,
+    ).matrix
+    matrix = np.zeros(
+        (expected, target_latent_dim + rope_dim),
+        dtype=np.float64,
+    )
+    matrix[:kv_lora_rank, :target_latent_dim] = latent
+    if rope_dim:
+        matrix[
+            kv_lora_rank:,
+            target_latent_dim:,
+        ] = np.eye(rope_dim, dtype=np.float64)
+    return CoordinateMap(
+        matrix=matrix,
+        ridge=1e-12,
+        source_space="glm53.compressed_kv",
+        target_space="iq.compressed_candidate",
+        diagnostics=None,
+    )
+
+
 @dataclass(frozen=True)
 class GLM53MLALayout:
     source_hidden_size: int
