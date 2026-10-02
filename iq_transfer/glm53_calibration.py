@@ -251,6 +251,7 @@ def solve_glm53_calibration(
     source_layers: int,
     source_first_dense_layers: int,
     source_num_experts: int,
+    source_indexer_types: tuple[str, ...] | None = None,
     ridge: float = 1e-3,
     measurements: int = 256,
     seed: int = 0,
@@ -278,12 +279,36 @@ def solve_glm53_calibration(
         )
         for stage, (context_physical, _) in enumerate(stage_positions)
     }
+    allowed_sources: dict[int, frozenset[int]] | None = None
+    if source_indexer_types is not None:
+        if len(source_indexer_types) < source_layers:
+            raise GLM53CalibrationError(
+                "source_indexer_types must cover every GLM source layer"
+            )
+        full = frozenset(
+            i for i in range(source_layers)
+            if source_indexer_types[i] == "full"
+        )
+        unknown = sorted(
+            {source_indexer_types[i] for i in range(source_layers)}
+            - {"full", "shared"}
+        )
+        if unknown:
+            raise GLM53CalibrationError(
+                f"unsupported GLM indexer types: {unknown}"
+            )
+        allowed_sources = {}
+        for stage, (context_physical, _) in enumerate(stage_positions):
+            if target_config.schedule.layers[context_physical] is HybridLayerType.CSA:
+                allowed_sources[stage] = full
+
     correspondence = solve_layer_correspondence(
         source_residuals,
         target_residuals,
         measurements=measurements,
         seed=seed,
         depth_prior=depth_prior,
+        allowed_sources=allowed_sources,
     )
 
     stages: list[GLM53StageCalibration] = []
