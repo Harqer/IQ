@@ -7,10 +7,12 @@ The production target is **not** the original Neutrino/Ising mock architecture. 
 ## Architecture
 
 ```text
-tokens
-  ↓
-embeddings
-  ↓
+text tokens ─→ embeddings ─────────────────────────────┐
+images/video ─→ GLM-5.3 vision tower ─→ projector ─→ Mamba-3 visual stream
+                                                     │
+                                                     ├─ Vamba-style text→visual cross-attention
+                                                     ├─ TransV shallow uniform / deep relevance compression
+                                                     ↓
 heterogeneous backbone
   │
   ├─ M = Mamba-3 MIMO
@@ -43,6 +45,7 @@ pairwise comparisons; it is not a mandatory backbone anchor.
 ### Why the hybrid
 
 - **Mamba-3 MIMO (rank 4)** is the primary token-time recurrent sequence/state mixer; MIMO is not optional and IQ has no silent SISO fallback.
+- **Multimodal IQ** uses the native GLM-5.3 vision tower when GLM is the donor. Long visual streams are processed by dedicated Mamba-3 MIMO blocks rather than visual self-attention; text queries visual memory through gated cross-attention. TimeViper-style TransV performs shallow 50% uniform retention and deep 10% attention-guided retention while preserving temporal order. Text-only execution remains unchanged when no visual input is supplied.
 - **DeepSeek V4-family CSA/HCA** is the production long-context system: sliding-window local attention plus compressed long-range memory and learned sparse selection. Dense attention remains an optional teacher/control/fallback for exact pairwise comparison rather than a required anchor.
 - **Stable LatentMoE** is the production expert path: full-width sigmoid routing, latent routed experts, post-aggregate RMSNorm, full-width shared experts, SiTU-GLU, and one-step-delayed Quantile Balancing. The older full-width SwiGLU MoE remains an ablation/control.
 - **Block AttnRes** is the frozen production depth/residual mechanism. **mHC** remains a standalone ablation/reference and is not composed into the canonical hybrid. Neither is a reasoning controller.
