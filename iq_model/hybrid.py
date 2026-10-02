@@ -872,6 +872,8 @@ class IQHybridForCausalLM(nn.Module):
         pixel_values: torch.Tensor | None = None,
         video_values: torch.Tensor | None = None,
         frame_mask: torch.Tensor | None = None,
+        image_grid_thw: torch.Tensor | None = None,
+        video_grid_thw: torch.Tensor | None = None,
         return_hidden_states: bool = False,
     ) -> HybridCausalLMOutput:
         if input_ids.ndim != 2:
@@ -890,7 +892,11 @@ class IQHybridForCausalLM(nn.Module):
                 raise ValueError("labels must be integer token ids")
 
         if self.multimodal is None and (
-            pixel_values is not None or video_values is not None or frame_mask is not None
+            pixel_values is not None
+            or video_values is not None
+            or frame_mask is not None
+            or image_grid_thw is not None
+            or video_grid_thw is not None
         ):
             raise HybridModelError(
                 "visual inputs were provided but multimodal support is disabled"
@@ -900,6 +906,8 @@ class IQHybridForCausalLM(nn.Module):
                 pixel_values=pixel_values,
                 video_values=video_values,
                 frame_mask=frame_mask,
+                image_grid_thw=image_grid_thw,
+                video_grid_thw=video_grid_thw,
             )
             if self.multimodal is not None
             else None
