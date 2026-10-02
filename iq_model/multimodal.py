@@ -28,6 +28,7 @@ class IQMultimodalConfig:
     transv_layers: tuple[int, ...]
     vision_backend: str = "auto"
     visual_mamba_layers: int = 2
+    tokens_per_video_frame: int = 16
     cross_attention_heads: int = 8
     projector_hidden_multiplier: float = 2.0
     transv_shallow_keep_ratio: float = 0.5
@@ -44,6 +45,8 @@ class IQMultimodalConfig:
             raise ValueError("vision_backend must be 'auto' or 'glm5_next'")
         if self.visual_mamba_layers <= 0 or self.cross_attention_heads <= 0:
             raise ValueError("visual_mamba_layers and cross_attention_heads must be positive")
+        if self.tokens_per_video_frame <= 0:
+            raise ValueError("tokens_per_video_frame must be positive")
         if self.projector_hidden_multiplier <= 0:
             raise ValueError("projector_hidden_multiplier must be positive")
         for name, ratio in (
@@ -271,6 +274,79 @@ class VisionTower(nn.Module):
         frame_ids = frame_ids.expand(batch, frames, patches).reshape(batch, frames * patches)
         return VisualMemory(tokens, mask, frame_ids, "video")
 
+def _tome_merge(tokens: torch.Tensor, target: int) -> torch.Tensor:
+    """Training-free ToMe-style bipartite similarity merging to a target count."""
+    if tokens.ndim != 2 or target <= 0:
+        raise MultimodalError("ToMe expects [tokens, hidden] and a positive target")
+    x = tokens
+    while x.shape[0] > target:
+        n = x.shape[0]
+        a = x[0::2]
+        b = x[1::2]
+        if b.shape[0] == 0:
+            break
+        metric_a = F.normalize(a.float(), dim=-1)
+        metric_b = F.normalize(b.float(), dim=-1)
+        similarity = metric_a @ metric_b.transpose(0, 1)
+        best_score, best_dst = similarity.max(dim=-1)
+        max_merges = min(n - target, a.shape[0])
+        merge_src = torch.topk(best_score, k=max_merges, sorted=False).indices
+        merge_mask = torch.zeros(a.shape[0], dtype=torch.bool, device=x.device)
+        merge_mask[merge_src] = True
+        dst = best_dst[merge_src]
+
+        # Average merged source tokens into their matched destination tokens.
+        b_new = b.clone()
+        counts = torch.ones((b.shape[0], 1), dtype=x.dtype, device=x.device)
+        b_new.index_add_(0, dst, a[merge_src])
+        counts.index_add_(
+            0,
+            dst,
+            torch.ones((dst.numel(), 1), dtype=x.dtype, device=x.device),
+        )
+        b_new = b_new / counts
+        kept_a = a[~merge_mask]
+        x = torch.cat((kept_a, b_new), dim=0)
+    return x[:target]
+
+
+def _merge_video_frames(memory: VisualMemory, target_per_frame: int) -> VisualMemory:
+    if memory.source != "video":
+        return memory
+    rows: list[torch.Tensor] = []
+    row_frames: list[torch.Tensor] = []
+    for row in range(memory.hidden_states.shape[0]):
+        valid = memory.attention_mask[row]
+        src = memory.hidden_states[row, valid]
+        frames = memory.frame_ids[row, valid]
+        parts: list[torch.Tensor] = []
+        ids: list[torch.Tensor] = []
+        for frame in torch.unique_consecutive(frames):
+            frame_tokens = src[frames == frame]
+            merged = _tome_merge(
+                frame_tokens,
+                min(target_per_frame, frame_tokens.shape[0]),
+            )
+            parts.append(merged)
+            ids.append(torch.full(
+                (merged.shape[0],), int(frame), dtype=torch.long, device=src.device
+            ))
+        rows.append(torch.cat(parts, dim=0))
+        row_frames.append(torch.cat(ids, dim=0))
+    max_tokens = max(x.shape[0] for x in rows)
+    hidden = memory.hidden_states.new_zeros(
+        (len(rows), max_tokens, memory.hidden_states.shape[-1])
+    )
+    mask = torch.zeros((len(rows), max_tokens), dtype=torch.bool, device=hidden.device)
+    frame_ids = torch.zeros((len(rows), max_tokens), dtype=torch.long, device=hidden.device)
+    for row, values in enumerate(rows):
+        count = values.shape[0]
+        hidden[row, :count] = values
+        mask[row, :count] = True
+        frame_ids[row, :count] = row_frames[row]
+    return VisualMemory(hidden, mask, frame_ids, memory.source)
+
+
 class VisualMambaEncoder(nn.Module):
     """Linear-complexity visual-token processor; no visual self-attention."""
     def __init__(
@@ -463,7 +539,13 @@ class IQMultimodalPathway(nn.Module):
             image_grid_thw=image_grid_thw,
             video_grid_thw=video_grid_thw,
         )
-        return self.visual_mamba(memory) if memory is not None else None
+        if memory is None:
+            return None
+        memory = _merge_video_frames(
+            memory,
+            self.config.tokens_per_video_frame,
+        )
+        return self.visual_mamba(memory)
 
     def fuse(
         self,
