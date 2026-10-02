@@ -36,6 +36,7 @@ class ExpertWeights:
 class GLM53MoETransform:
     source_expert_indices: tuple[int, ...]
     router_weight: np.ndarray
+    routing_bias: np.ndarray
     latent_down_weight: np.ndarray
     latent_up_weight: np.ndarray
     routed_experts: tuple[ExpertWeights, ...]
@@ -135,6 +136,7 @@ def _transport_expert(
 def transform_glm53_moe(
     *,
     router_weight: Any,
+    routing_bias: Any,
     routed_experts: Iterable[ExpertWeights],
     shared_expert: ExpertWeights,
     expert_usage: Any,
@@ -151,12 +153,17 @@ def transform_glm53_moe(
     gradient update or teacher/student optimization.
     """
     router = _array(router_weight)
+    source_bias = _array(routing_bias).reshape(-1)
     experts = tuple(routed_experts)
     if router.ndim != 2:
         raise GLM53MoETransformError("router weight must be rank-2")
     if len(experts) != router.shape[0]:
         raise GLM53MoETransformError(
             "router row count must equal routed expert count"
+        )
+    if source_bias.shape != (router.shape[0],):
+        raise GLM53MoETransformError(
+            "routing_bias must have one entry per donor expert"
         )
     if residual_map.matrix.shape[0] != router.shape[1]:
         raise GLM53MoETransformError(
@@ -169,10 +176,13 @@ def transform_glm53_moe(
     if max(selected) >= len(experts):
         raise GLM53MoETransformError("expert usage does not match routed experts")
 
-    selected_router = router[np.asarray(selected)]
+    selection = np.asarray(selected)
+    selected_router = router[selection]
     target_router = selected_router @ np.linalg.pinv(
         residual_map.matrix
     ).T
+    target_bias = source_bias[selection].copy()
+    target_bias -= target_bias.mean()
     latent_down, latent_up = latent_codec_weights(
         residual_map,
         latent_map,
@@ -196,6 +206,7 @@ def transform_glm53_moe(
     return GLM53MoETransform(
         source_expert_indices=selected,
         router_weight=target_router,
+        routing_bias=target_bias,
         latent_down_weight=latent_down,
         latent_up_weight=latent_up,
         routed_experts=target_routed,
