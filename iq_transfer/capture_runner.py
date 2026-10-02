@@ -89,6 +89,128 @@ class PhiCaptureLayout:
         return self.num_key_value_heads * self.head_dim
 
 
+@dataclass(frozen=True)
+class GLM53CaptureLayout:
+    num_layers: int
+    hidden_size: int
+    q_lora_rank: int
+    kv_lora_rank: int
+    qk_rope_head_dim: int
+    mlp_layer_types: tuple[str, ...]
+
+    @classmethod
+    def from_model(cls, model: Any) -> "GLM53CaptureLayout":
+        config = getattr(model, "config", None)
+        if config is None or getattr(config, "model_type", None) != "glm_moe_dsa":
+            raise CaptureRunnerError(
+                "GLM-5.3 capture requires a GlmMoeDsaForCausalLM-style model"
+            )
+        layer_types = tuple(
+            str(x) for x in getattr(config, "mlp_layer_types", ())
+        )
+        if len(layer_types) != int(config.num_hidden_layers):
+            first_dense = int(getattr(config, "first_k_dense_replace", 3))
+            layer_types = tuple(
+                "dense" if i < first_dense else "sparse"
+                for i in range(int(config.num_hidden_layers))
+            )
+        return cls(
+            num_layers=int(config.num_hidden_layers),
+            hidden_size=int(config.hidden_size),
+            q_lora_rank=int(config.q_lora_rank),
+            kv_lora_rank=int(config.kv_lora_rank),
+            qk_rope_head_dim=int(config.qk_rope_head_dim),
+            mlp_layer_types=layer_types,
+        )
+
+
+def glm53_capture_taps(layout: GLM53CaptureLayout) -> tuple[ActivationTap, ...]:
+    taps: list[ActivationTap] = [
+        ActivationTap("embedding", "model.embed_tokens")
+    ]
+    for layer in range(layout.num_layers):
+        prefix = f"model.layers.{layer}"
+        name = f"layer.{layer}"
+        taps.extend(
+            [
+                ActivationTap(
+                    f"{name}.residual_in",
+                    f"{prefix}.input_layernorm",
+                    capture="input",
+                ),
+                ActivationTap(
+                    f"{name}.attn_in",
+                    f"{prefix}.input_layernorm",
+                ),
+                ActivationTap(
+                    f"{name}.q_a",
+                    f"{prefix}.self_attn.q_a_proj",
+                ),
+                ActivationTap(
+                    f"{name}.q_resid",
+                    f"{prefix}.self_attn.q_a_layernorm",
+                ),
+                ActivationTap(
+                    f"{name}.q_b",
+                    f"{prefix}.self_attn.q_b_proj",
+                ),
+                ActivationTap(
+                    f"{name}.compressed_kv",
+                    f"{prefix}.self_attn.kv_a_proj_with_mqa",
+                ),
+                ActivationTap(
+                    f"{name}.attn_out",
+                    f"{prefix}.self_attn",
+                    tensor_index=0,
+                ),
+                ActivationTap(
+                    f"{name}.mlp_in",
+                    f"{prefix}.post_attention_layernorm",
+                ),
+                ActivationTap(
+                    f"{name}.mlp_out",
+                    f"{prefix}.mlp",
+                ),
+                ActivationTap(
+                    f"{name}.residual_out",
+                    prefix,
+                    tensor_index=0,
+                ),
+            ]
+        )
+        if layout.mlp_layer_types[layer] == "sparse":
+            taps.append(
+                ActivationTap(
+                    f"{name}.router_topk",
+                    f"{prefix}.mlp.gate",
+                    tensor_index=2,
+                )
+            )
+    taps.append(ActivationTap("final", "model.norm"))
+    return tuple(taps)
+
+
+def iq_hybrid_residual_taps(num_layers: int) -> tuple[ActivationTap, ...]:
+    if num_layers <= 0:
+        raise CaptureRunnerError("num_layers must be positive")
+    taps: list[ActivationTap] = [
+        ActivationTap("embedding", "embed_tokens")
+    ]
+    for layer in range(num_layers):
+        taps.append(
+            ActivationTap(
+                f"layer.{layer}.residual_in",
+                f"layers.{layer}.norm",
+                capture="input",
+            )
+        )
+    taps.append(
+        ActivationTap("final_in", "norm", capture="input")
+    )
+    taps.append(ActivationTap("final", "norm"))
+    return tuple(taps)
+
+
 def phi_capture_taps(num_layers: int) -> tuple[ActivationTap, ...]:
     if num_layers <= 0:
         raise CaptureRunnerError("num_layers must be positive")
@@ -212,6 +334,41 @@ def _masked_concat(records: Mapping[str, tuple[Any, ...]], name: str, masks: lis
     return result
 
 
+def _masked_concat_router(
+    records: Mapping[str, tuple[Any, ...]],
+    name: str,
+    masks: list[Any],
+):
+    torch = _require_torch()
+    try:
+        values = records[name]
+    except KeyError as exc:
+        raise CaptureRunnerError(f"capture record missing {name!r}") from exc
+    if len(values) != len(masks):
+        raise CaptureRunnerError(
+            f"capture record {name!r} has {len(values)} batches, expected {len(masks)}"
+        )
+    selected: list[Any] = []
+    for value, mask in zip(values, masks):
+        if not isinstance(value, torch.Tensor) or value.ndim != 2:
+            raise CaptureRunnerError(
+                f"captured {name!r} router indices must have shape [batch*sequence, top_k]"
+            )
+        tokens = int(mask.numel())
+        if value.shape[0] != tokens:
+            raise CaptureRunnerError(
+                f"captured {name!r} router token count does not match attention mask"
+            )
+        reshaped = value.reshape(*mask.shape, value.shape[-1])
+        selected.append(reshaped[mask])
+    result = torch.cat(selected, dim=0).contiguous()
+    if result.numel() == 0:
+        raise CaptureRunnerError(f"capture record {name!r} has no valid tokens")
+    if result.dtype not in (torch.int32, torch.int64):
+        raise CaptureRunnerError(f"captured {name!r} router indices must be integer typed")
+    return result
+
+
 def _run_capture(
     model: Any,
     batches: Iterable[Mapping[str, Any]],
@@ -239,6 +396,113 @@ def _run_capture(
             else:
                 model(**kwargs)
     return capture.records(), masks
+
+
+def capture_glm53_activations(
+    model: Any,
+    batches: Iterable[Mapping[str, Any]],
+) -> ActivationBundle:
+    layout = GLM53CaptureLayout.from_model(model)
+    batch_list = list(batches)
+    if not batch_list:
+        raise CaptureRunnerError("at least one capture batch is required")
+    device = _input_device(model)
+    masks: list[Any] = []
+    torch = _require_torch()
+    taps = glm53_capture_taps(layout)
+    model.eval()
+    with TorchActivationCapture(model, taps) as capture, torch.no_grad():
+        for batch in batch_list:
+            kwargs, mask = _prepare_batch(
+                batch,
+                device,
+                allow_padding=True,
+            )
+            if "document_ids" in kwargs:
+                raise CaptureRunnerError(
+                    "GLM-5.3 calibration batches must not use packed document_ids"
+                )
+            masks.append(mask)
+            model(**kwargs, use_cache=False)
+    records = capture.records()
+    spaces: dict[str, Any] = {
+        "embedding": _masked_concat(records, "embedding", masks),
+        "final": _masked_concat(records, "final", masks),
+    }
+    for layer in range(layout.num_layers):
+        prefix = f"layer.{layer}"
+        for suffix in (
+            "residual_in",
+            "attn_in",
+            "q_a",
+            "q_resid",
+            "q_b",
+            "compressed_kv",
+            "attn_out",
+            "mlp_in",
+            "mlp_out",
+            "residual_out",
+        ):
+            spaces[f"{prefix}.{suffix}"] = _masked_concat(
+                records,
+                f"{prefix}.{suffix}",
+                masks,
+            )
+        if layout.mlp_layer_types[layer] == "sparse":
+            spaces[f"{prefix}.router_topk"] = _masked_concat_router(
+                records,
+                f"{prefix}.router_topk",
+                masks,
+            )
+    sample_count = int(spaces["embedding"].shape[0])
+    return ActivationBundle(
+        spaces=spaces,
+        sample_count=sample_count,
+        batch_count=len(masks),
+    )
+
+
+def capture_iq_hybrid_residuals(
+    model: Any,
+    batches: Iterable[Mapping[str, Any]],
+) -> ActivationBundle:
+    config = getattr(model, "config", None)
+    schedule = getattr(config, "schedule", None)
+    if schedule is None or not hasattr(schedule, "layers"):
+        raise CaptureRunnerError(
+            "hybrid IQ capture requires IQHybridForCausalLM configuration"
+        )
+    batch_list = list(batches)
+    if not batch_list:
+        raise CaptureRunnerError("at least one capture batch is required")
+    records, masks = _run_capture(
+        model,
+        batch_list,
+        iq_hybrid_residual_taps(len(schedule.layers)),
+        phi=False,
+    )
+    spaces: dict[str, Any] = {
+        "embedding": _masked_concat(records, "embedding", masks),
+        "final": _masked_concat(records, "final", masks),
+        "final_in": _masked_concat(records, "final_in", masks),
+    }
+    for layer in range(len(schedule.layers)):
+        spaces[f"layer.{layer}.residual_in"] = _masked_concat(
+            records,
+            f"layer.{layer}.residual_in",
+            masks,
+        )
+        if layer + 1 < len(schedule.layers):
+            spaces[f"layer.{layer}.residual_out"] = spaces[
+                f"layer.{layer + 1}.residual_in"
+            ]
+        else:
+            spaces[f"layer.{layer}.residual_out"] = spaces["final_in"]
+    return ActivationBundle(
+        spaces=spaces,
+        sample_count=int(spaces["embedding"].shape[0]),
+        batch_count=len(masks),
+    )
 
 
 def capture_phi_activations(
@@ -388,6 +652,59 @@ def build_phi_layer_calibration_from_bundles(
         mlp_hidden=pair("mlp_hidden"),
         mlp_out=pair("mlp_out"),
     )
+
+
+def load_local_glm53_causal_lm(
+    checkpoint: str | Path,
+    *,
+    device: str | None = None,
+    dtype: str | Any = "bfloat16",
+    attn_implementation: str = "sdpa",
+):
+    torch = _require_torch()
+    try:
+        from transformers import AutoModelForCausalLM
+    except ImportError as exc:
+        raise CaptureRunnerError(
+            "transformers is required to load GLM-5.3 checkpoints"
+        ) from exc
+    checkpoint = Path(checkpoint)
+    if not checkpoint.is_dir():
+        raise CaptureRunnerError(
+            f"GLM-5.3 checkpoint directory does not exist: {checkpoint}"
+        )
+    aliases = {
+        "bf16": torch.bfloat16,
+        "bfloat16": torch.bfloat16,
+        "fp32": torch.float32,
+        "float32": torch.float32,
+    }
+    resolved_dtype: Any = dtype
+    if isinstance(dtype, str):
+        if dtype == "auto":
+            resolved_dtype = "auto"
+        else:
+            try:
+                resolved_dtype = aliases[dtype.lower()]
+            except KeyError as exc:
+                raise CaptureRunnerError(
+                    f"unsupported GLM-5.3 load dtype: {dtype}"
+                ) from exc
+    model = AutoModelForCausalLM.from_pretrained(
+        str(checkpoint),
+        dtype=resolved_dtype,
+        local_files_only=True,
+        trust_remote_code=False,
+        use_safetensors=True,
+        attn_implementation=attn_implementation,
+    )
+    if getattr(model.config, "model_type", None) != "glm_moe_dsa":
+        raise CaptureRunnerError(
+            f"checkpoint model_type={getattr(model.config, 'model_type', None)!r} is not glm_moe_dsa"
+        )
+    if device is not None:
+        model.to(torch.device(device))
+    return model.eval()
 
 
 def load_local_phi_causal_lm(
