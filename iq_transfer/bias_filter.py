@@ -112,6 +112,7 @@ class BiasFilterArtifact:
     proj_right: torch.Tensor
     bias: torch.Tensor
     protected_modalities: tuple[str, ...] = ()
+    required_capability_metrics: tuple[str, ...] = ("coding", "nlp")
     schema_version: int = 1
 
     def __post_init__(self) -> None:
@@ -121,6 +122,12 @@ class BiasFilterArtifact:
             raise BiasFilterError("feature_dim and concept_dim must be positive")
         if not self.target_concept.strip() or not self.space_name.strip():
             raise BiasFilterError("target_concept and space_name must be non-empty")
+        if not self.required_capability_metrics:
+            raise BiasFilterError("required_capability_metrics must be non-empty")
+        if any(not name.strip() for name in self.required_capability_metrics):
+            raise BiasFilterError("required capability metric names must be non-empty")
+        if len(set(self.required_capability_metrics)) != len(self.required_capability_metrics):
+            raise BiasFilterError("required capability metric names must be unique")
         active = self.active_dimensions
         if active.ndim != 1 or active.dtype != torch.long:
             raise BiasFilterError("active_dimensions must be a rank-1 torch.long tensor")
@@ -161,14 +168,20 @@ class BiasFilterArtifact:
 
         index = self.active_dimensions.to(device=x.device)
         selected = x.index_select(-1, index)
-        left = self.proj_left.to(device=x.device, dtype=x.dtype)
-        right = self.proj_right.to(device=x.device, dtype=x.dtype)
-        bias = self.bias.to(device=x.device, dtype=x.dtype)
-        delta = selected - bias
-        scrubbed = selected - (delta @ right.mH) @ left.mH
+        compute_dtype = (
+            torch.float32
+            if selected.dtype in {torch.float16, torch.bfloat16}
+            else selected.dtype
+        )
+        selected_compute = selected.to(compute_dtype)
+        left = self.proj_left.to(device=x.device, dtype=compute_dtype)
+        right = self.proj_right.to(device=x.device, dtype=compute_dtype)
+        bias = self.bias.to(device=x.device, dtype=compute_dtype)
+        delta = selected_compute - bias
+        scrubbed = selected_compute - (delta @ right.mH) @ left.mH
 
         result = x.clone()
-        result.index_copy_(-1, index, scrubbed)
+        result.index_copy_(-1, index, scrubbed.to(dtype=x.dtype))
         return result
 
     @property
@@ -183,6 +196,7 @@ class BiasFilterArtifact:
                     "target_concept": self.target_concept,
                     "space_name": self.space_name,
                     "protected_modalities": list(self.protected_modalities),
+                    "required_capability_metrics": list(self.required_capability_metrics),
                 },
                 sort_keys=True,
                 separators=(",", ":"),
@@ -219,11 +233,11 @@ class BiasFilterArtifact:
             "target_concept": self.target_concept,
             "space_name": self.space_name,
             "protected_modalities": list(self.protected_modalities),
+            "required_capability_metrics": list(self.required_capability_metrics),
             "fingerprint": self.fingerprint,
         }
         (root / "metadata.json").write_text(
-            json.dumps(metadata, sort_keys=True, indent=2) + "
-",
+            json.dumps(metadata, sort_keys=True, indent=2) + "\n",
             encoding="utf-8",
         )
 
@@ -248,6 +262,12 @@ class BiasFilterArtifact:
             proj_right=tensors["proj_right"],
             bias=tensors["bias"],
             protected_modalities=tuple(str(x) for x in metadata.get("protected_modalities", ())),
+            required_capability_metrics=tuple(
+                str(x)
+                for x in metadata.get(
+                    "required_capability_metrics", ("coding", "nlp")
+                )
+            ),
             schema_version=int(metadata.get("schema_version", -1)),
         )
         if metadata.get("fingerprint") != artifact.fingerprint:
@@ -391,6 +411,7 @@ def fit_leace_bias_filter(
     space_name: str,
     protected_dimensions: torch.Tensor | None = None,
     protected_modalities: Sequence[str] = (),
+    required_capability_metrics: Sequence[str] = ("coding", "nlp"),
     statistics_dtype: torch.dtype = torch.float64,
     svd_tol: float = 0.01,
 ) -> tuple[BiasFilterArtifact, BiasFilterMetrics]:
@@ -447,6 +468,9 @@ def fit_leace_bias_filter(
         proj_right=eraser.proj_right.detach().cpu(),
         bias=eraser.bias.detach().cpu(),
         protected_modalities=tuple(str(x) for x in protected_modalities),
+        required_capability_metrics=tuple(
+            str(x) for x in required_capability_metrics
+        ),
     )
     metrics = evaluate_filter(artifact, validation_x, validation_z)
     return artifact, metrics
@@ -489,6 +513,15 @@ def approve_bias_filter(
 
     require_activation_gate(metrics, activation_gate)
     causal_validation.require_valid()
+    provided_rules = {rule.name for rule in capability_rules}
+    missing_required = sorted(
+        set(artifact.required_capability_metrics) - provided_rules
+    )
+    if missing_required:
+        raise BiasFilterError(
+            "missing required capability preservation rules: "
+            + ", ".join(missing_required)
+        )
     capability_gate = validate_capability_metrics(
         baseline_capabilities,
         filtered_capabilities,
