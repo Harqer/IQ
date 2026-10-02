@@ -33,6 +33,16 @@ class ExpertWeights:
 
 
 @dataclass(frozen=True)
+class GLM53DenseMLPTransform:
+    shared_expert: ExpertWeights
+    latent_down_weight: np.ndarray
+    latent_up_weight: np.ndarray
+    router_weight: np.ndarray
+    routing_bias: np.ndarray
+    routed_experts: tuple[ExpertWeights, ...]
+
+
+@dataclass(frozen=True)
 class GLM53MoETransform:
     source_expert_indices: tuple[int, ...]
     router_weight: np.ndarray
@@ -131,6 +141,56 @@ def _transport_expert(
     except TransportError as exc:
         raise GLM53MoETransformError(str(exc)) from exc
     return ExpertWeights(gate=gate, up=up, down=down)
+
+
+def transform_glm53_dense_mlp(
+    *,
+    dense_expert: ExpertWeights,
+    target_experts: int,
+    residual_map: CoordinateMap,
+    latent_map: CoordinateMap,
+    intermediate_map: CoordinateMap,
+) -> GLM53DenseMLPTransform:
+    """Morph a dense GLM SwiGLU block into one active IQ shared expert.
+
+    The shared expert carries the donor function. The routed branch is
+    initialized function-neutral: zero router/correction bias and zero-output
+    routed experts. This avoids fabricating expert specialization for donor
+    layers that never had routed experts.
+    """
+    if target_experts <= 0:
+        raise GLM53MoETransformError("target_experts must be positive")
+    shared = _transport_expert(
+        dense_expert,
+        input_map=residual_map,
+        intermediate_map=intermediate_map,
+        output_map=residual_map,
+    )
+    latent_down, latent_up = latent_codec_weights(
+        residual_map,
+        latent_map,
+    )
+    latent_width = latent_map.matrix.shape[1]
+    expert_width = intermediate_map.matrix.shape[1]
+    routed = tuple(
+        ExpertWeights(
+            gate=np.zeros((expert_width, latent_width), dtype=np.float64),
+            up=np.zeros((expert_width, latent_width), dtype=np.float64),
+            down=np.zeros((latent_width, expert_width), dtype=np.float64),
+        )
+        for _ in range(target_experts)
+    )
+    return GLM53DenseMLPTransform(
+        shared_expert=shared,
+        latent_down_weight=latent_down,
+        latent_up_weight=latent_up,
+        router_weight=np.zeros(
+            (target_experts, residual_map.matrix.shape[1]),
+            dtype=np.float64,
+        ),
+        routing_bias=np.zeros(target_experts, dtype=np.float64),
+        routed_experts=routed,
+    )
 
 
 def transform_glm53_moe(
