@@ -20,6 +20,7 @@ from .manifest import CheckpointFile, DonorManifest, ManifestError, TensorInvent
 from .phi4 import Phi4Inspector
 from .glm53 import GLM53_BF16_REPO, GLM53_FLASH_BF16_REPO, GLM53Inspector, GLM53Layout
 from .glm53_job import GLM53DonorArtifact, GLM53TransferError, validate_glm53_donor
+from .glm53_moe import ExpertWeights, GLM53MoETransform, GLM53MoETransformError, latent_codec_weights, router_usage_from_topk, select_experts_by_usage, transform_glm53_moe
 from .glm53_direct import GLM53DirectTransformError, GLM53MLALayout, GLM53MLATransform, fit_mla_compressed_subspace, fit_orthogonal_subspace, grouped_output_identity, transform_glm53_mla
 from .glm53_policy import GLM53SourcePolicy, GLM53TransferDisposition, GLM53_SOURCE_POLICIES, IQ_RECIPIENT_NATIVE_FAMILIES, classify_glm53_source_role
 from .scaling import ScaleGate, TransferMetrics
@@ -69,6 +70,9 @@ __all__ = [
     "GQATransportError",
     "GLM53DirectTransformError",
     "GLM53MLALayout",
+    "ExpertWeights",
+    "GLM53MoETransform",
+    "GLM53MoETransformError",
     "GLM53MLATransform",
     "GLM53_BF16_REPO",
     "GLM53_FLASH_BF16_REPO",
@@ -158,6 +162,7 @@ __all__ = [
     "grouped_output_identity",
     "hash_tokenizer_files",
     "iq_capture_taps",
+    "latent_codec_weights",
     "load_capture_records",
     "load_token_batches",
     "load_transferred_iq_artifact",
@@ -170,15 +175,18 @@ __all__ = [
     "pool_activations_by_byte_spans",
     "run_phi_dense_transfer",
     "run_phi_dense_transfer_loaded",
+    "router_usage_from_topk",
     "save_capture_records",
     "save_token_batches",
     "solve_activation_pair",
     "solve_layer_correspondence",
     "solve_phi_layer_maps",
     "save_coordinate_map",
+    "select_experts_by_usage",
     "shadow_distance",
     "sinkhorn_transport",
     "transport_linear",
+    "transform_glm53_moe",
     "transform_glm53_mla",
     "validate_glm53_donor",
     "validate_official_mamba3_mimo_15b_config",
