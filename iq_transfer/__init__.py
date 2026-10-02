@@ -27,6 +27,23 @@ from .slots import SlotError, TargetAssignment, TargetRegistry, TargetSlot, Tran
 from .transport import CoordinateMap, MapDiagnostics, TransportError, fit_ridge_coordinate_map, load_coordinate_map, save_coordinate_map, transport_linear
 
 __all__ = [
+    "BiasFilterApproval",
+    "BiasFilterArtifact",
+    "BiasFilterError",
+    "BiasFilterGate",
+    "BiasFilterMetrics",
+    "CapabilityGateResult",
+    "CapabilityMetricRule",
+    "CausalValidation",
+    "apply_approved_filter",
+    "approve_bias_filter",
+    "detect_magnitude_outlier_dimensions",
+    "evaluate_filter",
+    "fit_leace_bias_filter",
+    "paired_counterfactual_batch",
+    "require_activation_gate",
+    "sanitize_activation_pair",
+    "validate_capability_metrics",
     "ActivationBundle",
     "CompleteTransplantError",
     "GPT_OSS_20B_ORIGINAL_SHA256",
