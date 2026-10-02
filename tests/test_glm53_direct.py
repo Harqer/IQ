@@ -8,8 +8,10 @@ from iq_transfer import (
     CoordinateMap,
     GLM53DirectTransformError,
     GLM53MLALayout,
+    fit_importance_subcloning_map,
     fit_mla_compressed_subspace,
     fit_orthogonal_subspace,
+    transform_embedding_and_lm_head,
     transform_glm53_mla,
 )
 
@@ -28,6 +30,45 @@ class GLM53DirectTransformTests(unittest.TestCase):
             target_head_dim=3,
             output_groups=2,
             output_rank=3,
+        )
+
+    def test_importance_subcloning_keeps_high_energy_channels_exactly(self):
+        x = np.array([
+            [1.0, 10.0, 2.0, 8.0],
+            [1.0, 10.0, 2.0, 8.0],
+        ])
+        result = fit_importance_subcloning_map(x, target_features=2)
+        self.assertEqual(result.source_indices, (1, 3))
+        expected = np.array([
+            [0.0, 0.0],
+            [1.0, 0.0],
+            [0.0, 0.0],
+            [0.0, 1.0],
+        ])
+        self.assertTrue(np.array_equal(result.coordinate_map.matrix, expected))
+
+    def test_lexical_transport_preserves_logits_on_subcloned_residual(self):
+        rng = np.random.default_rng(70)
+        embedding = rng.normal(size=(11, 5))
+        lm_head = rng.normal(size=(11, 5))
+        map_matrix = np.eye(5)[:, :3]
+        mapping = CoordinateMap(map_matrix, 1e-6)
+        target_embedding, target_lm = transform_embedding_and_lm_head(
+            embedding,
+            lm_head,
+            mapping,
+        )
+        self.assertTrue(np.allclose(target_embedding, embedding[:, :3]))
+        self.assertTrue(np.allclose(target_lm, lm_head[:, :3]))
+        donor_hidden = rng.normal(size=(7, 5))
+        donor_hidden[:, 3:] = 0.0
+        target_hidden = donor_hidden @ map_matrix
+        self.assertTrue(
+            np.allclose(
+                donor_hidden @ lm_head.T,
+                target_hidden @ target_lm.T,
+                atol=1e-9,
+            )
         )
 
     def test_orthogonal_subspace_is_deterministic_and_orthonormal(self):
