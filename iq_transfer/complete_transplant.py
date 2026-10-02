@@ -205,6 +205,8 @@ def canonical_glm53_config() -> IQHybridConfig:
         latent_size=2048,
         expert_intermediate_size=2048,
         top_k=8,
+        situ_beta=1_000_000.0,
+        situ_linear_beta=1_000_000.0,
         routed_scaling_factor=2.5,
     )
     compressed = replace(
