@@ -180,8 +180,10 @@ class GLM53DirectTransformTests(unittest.TestCase):
             donor_head_outputs.append(weights[head] @ donor_value)
             target_head_outputs.append(weights[head] @ target_kv)
 
+        donor_scaled = np.stack(donor_scores) / np.sqrt(layout.qk_head_dim)
+        target_scaled = np.stack(target_scores) / np.sqrt(layout.target_head_dim)
         self.assertTrue(
-            np.allclose(np.stack(donor_scores), np.stack(target_scores), atol=1e-9)
+            np.allclose(donor_scaled, target_scaled, atol=1e-9)
         )
 
         donor_concat = np.concatenate(donor_head_outputs, axis=-1)
