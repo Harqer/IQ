@@ -4,6 +4,8 @@ import torch
 
 from iq_model.multimodal import (
     IQMultimodalConfig,
+    MultimodalError,
+    CrossModalFusion,
     TransVTransfer,
     VisualMemory,
     _tome_merge,
@@ -31,11 +33,9 @@ class MultimodalTests(unittest.TestCase):
             [0, 0, 1, 1, 2, 2, 3, 3],
             [0, 1, 2, 3, 0, 0, 0, 0],
         ])
-        text = torch.randn(2, 3, 4)
         out = TransVTransfer(config)(
             VisualMemory(hidden, mask, frames, "video"),
-            text,
-            text_mask=None,
+            relevance_scores=None,
             deep=False,
         )
         self.assertEqual(out.attention_mask.sum(dim=1).tolist(), [4, 2])
@@ -56,6 +56,43 @@ class MultimodalTests(unittest.TestCase):
                 vision_model_name="example/vision",
                 fusion_layers=(4, 2),
                 transv_layers=(),
+            )
+
+    def test_cross_modal_fusion_is_function_neutral_at_init(self):
+        fusion = CrossModalFusion(
+            hidden_size=8,
+            heads=2,
+            dtype=torch.float32,
+            device=torch.device("cpu"),
+        )
+        text = torch.randn(2, 4, 8)
+        memory = VisualMemory(
+            torch.randn(2, 6, 8),
+            torch.ones(2, 6, dtype=torch.bool),
+            torch.zeros(2, 6, dtype=torch.long),
+            "video",
+        )
+        output = fusion(text, memory, text_mask=None)
+        self.assertTrue(torch.equal(output, text))
+
+    def test_deep_transv_requires_attention_scores(self):
+        config = IQMultimodalConfig(
+            vision_model_name="example/vision",
+            fusion_layers=(2,),
+            transv_layers=(2,),
+            min_visual_tokens=1,
+        )
+        memory = VisualMemory(
+            torch.randn(1, 8, 4),
+            torch.ones(1, 8, dtype=torch.bool),
+            torch.zeros(1, 8, dtype=torch.long),
+            "video",
+        )
+        with self.assertRaisesRegex(MultimodalError, "attention"):
+            TransVTransfer(config)(
+                memory,
+                relevance_scores=None,
+                deep=True,
             )
 
     def test_tome_merges_to_exact_target(self):
