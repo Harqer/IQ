@@ -23,7 +23,8 @@ from .glm53_calibration import GLM53CalibrationError, GLM53CalibrationSolution, 
 from .glm53_dsa import GLM53DSATransform, GLM53DSATransformError, resolve_indexer_source_layer, transform_glm53_dsa_indexer
 from .glm53_job import GLM53DonorArtifact, GLM53TransferError, validate_glm53_donor
 from .glm53_moe import ExpertWeights, GLM53DenseMLPTransform, GLM53MoETransform, GLM53MoETransformError, latent_codec_weights, router_usage_from_topk, select_experts_by_usage, transform_glm53_dense_mlp, transform_glm53_moe
-from .glm53_direct import GLM53DirectTransformError, GLM53MLALayout, GLM53MLATransform, SubcloningMap, fit_importance_subcloning_map, fit_mla_compressed_subspace, fit_orthogonal_subspace, grouped_output_identity, transform_embedding_and_lm_head, transform_glm53_mla
+from .glm53_direct import GLM53DSATransform, GLM53DirectTransformError, GLM53MLALayout, GLM53MLATransform, SubcloningMap, fit_importance_subcloning_map, fit_mla_compressed_subspace, fit_orthogonal_subspace, grouped_output_identity, transform_embedding_and_lm_head, transform_glm53_dsa_indexer, transform_glm53_mla
+from .glm53_compile import GLM53CompileError, GLM53CompileResult, compile_glm53_iq_checkpoint
 from .glm53_policy import GLM53SourcePolicy, GLM53TransferDisposition, GLM53_SOURCE_POLICIES, IQ_RECIPIENT_NATIVE_FAMILIES, classify_glm53_source_role
 from .scaling import ScaleGate, TransferMetrics
 from .shadows import FunctionalShadow, MeasurementPlan, ShadowError, extract_shadow, match_layers_monotonic, shadow_distance
@@ -74,6 +75,9 @@ __all__ = [
     "FunctionalShadow",
     "GQAProjection",
     "GQATransportError",
+    "GLM53CompileError",
+    "GLM53CompileResult",
+    "compile_glm53_iq_checkpoint",
     "GLM53DirectTransformError",
     "GLM53MLALayout",
     "ExpertWeights",
