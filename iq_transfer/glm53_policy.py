@@ -92,6 +92,12 @@ GLM53_SOURCE_POLICIES: tuple[GLM53SourcePolicy, ...] = (
         "Both routers are sigmoid-based; directly select/align donor expert identities before transporting the retained router rows.",
     ),
     GLM53SourcePolicy(
+        "moe.routing_bias",
+        GLM53TransferDisposition.DIRECT_REFACTOR,
+        "stable_latent_moe.routing_bias",
+        "Select the same donor expert correction-bias entries as the retained router rows and re-center them in IQ's selected expert set.",
+    ),
+    GLM53SourcePolicy(
         "moe.shared",
         GLM53TransferDisposition.DIRECT_REFACTOR,
         "stable_latent_moe.shared_experts",
