@@ -171,6 +171,9 @@ class IQPretrainingModel(nn.Module):
         attention_mask: torch.Tensor | None = None,
         document_ids: torch.Tensor | None = None,
         reasoning_context_lengths: torch.Tensor | None = None,
+        pixel_values: torch.Tensor | None = None,
+        video_values: torch.Tensor | None = None,
+        frame_mask: torch.Tensor | None = None,
     ) -> PretrainingOutput:
         use_mtp = (
             self.mtp is not None
@@ -182,6 +185,9 @@ class IQPretrainingModel(nn.Module):
             "attention_mask": attention_mask,
             "document_ids": document_ids,
             "return_hidden_states": use_mtp,
+            "pixel_values": pixel_values,
+            "video_values": video_values,
+            "frame_mask": frame_mask,
         }
         reasoning_config = getattr(
             getattr(self.main_model, "config", None),
