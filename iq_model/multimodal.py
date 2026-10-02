@@ -755,6 +755,19 @@ class IQMultimodalPathway(nn.Module):
             memory = self.video_context(memory)
         return memory
 
+    def encode_audio(
+        self,
+        *,
+        audio_features: torch.Tensor | None,
+        audio_attention_mask: torch.Tensor | None,
+        audio_streaming: bool,
+    ) -> VisualMemory | None:
+        if audio_features is None:
+            if audio_attention_mask is not None:
+                raise MultimodalError("audio_attention_mask requires audio_features")
+            return None
+        return self.audio(audio_features, audio_attention_mask, streaming=audio_streaming)
+
     def fuse(
         self,
         layer_index: int,
