@@ -24,7 +24,7 @@ from .glm53_policy import GLM53SourcePolicy, GLM53TransferDisposition, GLM53_SOU
 from .scaling import ScaleGate, TransferMetrics
 from .shadows import FunctionalShadow, MeasurementPlan, ShadowError, extract_shadow, match_layers_monotonic, shadow_distance
 from .slots import SlotError, TargetAssignment, TargetRegistry, TargetSlot, TransferMethod
-from .transport import CoordinateMap, MapDiagnostics, TransportError, fit_ridge_coordinate_map, load_coordinate_map, save_coordinate_map, transport_linear
+from .transport import CoordinateMap, MapDiagnostics, TransportError, channel_correlation_cost, fit_ot_coordinate_map, fit_ridge_coordinate_map, load_coordinate_map, save_coordinate_map, sinkhorn_transport, transport_linear
 
 __all__ = [
     "ActivationBundle",
@@ -140,8 +140,10 @@ __all__ = [
     "compile_official_mamba3_mimo_15b_transplant",
     "classify_glm53_source_role",
     "capture_phi_activations",
+    "channel_correlation_cost",
     "extract_shadow",
     "fit_gqa_group_projection",
+    "fit_ot_coordinate_map",
     "fit_ridge_coordinate_map",
     "hash_tokenizer_files",
     "iq_capture_taps",
@@ -164,6 +166,7 @@ __all__ = [
     "solve_phi_layer_maps",
     "save_coordinate_map",
     "shadow_distance",
+    "sinkhorn_transport",
     "transport_linear",
     "validate_glm53_donor",
     "validate_official_mamba3_mimo_15b_config",
