@@ -23,12 +23,8 @@ from .complete_transplant import (
 )
 from .glm53 import GLM53Inspector
 from .glm53_calibration import GLM53CalibrationSolution, GLM53StageCalibration
-from .glm53_direct import (
-    GLM53MLALayout,
-    transform_embedding_and_lm_head,
-    transform_glm53_dsa_indexer,
-    transform_glm53_mla,
-)
+from .glm53_direct import GLM53MLALayout, transform_glm53_mla
+from .glm53_dsa import transform_glm53_dsa_indexer
 from .glm53_job import validate_glm53_donor
 from .glm53_moe import (
     ExpertWeights,
@@ -173,15 +169,16 @@ def _context_state(
             )
         indexer = f"{prefix}.self_attn.indexer"
         dsa = transform_glm53_dsa_indexer(
-            wq_b_weight=_tensor(source, f"{indexer}.wq_b.weight"),
-            wk_weight=_tensor(source, f"{indexer}.wk.weight"),
+            q_weight=_tensor(source, f"{indexer}.wq_b.weight"),
+            k_weight=_tensor(source, f"{indexer}.wk.weight"),
             head_weight=_tensor(source, f"{indexer}.weights_proj.weight"),
             k_norm_weight=_tensor(source, f"{indexer}.k_norm.weight"),
             k_norm_bias=_tensor(source, f"{indexer}.k_norm.bias"),
-            residual_input_map=stage.attention_input_map,
+            residual_map=stage.attention_input_map,
+            num_heads=c.index_n_heads,
+            head_dim=c.index_head_dim,
+            rope_dim=c.partial_rotary_dim,
             q_lora_rank=c.q_lora_rank,
-            index_n_heads=c.index_n_heads,
-            index_head_dim=c.index_head_dim,
         )
         state.update(
             {
