@@ -174,6 +174,8 @@ class IQPretrainingModel(nn.Module):
         pixel_values: torch.Tensor | None = None,
         video_values: torch.Tensor | None = None,
         frame_mask: torch.Tensor | None = None,
+        image_grid_thw: torch.Tensor | None = None,
+        video_grid_thw: torch.Tensor | None = None,
     ) -> PretrainingOutput:
         use_mtp = (
             self.mtp is not None
@@ -188,6 +190,8 @@ class IQPretrainingModel(nn.Module):
             "pixel_values": pixel_values,
             "video_values": video_values,
             "frame_mask": frame_mask,
+            "image_grid_thw": image_grid_thw,
+            "video_grid_thw": video_grid_thw,
         }
         reasoning_config = getattr(
             getattr(self.main_model, "config", None),
