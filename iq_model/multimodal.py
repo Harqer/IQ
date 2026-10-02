@@ -30,7 +30,8 @@ class IQMultimodalConfig:
     visual_mamba_layers: int = 2
     cross_attention_heads: int = 8
     projector_hidden_multiplier: float = 2.0
-    transv_keep_ratio: float = 0.5
+    transv_shallow_keep_ratio: float = 0.5
+    transv_deep_keep_ratio: float = 0.1
     min_visual_tokens: int = 16
     max_frames: int = 16384
     freeze_vision_tower: bool = True
@@ -45,8 +46,12 @@ class IQMultimodalConfig:
             raise ValueError("visual_mamba_layers and cross_attention_heads must be positive")
         if self.projector_hidden_multiplier <= 0:
             raise ValueError("projector_hidden_multiplier must be positive")
-        if not (0.0 < self.transv_keep_ratio <= 1.0):
-            raise ValueError("transv_keep_ratio must be in (0, 1]")
+        for name, ratio in (
+            ("transv_shallow_keep_ratio", self.transv_shallow_keep_ratio),
+            ("transv_deep_keep_ratio", self.transv_deep_keep_ratio),
+        ):
+            if not (0.0 < ratio <= 1.0):
+                raise ValueError(f"{name} must be in (0, 1]")
         if self.min_visual_tokens <= 0 or self.max_frames <= 0:
             raise ValueError("min_visual_tokens and max_frames must be positive")
         if tuple(sorted(set(self.fusion_layers))) != self.fusion_layers:
@@ -345,24 +350,32 @@ class CrossModalFusion(nn.Module):
         )
         if text_mask is not None:
             fused = fused * text_mask.to(fused.dtype).unsqueeze(-1)
-        return text + torch.tanh(self.gate) * fused
+        return text + torch.sigmoid(self.gate) * fused
 
 
 class TransVTransfer(nn.Module):
-    """Transfer visual evidence into text, then compact visual memory.
-
-    Compression is mask-aware and preserves temporal order. It is only invoked
-    after a cross-modal fusion at the same physical depth.
-    """
+    """TimeViper-style shallow uniform and deep attention-guided compression."""
     def __init__(self, config: IQMultimodalConfig) -> None:
         super().__init__()
         self.config = config
 
-    def forward(self, memory: VisualMemory) -> VisualMemory:
-        batch, tokens, hidden = memory.hidden_states.shape
+    def forward(
+        self,
+        memory: VisualMemory,
+        text: torch.Tensor,
+        *,
+        text_mask: torch.Tensor | None,
+        deep: bool,
+    ) -> VisualMemory:
+        batch, _, hidden = memory.hidden_states.shape
+        ratio = (
+            self.config.transv_deep_keep_ratio
+            if deep
+            else self.config.transv_shallow_keep_ratio
+        )
         valid_counts = memory.attention_mask.sum(dim=1)
         target = torch.clamp(
-            torch.ceil(valid_counts.float() * self.config.transv_keep_ratio).long(),
+            torch.ceil(valid_counts.float() * ratio).long(),
             min=self.config.min_visual_tokens,
         )
         target = torch.minimum(target, valid_counts)
@@ -370,27 +383,43 @@ class TransVTransfer(nn.Module):
         out = memory.hidden_states.new_zeros((batch, max_target, hidden))
         out_mask = torch.zeros((batch, max_target), dtype=torch.bool, device=out.device)
         out_frames = torch.zeros((batch, max_target), dtype=torch.long, device=out.device)
+
         for row in range(batch):
             src = memory.hidden_states[row, memory.attention_mask[row]]
             src_frames = memory.frame_ids[row, memory.attention_mask[row]]
             count = int(target[row])
             if count == src.shape[0]:
-                pooled = src
-                pooled_frames = src_frames
+                indices = torch.arange(count, device=src.device)
+            elif deep:
+                valid_text = (
+                    text[row]
+                    if text_mask is None
+                    else text[row, text_mask[row].to(dtype=torch.bool, device=text.device)]
+                )
+                if valid_text.numel() == 0:
+                    raise MultimodalError("attention-guided TransV requires valid text tokens")
+                query = F.normalize(valid_text.float(), dim=-1).mean(dim=0)
+                keys = F.normalize(src.float(), dim=-1)
+                scores = keys @ query
+                # Select by relevance, then restore temporal/token order for Mamba.
+                indices = torch.topk(scores, k=count, sorted=False).indices.sort().values
             else:
-                # Adaptive pooling is deterministic, ordered, and includes the
-                # entire visual stream rather than dropping late frames.
-                pooled = F.adaptive_avg_pool1d(src.transpose(0, 1).unsqueeze(0), count)
-                pooled = pooled.squeeze(0).transpose(0, 1)
-                frame_float = F.adaptive_avg_pool1d(
-                    src_frames.float().view(1, 1, -1), count
-                ).view(-1)
-                pooled_frames = frame_float.round().long()
-            out[row, :count] = pooled
-            out_mask[row, :count] = True
-            out_frames[row, :count] = pooled_frames
-        return VisualMemory(out, out_mask, out_frames, memory.source)
+                # TimeViper shallow TransV uses uniform token dropping.
+                indices = torch.linspace(
+                    0, src.shape[0] - 1, steps=count, device=src.device
+                ).round().long().unique(sorted=True)
+                if indices.numel() < count:
+                    chosen = torch.zeros(src.shape[0], dtype=torch.bool, device=src.device)
+                    chosen[indices] = True
+                    fill = torch.nonzero(~chosen, as_tuple=False).flatten()[: count - indices.numel()]
+                    indices = torch.cat((indices, fill)).sort().values
 
+            selected = src.index_select(0, indices[:count])
+            selected_frames = src_frames.index_select(0, indices[:count])
+            out[row, :count] = selected
+            out_mask[row, :count] = True
+            out_frames[row, :count] = selected_frames
+        return VisualMemory(out, out_mask, out_frames, memory.source)
 
 class IQMultimodalPathway(nn.Module):
     def __init__(
@@ -448,5 +477,11 @@ class IQMultimodalPathway(nn.Module):
             return text, memory
         text = self.fusion[str(layer_index)](text, memory, text_mask=text_mask)
         if layer_index in self.config.transv_layers:
-            memory = self.transv(memory)
+            deep = layer_index == self.config.transv_layers[-1]
+            memory = self.transv(
+                memory,
+                text,
+                text_mask=text_mask,
+                deep=deep,
+            )
         return text, memory
