@@ -874,6 +874,7 @@ class IQHybridForCausalLM(nn.Module):
         frame_mask: torch.Tensor | None = None,
         image_grid_thw: torch.Tensor | None = None,
         video_grid_thw: torch.Tensor | None = None,
+        media_document_ids: torch.Tensor | None = None,
         return_hidden_states: bool = False,
     ) -> HybridCausalLMOutput:
         if input_ids.ndim != 2:
@@ -897,6 +898,7 @@ class IQHybridForCausalLM(nn.Module):
             or frame_mask is not None
             or image_grid_thw is not None
             or video_grid_thw is not None
+            or media_document_ids is not None
         ):
             raise HybridModelError(
                 "visual inputs were provided but multimodal support is disabled"
@@ -912,6 +914,39 @@ class IQHybridForCausalLM(nn.Module):
             if self.multimodal is not None
             else None
         )
+
+        multimodal_text_mask = attention_mask
+        if visual_memory is not None and document_ids is not None:
+            valid_text = (
+                torch.ones_like(document_ids, dtype=torch.bool)
+                if attention_mask is None
+                else attention_mask.to(dtype=torch.bool, device=document_ids.device)
+            )
+            if media_document_ids is None:
+                for row in range(document_ids.shape[0]):
+                    unique_docs = torch.unique(document_ids[row, valid_text[row]])
+                    if unique_docs.numel() > 1:
+                        raise HybridModelError(
+                            "packed multimodal rows with multiple documents require media_document_ids "
+                            "to prevent visual-memory leakage across documents"
+                        )
+                multimodal_text_mask = valid_text
+            else:
+                if media_document_ids.shape != (document_ids.shape[0],):
+                    raise HybridModelError(
+                        f"media_document_ids must have shape {(document_ids.shape[0],)}"
+                    )
+                if media_document_ids.dtype not in (torch.int32, torch.int64):
+                    raise HybridModelError("media_document_ids must be integer typed")
+                multimodal_text_mask = valid_text & (
+                    document_ids == media_document_ids.to(document_ids.device).unsqueeze(-1)
+                )
+                if bool((multimodal_text_mask.sum(dim=1) == 0).any()):
+                    raise HybridModelError(
+                        "media_document_ids must identify a valid document in every visual batch row"
+                    )
+        elif media_document_ids is not None:
+            raise HybridModelError("media_document_ids requires document_ids and visual input")
 
         x = self.embed_tokens(input_ids)
         moe_outputs: list[MoEOutput | StableLatentMoEOutput] = []
@@ -961,7 +996,7 @@ class IQHybridForCausalLM(nn.Module):
                     layer_index,
                     layer_output,
                     visual_memory,
-                    text_mask=attention_mask,
+                    text_mask=multimodal_text_mask,
                 )
 
             if self.attnres is not None and attnres_state is not None:
