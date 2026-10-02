@@ -195,6 +195,7 @@ class BiasFilterTests(unittest.TestCase):
             proj_left=torch.zeros(2, 1),
             proj_right=torch.zeros(1, 2),
             bias=torch.zeros(2),
+            required_capability_metrics=("coding",),
         )
         b = BiasFilterArtifact(
             feature_dim=2,
@@ -205,6 +206,7 @@ class BiasFilterTests(unittest.TestCase):
             proj_left=torch.zeros(2, 1),
             proj_right=torch.zeros(1, 2),
             bias=torch.zeros(2),
+            required_capability_metrics=("coding",),
         )
         approval = approve_bias_filter(
             a,
