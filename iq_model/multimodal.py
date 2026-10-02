@@ -98,7 +98,7 @@ class VisionTower(nn.Module):
         self.config = config
         self.encoder = AutoModel.from_pretrained(
             config.vision_model_name,
-            torch_dtype=dtype,
+            dtype=dtype,
         ).to(device=device)
         if config.freeze_vision_tower:
             self.encoder.requires_grad_(False)
