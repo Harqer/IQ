@@ -414,3 +414,143 @@ def solve_glm53_calibration(
         lexical_input_map=lexical_input_map,
         final_output_map=final_output_map,
     )
+
+
+def _bootstrap_source_mapping(
+    *,
+    source_layers: int,
+    stage_positions: tuple[tuple[int, int], ...],
+    target_config: IQHybridConfig,
+    source_indexer_types: tuple[str, ...],
+) -> dict[int, int]:
+    """Depth-preserving donor-only mapping with exact DSA compatibility constraints."""
+    if len(source_indexer_types) < source_layers:
+        raise GLM53CalibrationError(
+            "source_indexer_types must cover every source layer"
+        )
+    nt = len(stage_positions)
+    ns = source_layers
+    inf = float("inf")
+    costs = np.full((nt, ns), inf, dtype=np.float64)
+    for stage, (context_physical, _) in enumerate(stage_positions):
+        target_depth = stage / max(1, nt - 1)
+        requires_full = (
+            target_config.schedule.layers[context_physical]
+            is HybridLayerType.CSA
+        )
+        for source_layer in range(ns):
+            if requires_full and source_indexer_types[source_layer] != "full":
+                continue
+            source_depth = source_layer / max(1, ns - 1)
+            costs[stage, source_layer] = abs(target_depth - source_depth)
+
+    dp = np.full_like(costs, inf)
+    parent = np.full((nt, ns), -1, dtype=np.int64)
+    dp[0, : ns - nt + 1] = costs[0, : ns - nt + 1]
+    for stage in range(1, nt):
+        min_source = stage
+        max_source = ns - (nt - stage)
+        for source_layer in range(min_source, max_source + 1):
+            if not np.isfinite(costs[stage, source_layer]):
+                continue
+            previous = dp[stage - 1, :source_layer]
+            if previous.size == 0:
+                continue
+            best = int(np.argmin(previous))
+            if np.isfinite(previous[best]):
+                dp[stage, source_layer] = (
+                    previous[best] + costs[stage, source_layer]
+                )
+                parent[stage, source_layer] = best
+    end = int(np.argmin(dp[-1]))
+    if not np.isfinite(dp[-1, end]):
+        raise GLM53CalibrationError(
+            "no monotonic GLM layer mapping satisfies DSA constraints"
+        )
+    chosen = [end]
+    for stage in range(nt - 1, 0, -1):
+        chosen.append(int(parent[stage, chosen[-1]]))
+    chosen.reverse()
+    return {stage: int(chosen[stage]) for stage in range(nt)}
+
+
+def bootstrap_glm53_calibration(
+    source_fit: ActivationBundle,
+    *,
+    target_config: IQHybridConfig,
+    source_layers: int,
+    source_first_dense_layers: int,
+    source_num_experts: int,
+    source_indexer_types: tuple[str, ...],
+) -> GLM53CalibrationSolution:
+    """Build the first IQ transfer basis entirely from pretrained GLM activations.
+
+    This is the pre-recipient stage: no randomly initialized IQ activations are
+    used. Residual and latent coordinates use deterministic activation-energy
+    subcloning, MLA candidates use an orthogonal donor subspace that preserves
+    rotary coordinates, and CSA stages map only to GLM layers that own a full
+    DSA indexer. A later paired calibration may refine these maps after the
+    first donor-derived IQ checkpoint exists.
+    """
+    if target_config.compressed_context is None or target_config.stable_moe is None:
+        raise GLM53CalibrationError(
+            "GLM bootstrap requires compressed context and Stable LatentMoE"
+        )
+    stage_positions = donor_layer_positions(target_config)
+    mapping = _bootstrap_source_mapping(
+        source_layers=source_layers,
+        stage_positions=stage_positions,
+        target_config=target_config,
+        source_indexer_types=source_indexer_types,
+    )
+    c = target_config.compressed_context
+    stable = target_config.stable_moe
+    target_nonrotary = c.head_dim - c.partial_rotary_dim
+    stages: list[GLM53StageCalibration] = []
+    for stage, (context_physical, moe_physical) in enumerate(stage_positions):
+        source_layer = mapping[stage]
+        residual = fit_importance_subcloning_map(
+            source_fit.require(f"layer.{source_layer}.residual_in"),
+            target_features=target_config.model.hidden_size,
+        ).coordinate_map
+        kv = fit_mla_compressed_subspace(
+            source_fit.require(f"layer.{source_layer}.compressed_kv"),
+            kv_lora_rank=512,
+            rope_dim=c.partial_rotary_dim,
+            target_latent_dim=target_nonrotary,
+        )
+        latent = fit_importance_subcloning_map(
+            source_fit.require(f"layer.{source_layer}.mlp_in"),
+            target_features=stable.latent_size,
+        ).coordinate_map
+
+        usage: np.ndarray | None = None
+        dense_map: CoordinateMap | None = None
+        if source_layer < source_first_dense_layers:
+            dense_map = fit_importance_subcloning_map(
+                source_fit.require(f"layer.{source_layer}.mlp_hidden"),
+                target_features=stable.expert_intermediate_size,
+            ).coordinate_map
+        else:
+            usage = router_usage_from_topk(
+                [source_fit.require(f"layer.{source_layer}.router_topk").numpy()],
+                num_experts=source_num_experts,
+            )
+        stages.append(
+            GLM53StageCalibration(
+                stage=stage,
+                source_layer=source_layer,
+                context_physical_layer=context_physical,
+                moe_physical_layer=moe_physical,
+                residual_map=residual,
+                compressed_kv_map=kv,
+                latent_map=latent,
+                expert_usage=usage,
+                dense_intermediate_map=dense_map,
+            )
+        )
+    return GLM53CalibrationSolution(
+        stages=tuple(stages),
+        source_layers=source_layers,
+        target_config_fingerprint=target_config.fingerprint,
+    )
