@@ -426,7 +426,7 @@ class CrossModalFusion(nn.Module):
         )
         if text_mask is not None:
             fused = fused * text_mask.to(fused.dtype).unsqueeze(-1)
-        return text + torch.sigmoid(self.gate) * fused
+        return text + torch.tanh(self.gate) * fused
 
 
 class TransVTransfer(nn.Module):
