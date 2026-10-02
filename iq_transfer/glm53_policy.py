@@ -6,7 +6,7 @@ from enum import Enum
 
 class GLM53TransferDisposition(str, Enum):
     OPERATOR_TRANSPORT = "operator_transport"
-    FUNCTIONAL_TRANSFER = "functional_transfer"
+    DIRECT_REFACTOR = "direct_refactor"
     RECIPIENT_NATIVE = "recipient_native"
 
 
@@ -38,40 +38,70 @@ GLM53_SOURCE_POLICIES: tuple[GLM53SourcePolicy, ...] = (
         "RMSNorm scales are basis-dependent and remain recipient-native after hidden-space transport.",
     ),
     GLM53SourcePolicy(
-        "attn.",
-        GLM53TransferDisposition.FUNCTIONAL_TRANSFER,
-        "mamba3+compressed_context",
-        "GLM MLA is factorized and normalized internally; its q/kv factors are not raw IQ Q/K/V or Mamba x/B/C matrices.",
+        "attn.q_a",
+        GLM53TransferDisposition.OPERATOR_TRANSPORT,
+        "compressed_context.q_a",
+        "Transport the donor residual basis into IQ while retaining the GLM query-latent coordinate system.",
+    ),
+    GLM53SourcePolicy(
+        "attn.q_b",
+        GLM53TransferDisposition.DIRECT_REFACTOR,
+        "compressed_context.q_b",
+        "Fold GLM KV expansion into the query so IQ scores directly in compressed-KV coordinates, then reduce that shared coordinate system.",
+    ),
+    GLM53SourcePolicy(
+        "attn.kv_a_mqa",
+        GLM53TransferDisposition.DIRECT_REFACTOR,
+        "compressed_context.kv",
+        "Transport GLM's cached compressed-KV operator into IQ's shared candidate projection; do not expand it into dense K/V first.",
+    ),
+    GLM53SourcePolicy(
+        "attn.kv_a_norm",
+        GLM53TransferDisposition.DIRECT_REFACTOR,
+        "compressed_context.kv_norm",
+        "GLM normalizes only the KV latent while IQ normalizes the reduced candidate, so the scale is handled by the compressed-latent refactor rather than row-copying.",
+    ),
+    GLM53SourcePolicy(
+        "attn.kv_b",
+        GLM53TransferDisposition.DIRECT_REFACTOR,
+        "compressed_context.q_and_output",
+        "GLM's K/V expansion is analytically folded into IQ's effective compressed query and output projections.",
+    ),
+    GLM53SourcePolicy(
+        "attn.o",
+        GLM53TransferDisposition.DIRECT_REFACTOR,
+        "compressed_context.output",
+        "Compose GLM V expansion and O projection, decode from the reduced compressed-KV basis, then map the residual output into IQ coordinates.",
     ),
     GLM53SourcePolicy(
         "dsa.indexer.",
-        GLM53TransferDisposition.FUNCTIONAL_TRANSFER,
+        GLM53TransferDisposition.DIRECT_REFACTOR,
         "csa_indexer",
-        "Transfer sparse-selection behavior/logits rather than assuming GLM DSA indexer tensors equal IQ CSA indexer tensors.",
+        "Refactor GLM's token-level DSA indexer weights into IQ's compressed indexer geometry; the two top-k mechanisms are not shape-identical.",
     ),
     GLM53SourcePolicy(
         "mlp.",
-        GLM53TransferDisposition.FUNCTIONAL_TRANSFER,
+        GLM53TransferDisposition.DIRECT_REFACTOR,
         "stable_latent_moe",
-        "Dense donor MLP behavior can supervise IQ experts but does not match Stable LatentMoE topology.",
+        "Morph dense GLM SwiGLU weights directly into IQ's latent/shared expert coordinates; no teacher loss is used.",
     ),
     GLM53SourcePolicy(
         "moe.router",
-        GLM53TransferDisposition.FUNCTIONAL_TRANSFER,
+        GLM53TransferDisposition.DIRECT_REFACTOR,
         "stable_latent_moe.router",
-        "Both routers are sigmoid-based, but expert identities/topology and latent expert space require routing alignment.",
+        "Both routers are sigmoid-based; directly select/align donor expert identities before transporting the retained router rows.",
     ),
     GLM53SourcePolicy(
         "moe.shared",
-        GLM53TransferDisposition.FUNCTIONAL_TRANSFER,
+        GLM53TransferDisposition.DIRECT_REFACTOR,
         "stable_latent_moe.shared_experts",
-        "GLM shared experts operate at donor width/activation semantics and must be behaviorally aligned.",
+        "Directly transport shared-expert gate/up/down operators through residual and intermediate coordinate maps.",
     ),
     GLM53SourcePolicy(
         "moe.expert.",
-        GLM53TransferDisposition.FUNCTIONAL_TRANSFER,
+        GLM53TransferDisposition.DIRECT_REFACTOR,
         "stable_latent_moe.routed_experts",
-        "GLM routed experts are full-width donor experts while IQ routed experts operate in latent width with SiTU.",
+        "Directly transport selected routed experts through the IQ latent basis; activation mismatch is recorded as morphology error rather than hidden behind distillation.",
     ),
 )
 
