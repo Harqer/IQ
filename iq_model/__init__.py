@@ -118,3 +118,10 @@ __all__ = [
     "validate_canonical_hybrid_backbone",
     "require_mamba3_mimo_runtime",
 ]
+
+from .multimodal import (
+    IQMultimodalConfig,
+    IQMultimodalPathway,
+    MultimodalError,
+    VisualMemory,
+)
