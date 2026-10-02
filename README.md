@@ -94,6 +94,7 @@ GLM-5.3 BF16 is the primary production donor. `GLM53Inspector` validates its MLA
 See:
 
 - `SHADOW_TRANSFER.md`
+- `BIAS_SANITIZED_TRANSFER.md`
 - `IQ_WEIGHT_TRANSFER_IMPLEMENTATION_PLAN.md`
 - `IQ_V2_IMPLEMENTATION_PLAN.md`
 
