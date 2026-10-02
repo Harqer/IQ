@@ -686,6 +686,61 @@ def build_phi_layer_calibration_from_bundles(
     )
 
 
+
+def save_activation_bundle(bundle: ActivationBundle, path: str | Path) -> tuple[Path, Path]:
+    """Persist a flattened calibration bundle without serializing a model."""
+    try:
+        from safetensors.torch import save_file
+    except ImportError as exc:
+        raise CaptureRunnerError("safetensors is required to save activation bundles") from exc
+    base = Path(path)
+    tensor_path = base.with_suffix(".safetensors")
+    metadata_path = base.with_suffix(".json")
+    tensors = {
+        str(name): value.detach().cpu().contiguous()
+        for name, value in bundle.spaces.items()
+    }
+    save_file(tensors, str(tensor_path))
+    metadata_path.write_text(
+        __import__("json").dumps(
+            {
+                "schema_version": 1,
+                "sample_count": bundle.sample_count,
+                "batch_count": bundle.batch_count,
+                "spaces": sorted(tensors),
+            },
+            sort_keys=True,
+        ) + "\n",
+        encoding="utf-8",
+    )
+    return tensor_path, metadata_path
+
+
+def load_activation_bundle(path: str | Path) -> ActivationBundle:
+    try:
+        from safetensors.torch import load_file
+    except ImportError as exc:
+        raise CaptureRunnerError("safetensors is required to load activation bundles") from exc
+    import json
+    base = Path(path)
+    tensor_path = base.with_suffix(".safetensors")
+    metadata_path = base.with_suffix(".json")
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise CaptureRunnerError(f"invalid activation-bundle metadata: {metadata_path}") from exc
+    if metadata.get("schema_version") != 1:
+        raise CaptureRunnerError("unsupported activation-bundle schema")
+    tensors = load_file(str(tensor_path), device="cpu")
+    expected = set(str(x) for x in metadata.get("spaces", ()))
+    if set(tensors) != expected:
+        raise CaptureRunnerError("activation-bundle tensor/index mismatch")
+    return ActivationBundle(
+        spaces=tensors,
+        sample_count=int(metadata["sample_count"]),
+        batch_count=int(metadata["batch_count"]),
+    )
+
 def load_local_glm53_causal_lm(
     checkpoint: str | Path,
     *,
