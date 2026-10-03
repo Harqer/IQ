@@ -59,6 +59,61 @@ def orthogonality_error(matrix: Any) -> float:
     return float(np.linalg.norm(gram - np.eye(q.shape[1]), ord="fro"))
 
 
+
+def align_to_mamba_replication_frame(
+    coordinate_map: CoordinateMap,
+    *,
+    foundation_features: int,
+    source_space: str | None = None,
+    target_space: str | None = None,
+) -> CoordinateMap:
+    """Fix WARM's target-space rotational freedom to widened Mamba coordinates.
+
+    IQ widens the pretrained Mamba residual x in R^d to [x,x] in R^(2d).
+    WARM identifies a 2d-dimensional GLM source subspace but its target basis is
+    otherwise arbitrary up to right multiplication by an orthogonal matrix.
+
+    We remove that ambiguity by mapping the strongest d retained WARM
+    coordinates into Mamba's pretrained symmetric subspace
+        s_i = (e_i + e_{i+d}) / sqrt(2)
+    and the remaining d coordinates into the orthogonal anti-symmetric
+    expansion subspace
+        a_i = (e_i - e_{i+d}) / sqrt(2).
+
+    This preserves Q^TQ=I while making the Mamba foundation's exact replicated
+    subspace the canonical recipient frame.
+    """
+    q = np.asarray(coordinate_map.matrix, dtype=np.float64)
+    if foundation_features <= 0:
+        raise WarmRemapError("foundation_features must be positive")
+    target_features = q.shape[1]
+    if target_features != 2 * foundation_features:
+        raise WarmRemapError(
+            "Mamba replication alignment requires target width == 2 * foundation width"
+        )
+    scale = 1.0 / np.sqrt(2.0)
+    frame = np.zeros((target_features, target_features), dtype=np.float64)
+    d = foundation_features
+    idx = np.arange(d)
+    # Rows are target-basis vectors because row-vector coordinates use y=c@R.
+    frame[idx, idx] = scale
+    frame[idx, idx + d] = scale
+    frame[idx + d, idx] = scale
+    frame[idx + d, idx + d] = -scale
+    aligned = q @ frame
+    error = orthogonality_error(aligned)
+    if error > 1e-8:
+        raise WarmRemapError(
+            f"Mamba-aligned WARM map failed orthogonality check: {error}"
+        )
+    return CoordinateMap(
+        matrix=aligned,
+        ridge=coordinate_map.ridge,
+        source_space=source_space or coordinate_map.source_space,
+        target_space=target_space or coordinate_map.target_space,
+        diagnostics=coordinate_map.diagnostics,
+    )
+
 def fit_weight_orthogonal_remap(
     operators: Iterable[WarmWeightOperator],
     *,
@@ -125,8 +180,8 @@ def fit_weight_orthogonal_remap(
         raise WarmRemapError("at least one WARM operator is required")
     gram = 0.5 * (gram + gram.T)
     eigenvalues, eigenvectors = torch.linalg.eigh(gram)
-    selected_values = eigenvalues[-target_features:].clamp_min(0)
-    basis = eigenvectors[:, -target_features:]
+    selected_values = eigenvalues[-target_features:].flip(0).clamp_min(0)
+    basis = eigenvectors[:, -target_features:].flip(1)
 
     # Fix eigenvector sign ambiguity deterministically: the largest-magnitude
     # coordinate in each column is always positive.
