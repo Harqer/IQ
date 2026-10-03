@@ -28,7 +28,7 @@ heterogeneous backbone
   ↓
 reasoning-time latent recurrence
   ↕
-optional EBM critic
+optional reasoning verifier (EBM backend available)
   │   candidate scoring / branch ranking / verification
   │   optional evidence for halting
   ↓
@@ -50,8 +50,8 @@ pairwise comparisons; it is not a mandatory backbone anchor.
 - **Stable LatentMoE** is the production expert path: full-width sigmoid routing, latent routed experts, post-aggregate RMSNorm, full-width shared experts, SiTU-GLU, and one-step-delayed Quantile Balancing. The older full-width SwiGLU MoE remains an ablation/control.
 - **Block AttnRes** is the frozen production depth/residual mechanism. **mHC** remains a standalone ablation/reference and is not composed into the canonical hybrid. Neither is a reasoning controller.
 - **Reasoning-time recurrence** is separate from Mamba's token-time recurrence and owns iterative latent refinement. The reference path uses a gated residual transition with a continuous spectral depth coordinate. Teacher-forced training requires explicit `reasoning_context_lengths` so the recurrent state only observes the causal prompt prefix; inference uses the full visible prefix and injects reasoning only at the final prediction source position.
-- **ReasoningEnergyCritic** is an optional EBM scorer over the generated reasoning trajectory. It can provide ranking/verification signals and halting evidence, while the recurrence transition remains identical with the critic enabled or disabled.
-- **Adaptive halting** is a separate learned head. Training uses differentiable stop/survival weights across the bounded reasoning trajectory; inference can exit early only when halt probability and state-convergence criteria pass. Optional energy stabilization adds evidence rather than replacing those criteria.
+- **ReasoningVerifier** is a pluggable scorer over generated reasoning states. The current EBM backend exposes energy as higher-is-better verifier evidence by negating raw energy; recurrence never depends on EBM semantics and verifier evidence cannot mutate the state transition.
+- **Adaptive halting** is a separate learned head. It uses a deliberate deep-start initialization, differentiable stop/survival weights, state convergence, and optional verifier-stability evidence. The ponder/compute penalty supports an explicit warmup so early training cannot collapse into a shallow-halting equilibrium.
 - **MTP** is a first-class pretraining objective/head stack rather than an after-the-fact probe.
 - **Differential Attention**, Coconut-style recurrence, and the Concept Mapper remain ablation-controlled reasoning experiments rather than mandatory backbone stages.
 
