@@ -1,6 +1,11 @@
 name: IQ Weight Transfer
 
 on:
+  push:
+    branches:
+      - feat/glm53-cross-architecture-transfer
+    paths:
+      - ".github/workflows/iq-transfer.yml"
   workflow_dispatch:
     inputs:
       stage:
