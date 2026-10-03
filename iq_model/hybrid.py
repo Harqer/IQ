@@ -27,6 +27,7 @@ from .reasoning import (
     ReasoningRecurrenceConfig,
     ReasoningRecurrenceOutput,
     ReasoningStateInjector,
+    ReasoningVerifierProtocol,
 )
 from .state import Mamba3MIMOConfig, Mamba3MIMOState
 
@@ -828,7 +829,7 @@ class IQHybridForCausalLM(nn.Module):
 
         self.reasoning: ReasoningRecurrence | None = None
         self.reasoning_injector: ReasoningStateInjector | None = None
-        self.reasoning_verifier: ReasoningEnergyCritic | None = None
+        self.reasoning_verifier: ReasoningVerifierProtocol | None = None
         if config.reasoning is not None:
             self.reasoning = ReasoningRecurrence(
                 config.reasoning
@@ -861,6 +862,26 @@ class IQHybridForCausalLM(nn.Module):
         )
         if config.model.tie_word_embeddings:
             self.lm_head.weight = self.embed_tokens.weight
+
+    def set_reasoning_verifier(
+        self,
+        verifier: ReasoningVerifierProtocol | None,
+    ) -> None:
+        """Replace the configured verifier backend without altering recurrence."""
+        if verifier is not None:
+            if self.config.reasoning is None:
+                raise HybridModelError(
+                    "reasoning verifier requires reasoning recurrence"
+                )
+            if verifier.state_dim != self.config.reasoning.state_dim:
+                raise HybridModelError(
+                    "reasoning verifier state_dim must match reasoning state_dim"
+                )
+            if verifier.context_dim != self.model_config.hidden_size:
+                raise HybridModelError(
+                    "reasoning verifier context_dim must match model hidden_size"
+                )
+        self.reasoning_verifier = verifier
 
     def forward(
         self,
