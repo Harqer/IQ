@@ -5,17 +5,17 @@ set -euo pipefail
 # Source checkpoints live only in ephemeral worker storage. Durable artifacts
 # are synchronized incrementally to the Hugging Face bucket; no weights are
 # committed to Git and --delete is never used for bucket syncs.
-GLM_REPO="\${GLM53_REPO:-zai-org/GLM-5.3-BF16}"
-GLM_REVISION="\${GLM53_REVISION:?Set GLM53_REVISION to the pinned BF16 commit}"
-MAMBA_REPO="\${MAMBA3_REPO:-state-spaces/mamba3-mimo-1.5b}"
-MAMBA_REVISION="\${MAMBA3_REVISION:-bc6b5d0f7994fe4cb3478242e92da8daf9ee29ec}"
+GLM_REPO="${GLM53_REPO:-zai-org/GLM-5.3-BF16}"
+GLM_REVISION="${GLM53_REVISION:?Set GLM53_REVISION to the pinned BF16 commit}"
+MAMBA_REPO="${MAMBA3_REPO:-state-spaces/mamba3-mimo-1.5b}"
+MAMBA_REVISION="${MAMBA3_REVISION:-bc6b5d0f7994fe4cb3478242e92da8daf9ee29ec}"
 
-HF_TARGET_BUCKET="\${HF_TARGET_BUCKET:-hf://buckets/Visionboxx/macha}"
-HF_CALIBRATION_URI="\${HF_CALIBRATION_URI:-$HF_TARGET_BUCKET/calibration}"
-HF_MAMBA_URI="\${HF_MAMBA_URI:-$HF_TARGET_BUCKET/mamba-foundation}"
-HF_IQ_URI="\${HF_IQ_URI:-$HF_TARGET_BUCKET/IQ}"
+HF_TARGET_BUCKET="${HF_TARGET_BUCKET:-hf://buckets/Visionboxx/macha}"
+HF_CALIBRATION_URI="${HF_CALIBRATION_URI:-$HF_TARGET_BUCKET/calibration}"
+HF_MAMBA_URI="${HF_MAMBA_URI:-$HF_TARGET_BUCKET/mamba-foundation}"
+HF_IQ_URI="${HF_IQ_URI:-$HF_TARGET_BUCKET/IQ}"
 
-WORK_ROOT="\${IQ_TRANSFER_ROOT:-/tmp/iq-glm53-transfer}"
+WORK_ROOT="${IQ_TRANSFER_ROOT:-/tmp/iq-glm53-transfer}"
 GLM_DIR="$WORK_ROOT/glm53"
 MAMBA_DIR="$WORK_ROOT/mamba3"
 ACTIVATIONS_DIR="$WORK_ROOT/activations"
@@ -23,8 +23,8 @@ CALIBRATION_DIR="$WORK_ROOT/calibration"
 MAMBA_OUTPUT_DIR="$WORK_ROOT/mamba-foundation"
 OUTPUT_DIR="$WORK_ROOT/IQ"
 
-: "\${HF_TOKEN:?HF_TOKEN must be supplied by the cloud worker/auth environment}"
-: "\${GLM53_ACTIVATIONS_URI:?Set GLM53_ACTIVATIONS_URI to the persisted GLM-5.3 activation bundle}"
+: "${HF_TOKEN:?HF_TOKEN must be supplied by the cloud worker/auth environment}"
+: "${GLM53_ACTIVATIONS_URI:?Set GLM53_ACTIVATIONS_URI to the persisted GLM-5.3 activation bundle}"
 
 mkdir -p \
   "$GLM_DIR" \
@@ -84,8 +84,8 @@ python -m iq_transfer.cli glm53-bootstrap-calibration \
   --source-activations "$ACTIVATIONS_DIR/glm53-activations" \
   --output "$CALIBRATION_DIR" \
   --checkpoint-revision "$GLM_REVISION" \
-  --donor-license "\${GLM53_DONOR_LICENSE:-GLM-5.3}" \
-  --warm-device "\${WARM_DEVICE:-cuda}"
+  --donor-license "${GLM53_DONOR_LICENSE:-GLM-5.3}" \
+  --warm-device "${WARM_DEVICE:-cuda}"
 
 sync_to_bucket "$CALIBRATION_DIR" "$HF_CALIBRATION_URI"
 
@@ -98,7 +98,7 @@ python -m iq_transfer.cli glm53-compile \
   --output "$OUTPUT_DIR" \
   --checkpoint-revision "$GLM_REVISION" \
   --mamba3-revision "$MAMBA_REVISION" \
-  --donor-license "\${GLM53_DONOR_LICENSE:-GLM-5.3}"
+  --donor-license "${GLM53_DONOR_LICENSE:-GLM-5.3}"
 
 sync_to_bucket "$OUTPUT_DIR" "$HF_IQ_URI"
 
