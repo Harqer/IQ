@@ -20,6 +20,7 @@ class PretrainingObjectiveConfig:
     moe_load_balance_loss_weight: float = 0.0
     moe_router_z_loss_weight: float = 0.0
     reasoning_ponder_loss_weight: float = 0.0
+    reasoning_ponder_warmup_steps: int = 0
 
     def __post_init__(self) -> None:
         weights = {
@@ -29,10 +30,21 @@ class PretrainingObjectiveConfig:
             "reasoning_ponder_loss_weight": self.reasoning_ponder_loss_weight,
         }
         bad = [name for name, value in weights.items() if float(value) < 0.0]
+        if self.reasoning_ponder_warmup_steps < 0:
+            raise PretrainingConfigError("reasoning_ponder_warmup_steps must be non-negative")
         if bad:
             raise PretrainingConfigError(
                 f"pretraining objective weights must be non-negative: {', '.join(bad)}"
             )
+
+    def ponder_weight(self, training_step: int) -> float:
+        if training_step < 0:
+            raise PretrainingConfigError("training_step must be non-negative")
+        base = float(self.reasoning_ponder_loss_weight)
+        warmup = int(self.reasoning_ponder_warmup_steps)
+        if base == 0.0 or warmup == 0:
+            return base
+        return base * min(1.0, float(training_step) / float(warmup))
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -180,6 +192,7 @@ class IQPretrainingModel(nn.Module):
         audio_attention_mask: torch.Tensor | None = None,
         audio_streaming: bool = False,
         media_document_ids: torch.Tensor | None = None,
+        training_step: int = 0,
     ) -> PretrainingOutput:
         use_mtp = (
             self.mtp is not None
@@ -293,7 +306,7 @@ class IQPretrainingModel(nn.Module):
         weighted_ponder = self._weighted_auxiliary(
             name="expected_reasoning_steps",
             value=reasoning_expected_steps,
-            weight=self.objective_config.reasoning_ponder_loss_weight,
+            weight=self.objective_config.ponder_weight(training_step),
         )
         if weighted_ponder is not None:
             terms.append(weighted_ponder)
