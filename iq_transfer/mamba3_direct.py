@@ -287,6 +287,66 @@ def validate_official_mamba3_mimo_15b_config(config: Mamba3DonorConfig) -> None:
         )
 
 
+
+def load_official_mamba3_foundation_globals(
+    *,
+    checkpoint: str | Path,
+    checkpoint_revision: str = MAMBA3_MIMO_15B_REVISION,
+    verify_checkpoint_hash: bool = True,
+    target_hidden_size: int = 4096,
+) -> dict[str, torch.Tensor]:
+    """Load the lexical/global state for the Mamba-3-founded IQ checkpoint.
+
+    The official 1.5B model uses d_model=2048. IQ widens that representation by
+    exact replication x -> [x, x]. To preserve the source function on that
+    embedded subspace:
+      embedding:  E -> [E, E]
+      final norm: gamma -> [gamma, gamma]
+      LM head:    W -> [W/2, W/2]
+    so [x,x] @ [W/2,W/2]^T == x @ W^T.
+
+    GLM-5.3 never owns these lexical tensors in the canonical IQ build.
+    """
+    checkpoint_dir = Path(checkpoint)
+    config_path = checkpoint_dir / "config.json"
+    weights_path = checkpoint_dir / "pytorch_model.bin"
+    if not config_path.exists() or not weights_path.exists():
+        raise Mamba3DirectTransferError(
+            "checkpoint directory must contain config.json and pytorch_model.bin"
+        )
+    if checkpoint_revision != MAMBA3_MIMO_15B_REVISION:
+        raise Mamba3DirectTransferError(
+            "foundation transfer is pinned to the official Mamba-3 MIMO 1.5B revision "
+            f"{MAMBA3_MIMO_15B_REVISION}; got {checkpoint_revision}"
+        )
+    donor = Mamba3DonorConfig.from_json(config_path)
+    validate_official_mamba3_mimo_15b_config(donor)
+    if target_hidden_size % donor.d_model != 0:
+        raise Mamba3DirectTransferError(
+            "target hidden size must be an integer multiple of the Mamba foundation width"
+        )
+    factor = target_hidden_size // donor.d_model
+    if factor <= 0:
+        raise Mamba3DirectTransferError("invalid Mamba foundation widening factor")
+    donor_sha = _sha256_file(weights_path)
+    if verify_checkpoint_hash and donor_sha != MAMBA3_MIMO_15B_BIN_SHA256:
+        raise Mamba3DirectTransferError(
+            "Mamba-3 foundation checkpoint hash does not match the pinned artifact: "
+            f"got {donor_sha}, expected {MAMBA3_MIMO_15B_BIN_SHA256}"
+        )
+    state = _load_official_state_dict(weights_path)
+    validate_official_mamba3_mimo_state(donor, state)
+    embedding = state["backbone.embedding.weight"]
+    final_norm = state["backbone.norm_f.weight"]
+    lm_head = state["lm_head.weight"]
+    return {
+        "embed_tokens.weight": embedding.repeat((1, factor)).contiguous(),
+        "norm.weight": final_norm.repeat(factor).contiguous(),
+        "lm_head.weight": (
+            lm_head.repeat((1, factor)) / float(factor)
+        ).contiguous(),
+    }
+
 def evenly_spaced_layer_placements(
     source_layers: int,
     target_layers: int,
