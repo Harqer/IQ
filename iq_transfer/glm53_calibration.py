@@ -362,6 +362,21 @@ def solve_glm53_calibration(
     )
 
 
+def bootstrap_glm53_source_layer_map(
+    *,
+    source_layers: int,
+    target_config: IQHybridConfig,
+    source_indexer_types: tuple[str, ...],
+) -> dict[int, int]:
+    """Return the deterministic monotonic GLM source layer chosen per IQ stage."""
+    return _bootstrap_source_mapping(
+        source_layers=source_layers,
+        stage_positions=donor_layer_positions(target_config),
+        target_config=target_config,
+        source_indexer_types=source_indexer_types,
+    )
+
+
 def _bootstrap_source_mapping(
     *,
     source_layers: int,

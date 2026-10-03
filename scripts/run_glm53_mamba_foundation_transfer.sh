@@ -19,17 +19,22 @@ WORK_ROOT="${IQ_TRANSFER_ROOT:-/tmp/iq-glm53-transfer}"
 GLM_DIR="$WORK_ROOT/glm53"
 MAMBA_DIR="$WORK_ROOT/mamba3"
 ACTIVATIONS_DIR="$WORK_ROOT/activations"
+TOKEN_BATCH_DIR="$WORK_ROOT/token-batches"
 CALIBRATION_DIR="$WORK_ROOT/calibration"
 MAMBA_OUTPUT_DIR="$WORK_ROOT/mamba-foundation"
 OUTPUT_DIR="$WORK_ROOT/IQ"
 
 : "${HF_TOKEN:?HF_TOKEN must be supplied by the cloud worker/auth environment}"
-: "${GLM53_ACTIVATIONS_URI:?Set GLM53_ACTIVATIONS_URI to the persisted GLM-5.3 activation bundle}"
+if [[ -z "${GLM53_ACTIVATIONS_URI:-}" && -z "${GLM53_TOKEN_BATCHES_URI:-}" ]]; then
+  echo "Set either GLM53_ACTIVATIONS_URI or GLM53_TOKEN_BATCHES_URI" >&2
+  exit 2
+fi
 
 mkdir -p \
   "$GLM_DIR" \
   "$MAMBA_DIR" \
   "$ACTIVATIONS_DIR" \
+  "$TOKEN_BATCH_DIR" \
   "$CALIBRATION_DIR" \
   "$MAMBA_OUTPUT_DIR" \
   "$OUTPUT_DIR"
@@ -39,6 +44,7 @@ cleanup() {
     "$GLM_DIR" \
     "$MAMBA_DIR" \
     "$ACTIVATIONS_DIR" \
+    "$TOKEN_BATCH_DIR" \
     "$CALIBRATION_DIR" \
     "$MAMBA_OUTPUT_DIR" \
     "$OUTPUT_DIR"
@@ -64,7 +70,7 @@ download_glm_shards() {
     --token "$HF_TOKEN"
 }
 
-python -m pip install -r requirements-transfer.txt
+python -m pip install -r requirements-model.txt
 
 # Fetch only immutable metadata first. The full ~753B BF16 checkpoint is never
 # downloaded as one local snapshot.
@@ -88,8 +94,22 @@ hf download "$MAMBA_REPO" \
   --local-dir "$MAMBA_DIR" \
   --token "$HF_TOKEN"
 
-# Bucket -> ephemeral worker. hf sync is bidirectional.
-hf sync "$GLM53_ACTIVATIONS_URI" "$ACTIVATIONS_DIR"
+# Stage 0: use an existing activation bundle, or build it by streaming one
+# GLM layer/shard at a time from a fixed token-batch artifact.
+if [[ -n "${GLM53_ACTIVATIONS_URI:-}" ]]; then
+  hf sync "$GLM53_ACTIVATIONS_URI" "$ACTIVATIONS_DIR"
+else
+  hf sync "$GLM53_TOKEN_BATCHES_URI" "$TOKEN_BATCH_DIR"
+  python -m iq_transfer.cli glm53-stream-capture \
+    --checkpoint "$GLM_DIR" \
+    --repo-id "$GLM_REPO" \
+    --checkpoint-revision "$GLM_REVISION" \
+    --token-batches "$TOKEN_BATCH_DIR/glm53-token-batches" \
+    --output "$ACTIVATIONS_DIR/glm53-activations" \
+    --device "${GLM53_CAPTURE_DEVICE:-cpu}" \
+    --attention-implementation "${GLM53_CAPTURE_ATTN:-eager}"
+  sync_to_bucket "$ACTIVATIONS_DIR" "$HF_CALIBRATION_URI/activations"
+fi
 
 # Stage 1: compile the actual Mamba-3 foundation transplant and make it durable
 # before beginning the much larger GLM capability transform.

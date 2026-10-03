@@ -9,8 +9,10 @@ from .glm53 import GLM53Inspector
 from .glm53_calibration import bootstrap_glm53_calibration
 from .glm53_compile import compile_glm53_iq_checkpoint
 from .glm53_shards import plan_glm53_bootstrap_shards, plan_glm53_compile_shards
-from .capture_runner import load_activation_bundle
+from .capture_runner import load_activation_bundle, save_activation_bundle
 from .checkpoint import SafetensorsSource
+from .batches import load_token_batches
+from .glm53_stream_capture import HubSafetensorsSource, capture_glm53_bootstrap_streaming
 from .complete_transplant import canonical_glm53_config
 from .mamba3_direct import compile_official_mamba3_mimo_15b_transplant
 from .complete_transplant import compile_complete_iq_checkpoint
@@ -93,6 +95,22 @@ def _parser() -> argparse.ArgumentParser:
     glm_plan_compile.add_argument("--index", required=True)
     glm_plan_compile.add_argument("--calibration", required=True)
 
+    glm_stream_capture = sub.add_parser(
+        "glm53-stream-capture",
+        help="capture GLM-5.3 bootstrap activations by loading one raw checkpoint shard/layer at a time",
+    )
+    glm_stream_capture.add_argument("--checkpoint", required=True)
+    glm_stream_capture.add_argument("--repo-id", default="zai-org/GLM-5.3-BF16")
+    glm_stream_capture.add_argument("--checkpoint-revision", required=True)
+    glm_stream_capture.add_argument("--token-batches", required=True)
+    glm_stream_capture.add_argument("--output", required=True)
+    glm_stream_capture.add_argument("--device", default="cpu")
+    glm_stream_capture.add_argument(
+        "--attention-implementation",
+        default="eager",
+        choices=("eager", "sdpa"),
+    )
+
     mamba = sub.add_parser(
         "mamba3-direct",
         help="compile the pinned official Mamba-3 MIMO 1.5B weights into IQ Mamba-3 slots without distillation",
@@ -171,6 +189,39 @@ def main(argv: list[str] | None = None) -> int:
                     "num_layers": artifact.manifest.num_layers,
                     "hidden_size": artifact.manifest.hidden_size,
                     "vocab_size": artifact.manifest.vocab_size,
+                },
+                sort_keys=True,
+            )
+        )
+        return 0
+    if args.command == "glm53-stream-capture":
+        batches = load_token_batches(args.token_batches)
+        source = HubSafetensorsSource(
+            args.checkpoint,
+            repo_id=args.repo_id,
+            revision=args.checkpoint_revision,
+        )
+        try:
+            bundle = capture_glm53_bootstrap_streaming(
+                source=source,
+                config_path=f"{args.checkpoint}/config.json",
+                batches=batches,
+                device=args.device,
+                attention_implementation=args.attention_implementation,
+            )
+            tensor_path, metadata_path = save_activation_bundle(
+                bundle,
+                args.output,
+            )
+        finally:
+            source.clear_ephemeral_shards()
+        print(
+            json.dumps(
+                {
+                    "activation_tensors": str(tensor_path),
+                    "activation_metadata": str(metadata_path),
+                    "sample_count": bundle.sample_count,
+                    "batch_count": bundle.batch_count,
                 },
                 sort_keys=True,
             )
