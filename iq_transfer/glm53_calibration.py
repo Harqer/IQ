@@ -15,7 +15,11 @@ from .checkpoint import SafetensorsSource
 from .complete_transplant import donor_layer_positions
 from .glm53_direct import fit_importance_subcloning_map, fit_mla_compressed_subspace
 from .glm53_moe import router_usage_from_topk
-from .warm import WarmWeightOperator, fit_weight_orthogonal_remap
+from .warm import (
+    WarmWeightOperator,
+    align_to_mamba_replication_frame,
+    fit_weight_orthogonal_remap,
+)
 from .transport import (
     CoordinateMap,
     fit_ridge_coordinate_map,
@@ -512,22 +516,30 @@ def _warm_glm_layer_maps(
             )
         )
 
-    attention = fit_weight_orthogonal_remap(
-        attn_ops,
-        source_features=source_hidden_size,
-        target_features=target_hidden_size,
-        source_space=f"glm53.layer.{source_layer}.attn_input",
-        target_space=f"iq.layer.{source_layer}.attn_input",
-        device=device,
-    ).coordinate_map
-    moe = fit_weight_orthogonal_remap(
-        (*moe_ops, *moe_output_ops),
-        source_features=source_hidden_size,
-        target_features=target_hidden_size,
-        source_space=f"glm53.layer.{source_layer}.moe_input",
-        target_space=f"iq.layer.{source_layer}.moe_input",
-        device=device,
-    ).coordinate_map
+    attention = align_to_mamba_replication_frame(
+        fit_weight_orthogonal_remap(
+            attn_ops,
+            source_features=source_hidden_size,
+            target_features=target_hidden_size,
+            source_space=f"glm53.layer.{source_layer}.attn_input",
+            target_space=f"iq.layer.{source_layer}.attn_input",
+            device=device,
+        ).coordinate_map,
+        foundation_features=target_hidden_size // 2,
+        target_space=f"iq.mamba_foundation.layer.{source_layer}.attn_input",
+    )
+    moe = align_to_mamba_replication_frame(
+        fit_weight_orthogonal_remap(
+            (*moe_ops, *moe_output_ops),
+            source_features=source_hidden_size,
+            target_features=target_hidden_size,
+            source_space=f"glm53.layer.{source_layer}.moe_input",
+            target_space=f"iq.layer.{source_layer}.moe_input",
+            device=device,
+        ).coordinate_map,
+        foundation_features=target_hidden_size // 2,
+        target_space=f"iq.mamba_foundation.layer.{source_layer}.moe_input",
+    )
     latent = fit_weight_orthogonal_remap(
         (*moe_ops, *moe_output_ops),
         source_features=source_hidden_size,
@@ -536,23 +548,27 @@ def _warm_glm_layer_maps(
         target_space=f"iq.layer.{source_layer}.latent",
         device=device,
     ).coordinate_map
-    residual = fit_weight_orthogonal_remap(
-        (
-            *attn_ops,
-            WarmWeightOperator(
-                source.get(f"{prefix}.self_attn.o_proj.weight"),
-                "output",
-                f"layer.{source_layer}.attn.o",
+    residual = align_to_mamba_replication_frame(
+        fit_weight_orthogonal_remap(
+            (
+                *attn_ops,
+                WarmWeightOperator(
+                    source.get(f"{prefix}.self_attn.o_proj.weight"),
+                    "output",
+                    f"layer.{source_layer}.attn.o",
+                ),
+                *moe_ops,
+                *moe_output_ops,
             ),
-            *moe_ops,
-            *moe_output_ops,
-        ),
-        source_features=source_hidden_size,
-        target_features=target_hidden_size,
-        source_space=f"glm53.layer.{source_layer}.residual",
-        target_space=f"iq.layer.{source_layer}.residual",
-        device=device,
-    ).coordinate_map
+            source_features=source_hidden_size,
+            target_features=target_hidden_size,
+            source_space=f"glm53.layer.{source_layer}.residual",
+            target_space=f"iq.layer.{source_layer}.residual",
+            device=device,
+        ).coordinate_map,
+        foundation_features=target_hidden_size // 2,
+        target_space=f"iq.mamba_foundation.layer.{source_layer}.residual",
+    )
     return residual, attention, moe, latent
 
 
