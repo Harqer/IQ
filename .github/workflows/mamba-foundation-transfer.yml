@@ -1,0 +1,79 @@
+name: Mamba Foundation Transfer
+
+on:
+  push:
+    branches:
+      - feat/glm53-cross-architecture-transfer
+    paths:
+      - ".github/workflows/mamba-foundation-transfer.yml"
+      - "iq_transfer/mamba3_direct.py"
+      - "iq_transfer/mamba3_init.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  transfer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-model.txt
+
+      - name: Install transfer dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --extra-index-url https://download.pytorch.org/whl/cpu -r requirements-model.txt
+
+      - name: Download pinned Mamba-3 MIMO foundation
+        run: |
+          mkdir -p "$RUNNER_TEMP/mamba3"
+          hf download state-spaces/mamba3-mimo-1.5b \
+            config.json pytorch_model.bin tokenizer.json tokenizer_config.json \
+            --revision bc6b5d0f7994fe4cb3478242e92da8daf9ee29ec \
+            --local-dir "$RUNNER_TEMP/mamba3"
+
+      - name: Compile exact IQ Mamba foundation
+        run: |
+          mkdir -p "$RUNNER_TEMP/iq-mamba-foundation"
+          python -m iq_transfer.cli mamba3-direct \
+            --checkpoint "$RUNNER_TEMP/mamba3" \
+            --output "$RUNNER_TEMP/iq-mamba-foundation" \
+            --checkpoint-revision bc6b5d0f7994fe4cb3478242e92da8daf9ee29ec
+
+      - name: Verify artifact and write checksums
+        run: |
+          test -s "$RUNNER_TEMP/iq-mamba-foundation/model-global.safetensors"
+          test -s "$RUNNER_TEMP/iq-mamba-foundation/mamba3_transplant.json"
+          test "$(find "$RUNNER_TEMP/iq-mamba-foundation/mamba" -name '*.safetensors' | wc -l)" -eq 24
+          (
+            cd "$RUNNER_TEMP/iq-mamba-foundation"
+            sha256sum model-global.safetensors mamba/*.safetensors > SHA256SUMS
+            du -sh . > ARTIFACT_SIZE.txt
+          )
+          mkdir -p transfer-report
+          cp "$RUNNER_TEMP/iq-mamba-foundation/mamba3_transplant.json" transfer-report/
+          cp "$RUNNER_TEMP/iq-mamba-foundation/SHA256SUMS" transfer-report/
+          cp "$RUNNER_TEMP/iq-mamba-foundation/ARTIFACT_SIZE.txt" transfer-report/
+
+      - name: Cache transformed foundation
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/iq-mamba-foundation
+          key: iq-mamba-foundation-v1-${{ github.sha }}
+
+      - name: Upload transfer report
+        uses: actions/upload-artifact@v4
+        with:
+          name: mamba-foundation-transfer-report
+          path: transfer-report
+          retention-days: 7
+          compression-level: 9

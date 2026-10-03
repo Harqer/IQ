@@ -3,6 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping
 
+GLM53_BF16_REPO = "zai-org/GLM-5.3-BF16"
+GLM53_FLASH_BF16_REPO = "zai-org/GLM-5.3-Flash-BF16"
+
+
 from .donor import (
     DonorConfig,
     DonorError,
@@ -153,6 +157,96 @@ class GLM53Inspector:
             for i in range(self.config.num_hidden_layers)
         )
 
+    def required_tensor_keys(self) -> tuple[str, ...]:
+        keys: list[str] = [
+            "model.embed_tokens.weight",
+            "model.norm.weight",
+            "lm_head.weight",
+        ]
+        for layer in range(self.config.num_hidden_layers):
+            prefix = f"model.layers.{layer}"
+            keys.extend(
+                [
+                    f"{prefix}.input_layernorm.weight",
+                    f"{prefix}.post_attention_layernorm.weight",
+                    f"{prefix}.self_attn.q_a_proj.weight",
+                    f"{prefix}.self_attn.q_a_layernorm.weight",
+                    f"{prefix}.self_attn.q_b_proj.weight",
+                    f"{prefix}.self_attn.kv_a_proj_with_mqa.weight",
+                    f"{prefix}.self_attn.kv_a_layernorm.weight",
+                    f"{prefix}.self_attn.kv_b_proj.weight",
+                    f"{prefix}.self_attn.o_proj.weight",
+                ]
+            )
+            if self.layout.indexer_types[layer] != "shared":
+                indexer = f"{prefix}.self_attn.indexer"
+                keys.extend(
+                    [
+                        f"{indexer}.wq_b.weight",
+                        f"{indexer}.wk.weight",
+                        f"{indexer}.weights_proj.weight",
+                        f"{indexer}.k_norm.weight",
+                        f"{indexer}.k_norm.bias",
+                    ]
+                )
+            if layer < self.layout.first_k_dense_replace:
+                keys.extend(
+                    [
+                        f"{prefix}.mlp.gate_proj.weight",
+                        f"{prefix}.mlp.up_proj.weight",
+                        f"{prefix}.mlp.down_proj.weight",
+                    ]
+                )
+            else:
+                keys.extend(
+                    [
+                        f"{prefix}.mlp.gate.weight",
+                        f"{prefix}.mlp.gate.e_score_correction_bias",
+                        f"{prefix}.mlp.shared_experts.gate_proj.weight",
+                        f"{prefix}.mlp.shared_experts.up_proj.weight",
+                        f"{prefix}.mlp.shared_experts.down_proj.weight",
+                    ]
+                )
+                for expert in range(self.layout.n_routed_experts):
+                    expert_prefix = f"{prefix}.mlp.experts.{expert}"
+                    keys.extend(
+                        [
+                            f"{expert_prefix}.gate_proj.weight",
+                            f"{expert_prefix}.up_proj.weight",
+                            f"{expert_prefix}.down_proj.weight",
+                        ]
+                    )
+        return tuple(keys)
+
+    def validate_index_keys(
+        self,
+        keys: tuple[str, ...] | list[str] | set[str],
+    ) -> ValidationReport:
+        available = frozenset(str(key) for key in keys)
+        missing = [
+            key for key in self.required_tensor_keys()
+            if key not in available
+        ]
+        if missing:
+            return ValidationReport(
+                errors=(
+                    "missing GLM-5.3 checkpoint tensors in index: "
+                    + ", ".join(missing[:20]),
+                )
+            )
+        warnings: list[str] = []
+        quantized = any(
+            key.endswith(".weight_scale")
+            or key.endswith(".weight_scale_inv")
+            for key in available
+        )
+        if quantized:
+            warnings.append(
+                "quantized GLM checkpoint detected; use GLM-5.3-BF16 "
+                "for canonical IQ weight transport"
+            )
+        return ValidationReport(warnings=tuple(warnings))
+
     def validate_checkpoint(self, source: TensorSource) -> ValidationReport:
         try:
             self.operators(source)
@@ -294,6 +388,11 @@ class GLM53Inspector:
                     refs, source, available, layer, "moe.router",
                     f"{prefix}.mlp.gate.weight",
                     self.layout.n_routed_experts, hidden,
+                )
+                self._add_vector(
+                    refs, source, available, layer, "moe.routing_bias",
+                    f"{prefix}.mlp.gate.e_score_correction_bias",
+                    self.layout.n_routed_experts,
                 )
                 for shared in range(self.layout.n_shared_experts):
                     shared_prefix = f"{prefix}.mlp.shared_experts"

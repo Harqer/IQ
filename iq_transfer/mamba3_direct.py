@@ -201,11 +201,20 @@ def _require_tensor(
     return value
 
 
+def _physical_mlp_hidden_size(config: Mamba3DonorConfig) -> int:
+    """Match upstream GatedMLP(hidden_features, multiple_of=128) padding."""
+    multiple = 128
+    return (
+        (int(config.d_intermediate) + multiple - 1) // multiple
+    ) * multiple
+
+
 def validate_official_mamba3_mimo_state(
     config: Mamba3DonorConfig,
     state: Mapping[str, torch.Tensor],
 ) -> None:
     layout = config.layout
+    physical_mlp_hidden = _physical_mlp_hidden_size(config)
     expected_global = {
         "backbone.embedding.weight": (config.vocab_size, config.d_model),
         "backbone.norm_f.weight": (config.d_model,),
@@ -250,8 +259,8 @@ def validate_official_mamba3_mimo_state(
             f"{p}.mixer.D": (layout.nheads,),
             f"{p}.mixer.out_proj.weight": layout.out_proj_shape,
             f"{p}.norm2.weight": (config.d_model,),
-            f"{p}.mlp.fc1.weight": (2 * config.d_intermediate, config.d_model),
-            f"{p}.mlp.fc2.weight": (config.d_model, config.d_intermediate),
+            f"{p}.mlp.fc1.weight": (2 * physical_mlp_hidden, config.d_model),
+            f"{p}.mlp.fc2.weight": (config.d_model, physical_mlp_hidden),
         }
         for key, shape in expected.items():
             _require_tensor(state, key, shape)
@@ -286,6 +295,92 @@ def validate_official_mamba3_mimo_15b_config(config: Mamba3DonorConfig) -> None:
             + "; ".join(mismatches)
         )
 
+
+
+def expand_mamba3_foundation_globals(
+    *,
+    source_config: Mamba3DonorConfig,
+    state: Mapping[str, torch.Tensor],
+    target_hidden_size: int,
+) -> dict[str, torch.Tensor]:
+    """Widen Mamba lexical/global tensors while preserving source logits."""
+    if target_hidden_size % source_config.d_model != 0:
+        raise Mamba3DirectTransferError(
+            "target hidden size must be an integer multiple of the Mamba foundation width"
+        )
+    factor = target_hidden_size // source_config.d_model
+    if factor <= 0:
+        raise Mamba3DirectTransferError("invalid Mamba foundation widening factor")
+    embedding = _require_tensor(
+        state,
+        "backbone.embedding.weight",
+        (source_config.vocab_size, source_config.d_model),
+    )
+    final_norm = _require_tensor(
+        state,
+        "backbone.norm_f.weight",
+        (source_config.d_model,),
+    )
+    lm_head = _require_tensor(
+        state,
+        "lm_head.weight",
+        (source_config.vocab_size, source_config.d_model),
+    )
+    return {
+        "embed_tokens.weight": embedding.repeat((1, factor)).contiguous(),
+        "norm.weight": final_norm.repeat(factor).contiguous(),
+        "lm_head.weight": (
+            lm_head.repeat((1, factor)) / float(factor)
+        ).contiguous(),
+    }
+
+
+def load_official_mamba3_foundation_globals(
+    *,
+    checkpoint: str | Path,
+    checkpoint_revision: str = MAMBA3_MIMO_15B_REVISION,
+    verify_checkpoint_hash: bool = True,
+    target_hidden_size: int = 4096,
+) -> dict[str, torch.Tensor]:
+    """Load the lexical/global state for the Mamba-3-founded IQ checkpoint.
+
+    The official 1.5B model uses d_model=2048. IQ widens that representation by
+    exact replication x -> [x, x]. To preserve the source function on that
+    embedded subspace:
+      embedding:  E -> [E, E]
+      final norm: gamma -> [gamma, gamma]
+      LM head:    W -> [W/2, W/2]
+    so [x,x] @ [W/2,W/2]^T == x @ W^T.
+
+    GLM-5.3 never owns these lexical tensors in the canonical IQ build.
+    """
+    checkpoint_dir = Path(checkpoint)
+    config_path = checkpoint_dir / "config.json"
+    weights_path = checkpoint_dir / "pytorch_model.bin"
+    if not config_path.exists() or not weights_path.exists():
+        raise Mamba3DirectTransferError(
+            "checkpoint directory must contain config.json and pytorch_model.bin"
+        )
+    if checkpoint_revision != MAMBA3_MIMO_15B_REVISION:
+        raise Mamba3DirectTransferError(
+            "foundation transfer is pinned to the official Mamba-3 MIMO 1.5B revision "
+            f"{MAMBA3_MIMO_15B_REVISION}; got {checkpoint_revision}"
+        )
+    donor = Mamba3DonorConfig.from_json(config_path)
+    validate_official_mamba3_mimo_15b_config(donor)
+    donor_sha = _sha256_file(weights_path)
+    if verify_checkpoint_hash and donor_sha != MAMBA3_MIMO_15B_BIN_SHA256:
+        raise Mamba3DirectTransferError(
+            "Mamba-3 foundation checkpoint hash does not match the pinned artifact: "
+            f"got {donor_sha}, expected {MAMBA3_MIMO_15B_BIN_SHA256}"
+        )
+    state = _load_official_state_dict(weights_path)
+    validate_official_mamba3_mimo_state(donor, state)
+    return expand_mamba3_foundation_globals(
+        source_config=donor,
+        state=state,
+        target_hidden_size=target_hidden_size,
+    )
 
 def evenly_spaced_layer_placements(
     source_layers: int,
@@ -712,6 +807,24 @@ def compile_official_mamba3_mimo_15b_transplant(
 
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
+
+    # Mamba-3 is the lexical foundation, not only a recurrent overlay.
+    # Persist the exact function-preserving 2048->4096 lexical widening as part
+    # of the same durable foundation artifact.
+    foundation_globals = expand_mamba3_foundation_globals(
+        source_config=donor,
+        state=state,
+        target_hidden_size=target_config.d_model,
+    )
+    _save_safetensors(
+        output / "model-global.safetensors",
+        {
+            key: value.to(torch.bfloat16)
+            for key, value in foundation_globals.items()
+        },
+    )
+    del foundation_globals
+
     placements: list[Mamba3LayerPlacement] = []
     populated_ordinals = set(ordinals)
     for source_layer, target_ordinal in enumerate(ordinals):
@@ -741,8 +854,8 @@ def compile_official_mamba3_mimo_15b_transplant(
     target_fingerprint = _mamba_target_fingerprint(target_config)
 
     manifest = {
-        "schema_version": 2,
-        "artifact_type": "iq_mamba3_direct_transplant",
+        "schema_version": 3,
+        "artifact_type": "iq_mamba3_foundation",
         "method": "exact_replication_embedding_plus_identity_depth_expansion",
         "teacher_student_distillation": False,
         "donor": {
@@ -761,10 +874,15 @@ def compile_official_mamba3_mimo_15b_transplant(
         "identity_mamba_ordinals": list(identity_ordinals),
         "identity_rule": "zero_mamba_out_proj",
         "scope": {
-            "transferred": ["mamba3_mixer", "mamba_pre_norm"],
-            "not_transferred": [
+            "transferred": [
                 "embedding",
+                "final_norm",
                 "lm_head",
+                "mamba3_mixer",
+                "mamba_pre_norm"
+            ],
+            "global_shard": "model-global.safetensors",
+            "not_transferred": [
                 "donor_gated_mlp",
                 "stable_latent_moe",
                 "csa_hca",

@@ -1,4 +1,4 @@
-from .reasoning import AdaptiveHaltingHead, ReasoningRecurrence, ReasoningRecurrenceConfig, ReasoningRecurrenceOutput, ReasoningStateInjector, ReasoningStateTransition, SpectralDepthEncoding
+from .reasoning import AdaptiveHaltingHead, ReasoningRecurrence, ReasoningRecurrenceConfig, ReasoningRecurrenceOutput, ReasoningStateInjector, ReasoningStateTransition, SpectralDepthEncoding, ReasoningVerifier, ReasoningVerifierProtocol, ReasoningVerifierSignal
 from .energy import ReasoningEnergyCritic, ReasoningEnergyCriticConfig, energy_margin_ranking_loss
 from .residual import AttentionResidualMixer, AttnResError, BlockAttentionResidual, BlockAttnResConfig, BlockAttnResState, MHCConfig, MHCError, MHCHead, MHCWeights, ManifoldHyperConnection, expand_mhc_streams, sinkhorn_doubly_stochastic
 from .hybrid import CompressedContextResidualLayer, HybridCausalLMOutput, HybridModelError, IQHybridConfig, IQHybridForCausalLM, Mamba3ResidualLayer, DenseContextResidualLayer, MambaPackedLayout, pack_mamba_varlen, unpack_mamba_varlen, validate_canonical_hybrid_backbone
@@ -86,6 +86,9 @@ __all__ = [
     "RMSNorm",
     "AdaptiveHaltingHead",
     "ReasoningRecurrence",
+    "ReasoningVerifier",
+    "ReasoningVerifierProtocol",
+    "ReasoningVerifierSignal",
     "ReasoningRecurrenceConfig",
     "ReasoningRecurrenceOutput",
     "ReasoningStateInjector",

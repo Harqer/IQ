@@ -44,6 +44,14 @@ class ReasoningRecurrenceTests(unittest.TestCase):
             )
         )
 
+    def test_halting_starts_deep(self):
+        recurrence = ReasoningRecurrence(self.config()).train()
+        hidden = torch.randn(2, 5, 16)
+        output = recurrence(hidden)
+        initial = output.halt_probabilities[:, 0]
+        expected = torch.full_like(initial, torch.sigmoid(torch.tensor(-4.0)))
+        self.assertTrue(torch.allclose(initial, expected, atol=1e-6, rtol=1e-6))
+
     def test_training_uses_differentiable_soft_halting_weights(self):
         torch.manual_seed(101)
         recurrence = ReasoningRecurrence(self.config()).train()
@@ -93,7 +101,7 @@ class ReasoningRecurrenceTests(unittest.TestCase):
         without_critic = recurrence(hidden)
         with_critic = recurrence(
             hidden,
-            energy_critic=critic,
+            verifier=critic,
         )
 
         self.assertTrue(
@@ -117,7 +125,7 @@ class ReasoningRecurrenceTests(unittest.TestCase):
 
         output = recurrence(
             hidden,
-            energy_critic=critic,
+            verifier=critic,
         )
         loss = output.state.square().mean() + 0.1 * output.expected_steps
         loss.backward()
@@ -174,8 +182,8 @@ class ReasoningRecurrenceTests(unittest.TestCase):
 
         output = recurrence(
             torch.randn(2, 5, 16),
-            energy_critic=critic,
-            require_energy_stability=True,
+            verifier=critic,
+            require_verifier_stability=True,
         )
 
         self.assertEqual(output.steps_executed, 2)

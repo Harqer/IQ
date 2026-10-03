@@ -17,6 +17,7 @@ class TrainStepConfig:
     gradient_accumulation_steps: int = 1
     max_grad_norm: float = 1.0
     precision: str = "fp32"
+    training_step: int = 0
 
     def __post_init__(self) -> None:
         if self.gradient_accumulation_steps <= 0:
@@ -25,6 +26,8 @@ class TrainStepConfig:
             )
         if self.max_grad_norm <= 0:
             raise TrainingError("max_grad_norm must be positive")
+        if self.training_step < 0:
+            raise TrainingError("training_step must be non-negative")
         if self.precision not in {"fp32", "bf16"}:
             raise TrainingError(
                 "precision must be 'fp32' or 'bf16'"
@@ -145,6 +148,8 @@ def train_step(
 
     for batch in batches:
         model_inputs = _validate_batch(batch)
+        if hasattr(model, "objective_config"):
+            model_inputs["training_step"] = config.training_step
         attention_mask = model_inputs.get("attention_mask")
         token_count += (
             int(attention_mask.to(dtype=torch.bool).sum())

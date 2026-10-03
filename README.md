@@ -28,7 +28,7 @@ heterogeneous backbone
   ↓
 reasoning-time latent recurrence
   ↕
-optional EBM critic
+optional reasoning verifier (EBM backend available)
   │   candidate scoring / branch ranking / verification
   │   optional evidence for halting
   ↓
@@ -50,8 +50,8 @@ pairwise comparisons; it is not a mandatory backbone anchor.
 - **Stable LatentMoE** is the production expert path: full-width sigmoid routing, latent routed experts, post-aggregate RMSNorm, full-width shared experts, SiTU-GLU, and one-step-delayed Quantile Balancing. The older full-width SwiGLU MoE remains an ablation/control.
 - **Block AttnRes** is the frozen production depth/residual mechanism. **mHC** remains a standalone ablation/reference and is not composed into the canonical hybrid. Neither is a reasoning controller.
 - **Reasoning-time recurrence** is separate from Mamba's token-time recurrence and owns iterative latent refinement. The reference path uses a gated residual transition with a continuous spectral depth coordinate. Teacher-forced training requires explicit `reasoning_context_lengths` so the recurrent state only observes the causal prompt prefix; inference uses the full visible prefix and injects reasoning only at the final prediction source position.
-- **ReasoningEnergyCritic** is an optional EBM scorer over the generated reasoning trajectory. It can provide ranking/verification signals and halting evidence, while the recurrence transition remains identical with the critic enabled or disabled.
-- **Adaptive halting** is a separate learned head. Training uses differentiable stop/survival weights across the bounded reasoning trajectory; inference can exit early only when halt probability and state-convergence criteria pass. Optional energy stabilization adds evidence rather than replacing those criteria.
+- **ReasoningVerifier** is a pluggable scorer over generated reasoning states. The current EBM backend exposes energy as higher-is-better verifier evidence by negating raw energy; recurrence never depends on EBM semantics and verifier evidence cannot mutate the state transition.
+- **Adaptive halting** is a separate learned head. It uses a deliberate deep-start initialization, differentiable stop/survival weights, state convergence, and optional verifier-stability evidence. The ponder/compute penalty supports an explicit warmup so early training cannot collapse into a shallow-halting equilibrium.
 - **MTP** is a first-class pretraining objective/head stack rather than an after-the-fact probe.
 - **Differential Attention**, Coconut-style recurrence, and the Concept Mapper remain ablation-controlled reasoning experiments rather than mandatory backbone stages.
 
@@ -77,22 +77,24 @@ IQ does **not** claim that ordinary language-model reasoning requires quantum ha
 
 `iq_transfer/` is the canonical donor-independent transfer package.
 
-Current flow:
+Current production flow:
 
 ```text
-donor checkpoint
-  → DonorInspector
-  → lazy operator catalog
-  → calibration activations
-  → functional shadows
-  → layer correspondence
-  → coordinate maps
-  → operator transport
-  → DoRA correction
-  → IQ adaptation
+official Mamba-3 MIMO checkpoint
+  → exact 2048→4096 lexical/recurrent widening
+  → canonical IQ residual frame
+
+GLM-5.3 BF16 capability weights
+  → strict operator inspection
+  → WARM semi-orthogonal remapping into the Mamba frame
+  → MLA→CSA/HCA + DSA + Stable LatentMoE transforms
+
+Mamba foundation + GLM capability modules + IQ-native controllers
+  → one IQ checkpoint
+  → stabilization/post-training
 ```
 
-GLM-5.3 BF16 is the primary production donor. `GLM53Inspector` validates its MLA/DSA + sigmoid-MoE checkpoint layout before any transport occurs. Phi-4 remains a regression/control donor. The transfer engine stays donor-independent: new donors add inspectors rather than separate graft architectures.
+The official pretrained Mamba-3 MIMO 1.5B checkpoint is IQ's lexical and recurrent foundation. Its 2048-wide representation is widened to IQ's 4096-wide residual frame by exact replication, preserving the pretrained Mamba function on the embedded subspace. GLM-5.3 BF16 is a secondary capability-weight source: `GLM53Inspector` validates its MLA/DSA + sigmoid-MoE layout, then WARM-style remapping plus IQ-specific algebra transports context/DSA/MoE capability weights into the Mamba-anchored 4096-D frame. GLM does not replace the Mamba tokenizer, embedding, final norm, LM head, or recurrent dynamics. Phi-4 remains a regression/control source.
 
 See:
 

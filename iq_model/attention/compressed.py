@@ -49,6 +49,9 @@ class CompressedContextConfig:
     rms_norm_eps: float = 1e-6
     attention_dropout: float = 0.0
     projection_bias: bool = False
+    normalize_query_output: bool = True
+    normalize_candidate_nonrotary_only: bool = False
+    direct_token_indexer: bool = False
 
     def __post_init__(self) -> None:
         ints = {
@@ -195,7 +198,16 @@ class _V4CompressedContextAttention(nn.Module):
             config.head_dim,
             bias=config.projection_bias,
         )
-        self.kv_norm = HeadRMSNorm(config.head_dim, config.rms_norm_eps)
+        candidate_norm_dim = (
+            config.head_dim - config.partial_rotary_dim
+            if config.normalize_candidate_nonrotary_only
+            else config.head_dim
+        )
+        if candidate_norm_dim <= 0:
+            raise ValueError(
+                "non-rotary candidate normalization requires head_dim > partial_rotary_dim"
+            )
+        self.kv_norm = HeadRMSNorm(candidate_norm_dim, config.rms_norm_eps)
 
         compressor_width = config.head_dim * (2 if mode == "csa" else 1)
         self.compressor_kv_proj = nn.Linear(
@@ -215,37 +227,49 @@ class _V4CompressedContextAttention(nn.Module):
             torch.zeros(compress_rate, compressor_width)
         )
         self.compressor_kv_norm = HeadRMSNorm(
-            config.head_dim,
+            candidate_norm_dim,
             config.rms_norm_eps,
         )
 
         self.index_kv_proj: nn.Linear | None = None
         self.index_gate_proj: nn.Linear | None = None
         self.index_position_bias: nn.Parameter | None = None
-        self.index_kv_norm: HeadRMSNorm | None = None
+        self.index_kv_norm: nn.Module | None = None
         self.index_q_proj: nn.Linear | None = None
         self.index_weight_proj: nn.Linear | None = None
         if mode == "csa":
-            self.index_kv_proj = nn.Linear(
-                config.hidden_size,
-                2 * config.index_head_dim,
-                bias=config.projection_bias,
-            )
-            self.index_gate_proj = nn.Linear(
-                config.hidden_size,
-                2 * config.index_head_dim,
-                bias=config.projection_bias,
-            )
-            self.index_position_bias = nn.Parameter(
-                torch.zeros(
-                    config.csa_compress_rate,
-                    2 * config.index_head_dim,
+            if config.direct_token_indexer:
+                self.index_kv_proj = nn.Linear(
+                    config.hidden_size,
+                    config.index_head_dim,
+                    bias=config.projection_bias,
                 )
-            )
-            self.index_kv_norm = HeadRMSNorm(
-                config.index_head_dim,
-                config.rms_norm_eps,
-            )
+                self.index_kv_norm = nn.LayerNorm(
+                    config.index_head_dim,
+                    eps=config.rms_norm_eps,
+                    elementwise_affine=True,
+                )
+            else:
+                self.index_kv_proj = nn.Linear(
+                    config.hidden_size,
+                    2 * config.index_head_dim,
+                    bias=config.projection_bias,
+                )
+                self.index_gate_proj = nn.Linear(
+                    config.hidden_size,
+                    2 * config.index_head_dim,
+                    bias=config.projection_bias,
+                )
+                self.index_position_bias = nn.Parameter(
+                    torch.zeros(
+                        config.csa_compress_rate,
+                        2 * config.index_head_dim,
+                    )
+                )
+                self.index_kv_norm = HeadRMSNorm(
+                    config.index_head_dim,
+                    config.rms_norm_eps,
+                )
             self.index_q_proj = nn.Linear(
                 config.q_lora_rank,
                 config.index_n_heads * config.index_head_dim,
@@ -271,6 +295,18 @@ class _V4CompressedContextAttention(nn.Module):
             hidden_size=config.hidden_size,
             bias=config.projection_bias,
         )
+
+    def _normalize_main_candidate(
+        self,
+        value: torch.Tensor,
+        norm: HeadRMSNorm,
+    ) -> torch.Tensor:
+        if not self.config.normalize_candidate_nonrotary_only:
+            return norm(value)
+        split = self.config.head_dim - self.config.partial_rotary_dim
+        nonrot = norm(value[..., :split])
+        rotary = value[..., split:]
+        return torch.cat((nonrot, rotary), dim=-1)
 
     @property
     def compress_rate(self) -> int:
@@ -334,7 +370,10 @@ class _V4CompressedContextAttention(nn.Module):
         )
         gate = gate + self.compressor_position_bias
         weights = gate.softmax(dim=1, dtype=torch.float32).to(kv.dtype)
-        compressed = self.compressor_kv_norm((kv * weights).sum(dim=1))
+        compressed = self._normalize_main_candidate(
+            (kv * weights).sum(dim=1),
+            self.compressor_kv_norm,
+        )
         representative = positions[:usable:rate]
         return self._rope(
             compressed.unsqueeze(1),
@@ -374,7 +413,14 @@ class _V4CompressedContextAttention(nn.Module):
             combined_gate[1:, :rate] = gate[:-1, :, :head_dim]
 
         weights = combined_gate.softmax(dim=1, dtype=torch.float32).to(kv.dtype)
-        compressed = norm((combined_kv * weights).sum(dim=1))
+        compressed = (combined_kv * weights).sum(dim=1)
+        if (
+            head_dim == self.config.head_dim
+            and self.config.normalize_candidate_nonrotary_only
+        ):
+            compressed = self._normalize_main_candidate(compressed, norm)
+        else:
+            compressed = norm(compressed)
         representative = positions[:usable:rate]
         return self._rope(
             compressed.unsqueeze(1),
@@ -407,22 +453,30 @@ class _V4CompressedContextAttention(nn.Module):
         if self.mode != "csa":
             raise CompressedContextError("index selection is CSA-only")
         assert self.index_kv_proj is not None
-        assert self.index_gate_proj is not None
-        assert self.index_position_bias is not None
         assert self.index_kv_norm is not None
         assert self.index_q_proj is not None
         assert self.index_weight_proj is not None
 
-        compressed = self._compress_overlap(
-            hidden,
-            positions,
-            kv_proj=self.index_kv_proj,
-            gate_proj=self.index_gate_proj,
-            position_bias=self.index_position_bias,
-            norm=self.index_kv_norm,
-            head_dim=self.config.index_head_dim,
-        )
         length = hidden.shape[0]
+        if self.config.direct_token_indexer:
+            token_keys = self.index_kv_norm(self.index_kv_proj(hidden))
+            compressed = self._rope(
+                token_keys.unsqueeze(1),
+                positions,
+            ).squeeze(1)
+        else:
+            assert self.index_gate_proj is not None
+            assert self.index_position_bias is not None
+            assert isinstance(self.index_kv_norm, HeadRMSNorm)
+            compressed = self._compress_overlap(
+                hidden,
+                positions,
+                kv_proj=self.index_kv_proj,
+                gate_proj=self.index_gate_proj,
+                position_bias=self.index_position_bias,
+                norm=self.index_kv_norm,
+                head_dim=self.config.index_head_dim,
+            )
         if compressed.shape[0] == 0:
             empty = hidden.new_zeros((length, 0), dtype=torch.float32)
             return empty, torch.zeros(
@@ -449,9 +503,15 @@ class _V4CompressedContextAttention(nn.Module):
         )
         index_scores = (scores * weights.unsqueeze(-1)).sum(dim=1)
 
-        visible = (torch.arange(length, device=hidden.device) + 1) // self.compress_rate
         entry = torch.arange(compressed.shape[0], device=hidden.device)
-        valid_mask = entry.unsqueeze(0) < visible.unsqueeze(1)
+        if self.config.direct_token_indexer:
+            query = torch.arange(length, device=hidden.device)
+            valid_mask = entry.unsqueeze(0) <= query.unsqueeze(1)
+        else:
+            visible = (
+                torch.arange(length, device=hidden.device) + 1
+            ) // self.compress_rate
+            valid_mask = entry.unsqueeze(0) < visible.unsqueeze(1)
         index_scores = index_scores.masked_fill(
             ~valid_mask,
             float("-inf"),
@@ -602,10 +662,14 @@ class _V4CompressedContextAttention(nn.Module):
             self.config.num_attention_heads,
             self.config.head_dim,
         )
-        q = self.q_b_norm(q)
+        if self.config.normalize_query_output:
+            q = self.q_b_norm(q)
         q = self._rope(q, positions)
 
-        local_kv = self.kv_norm(self.kv_proj(hidden))
+        local_kv = self._normalize_main_candidate(
+            self.kv_proj(hidden),
+            self.kv_norm,
+        )
         local_kv = self._rope(
             local_kv.unsqueeze(1),
             positions,
@@ -629,11 +693,18 @@ class _V4CompressedContextAttention(nn.Module):
                 assert selected is not None
                 indices = selected[token]
                 valid = indices[indices >= 0]
-                long_range = (
-                    compressed.index_select(0, valid)
-                    if valid.numel()
-                    else compressed[:0]
-                )
+                if self.config.direct_token_indexer:
+                    long_range = (
+                        local_kv.index_select(0, valid)
+                        if valid.numel()
+                        else local_kv[:0]
+                    )
+                else:
+                    long_range = (
+                        compressed.index_select(0, valid)
+                        if valid.numel()
+                        else compressed[:0]
+                    )
 
             candidates = (
                 torch.cat([local, long_range], dim=0)

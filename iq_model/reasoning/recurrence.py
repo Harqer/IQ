@@ -5,8 +5,8 @@ from dataclasses import dataclass
 import torch
 from torch import nn
 
-from ..energy import ReasoningEnergyCritic
 from ..norm import RMSNorm
+from .verifier import ReasoningVerifierProtocol
 
 
 @dataclass(frozen=True)
@@ -18,7 +18,9 @@ class ReasoningRecurrenceConfig:
     min_steps: int = 1
     halt_threshold: float = 0.9
     state_delta_epsilon: float = 1e-3
+    verifier_delta_epsilon: float = 1e-3
     energy_delta_epsilon: float = 1e-3
+    halt_init_bias: float = -4.0
     dropout: float = 0.0
     rms_norm_eps: float = 1e-6
     depth_base: float = 10000.0
@@ -42,8 +44,12 @@ class ReasoningRecurrenceConfig:
             raise ValueError("halt_threshold must be in (0, 1)")
         if self.state_delta_epsilon <= 0:
             raise ValueError("state_delta_epsilon must be positive")
+        if self.verifier_delta_epsilon <= 0:
+            raise ValueError("verifier_delta_epsilon must be positive")
         if self.energy_delta_epsilon <= 0:
             raise ValueError("energy_delta_epsilon must be positive")
+        if self.halt_init_bias >= 0:
+            raise ValueError("halt_init_bias must be negative for deep-start halting")
         if not 0.0 <= self.dropout < 1.0:
             raise ValueError("dropout must be in [0, 1)")
         if self.rms_norm_eps <= 0:
@@ -59,6 +65,8 @@ class ReasoningRecurrenceOutput:
     halt_probabilities: torch.Tensor
     halt_weights: torch.Tensor
     relative_state_deltas: torch.Tensor
+    verifier_trace: torch.Tensor | None
+    verifier_deltas: torch.Tensor | None
     energy_trace: torch.Tensor | None
     energy_deltas: torch.Tensor | None
     expected_steps: torch.Tensor
@@ -181,14 +189,16 @@ class AdaptiveHaltingHead(nn.Module):
         super().__init__()
         self.state_norm = RMSNorm(config.state_dim, config.rms_norm_eps)
         self.proj = nn.Linear(config.state_dim + 3, 1)
+        nn.init.zeros_(self.proj.weight)
+        nn.init.constant_(self.proj.bias, config.halt_init_bias)
 
     def forward(
         self,
         state: torch.Tensor,
         relative_state_delta: torch.Tensor,
         *,
-        energy: torch.Tensor | None,
-        energy_delta: torch.Tensor | None,
+        verifier_score: torch.Tensor | None,
+        verifier_delta: torch.Tensor | None,
     ) -> torch.Tensor:
         if state.ndim != 2:
             raise ValueError("state must have shape [batch, state_dim]")
@@ -198,21 +208,21 @@ class AdaptiveHaltingHead(nn.Module):
             )
 
         zeros = torch.zeros_like(relative_state_delta)
-        energy_feature = (
-            torch.tanh(energy.float()).to(state.dtype)
-            if energy is not None
+        verifier_feature = (
+            torch.tanh(verifier_score.float()).to(state.dtype)
+            if verifier_score is not None
             else zeros.to(state.dtype)
         )
-        energy_delta_feature = (
-            torch.tanh(energy_delta.float()).to(state.dtype)
-            if energy_delta is not None
+        verifier_delta_feature = (
+            torch.tanh(verifier_delta.float()).to(state.dtype)
+            if verifier_delta is not None
             else zeros.to(state.dtype)
         )
         scalar_features = torch.stack(
             (
                 torch.log1p(relative_state_delta.float()).to(state.dtype),
-                energy_feature,
-                energy_delta_feature,
+                verifier_feature,
+                verifier_delta_feature,
             ),
             dim=-1,
         )
@@ -277,9 +287,10 @@ class ReasoningStateInjector(nn.Module):
 class ReasoningRecurrence(nn.Module):
     """Reference adaptive reasoning loop separated from token-time Mamba recurrence.
 
-    The recurrence owns state transitions. An optional EBM can score each
-    generated state, but its energy is observational: it can affect the halting
-    head and telemetry without directly changing the transition.
+    The recurrence owns state transitions. An optional pluggable verifier can
+    score each generated state, but verifier evidence is observational: it can
+    affect the halting head and telemetry without directly changing transition
+    dynamics. Energy is one verifier backend, not a recurrence dependency.
     """
 
     def __init__(self, config: ReasoningRecurrenceConfig) -> None:
@@ -392,8 +403,8 @@ class ReasoningRecurrence(nn.Module):
         attention_mask: torch.Tensor | None = None,
         reasoning_context_mask: torch.Tensor | None = None,
         document_ids: torch.Tensor | None = None,
-        energy_critic: ReasoningEnergyCritic | None = None,
-        require_energy_stability: bool = False,
+        verifier: ReasoningVerifierProtocol | None = None,
+        require_verifier_stability: bool = False,
     ) -> ReasoningRecurrenceOutput:
         if hidden_states.ndim != 3:
             raise ValueError(
@@ -433,25 +444,28 @@ class ReasoningRecurrence(nn.Module):
         context_state = self.context_to_state(context)
         state = self.initial_state(context)
 
-        if energy_critic is not None:
-            if energy_critic.config.state_dim != self.config.state_dim:
+        if verifier is not None:
+            if verifier.state_dim != self.config.state_dim:
                 raise ValueError(
-                    "energy critic state_dim must match reasoning state_dim"
+                    "reasoning verifier state_dim must match reasoning state_dim"
                 )
-            if energy_critic.config.context_dim != self.config.hidden_size:
+            if verifier.context_dim != self.config.hidden_size:
                 raise ValueError(
-                    "energy critic context_dim must match reasoning hidden_size"
+                    "reasoning verifier context_dim must match reasoning hidden_size"
                 )
-        elif require_energy_stability:
+        elif require_verifier_stability:
             raise ValueError(
-                "require_energy_stability needs an energy critic"
+                "require_verifier_stability needs a reasoning verifier"
             )
 
         halt_probabilities: list[torch.Tensor] = []
         relative_deltas: list[torch.Tensor] = []
+        verifier_scores: list[torch.Tensor] = []
+        verifier_deltas: list[torch.Tensor] = []
         energies: list[torch.Tensor] = []
         energy_deltas: list[torch.Tensor] = []
         states: list[torch.Tensor] = []
+        previous_verifier_score: torch.Tensor | None = None
         previous_energy: torch.Tensor | None = None
 
         steps_executed = self.config.max_steps
@@ -464,12 +478,26 @@ class ReasoningRecurrence(nn.Module):
             )
             delta = self._relative_delta(state, previous_state)
 
+            signal = verifier.verify(state, context) if verifier is not None else None
+            verifier_score = signal.score if signal is not None else None
+            had_previous_verifier = previous_verifier_score is not None
+            if verifier_score is not None:
+                verifier_delta = (
+                    torch.zeros_like(verifier_score)
+                    if previous_verifier_score is None
+                    else (verifier_score - previous_verifier_score).abs()
+                )
+                previous_verifier_score = verifier_score
+                verifier_scores.append(verifier_score)
+                verifier_deltas.append(verifier_delta)
+            else:
+                verifier_delta = None
+
             energy = (
-                energy_critic(state, context)
-                if energy_critic is not None
+                signal.raw_score
+                if signal is not None and signal.backend == "energy"
                 else None
             )
-            had_previous_energy = previous_energy is not None
             if energy is not None:
                 energy_delta = (
                     torch.zeros_like(energy)
@@ -479,20 +507,18 @@ class ReasoningRecurrence(nn.Module):
                 previous_energy = energy
                 energies.append(energy)
                 energy_deltas.append(energy_delta)
-            else:
-                energy_delta = None
 
             halt_probability = self.halting(
                 state,
                 delta,
-                energy=(
-                    energy.detach()
-                    if energy is not None
+                verifier_score=(
+                    verifier_score.detach()
+                    if verifier_score is not None
                     else None
                 ),
-                energy_delta=(
-                    energy_delta.detach()
-                    if energy_delta is not None
+                verifier_delta=(
+                    verifier_delta.detach()
+                    if verifier_delta is not None
                     else None
                 ),
             )
@@ -509,13 +535,13 @@ class ReasoningRecurrence(nn.Module):
                 ) & (
                     delta <= self.config.state_delta_epsilon
                 )
-                if require_energy_stability:
-                    assert energy_delta is not None
-                    if not had_previous_energy:
+                if require_verifier_stability:
+                    assert verifier_delta is not None
+                    if not had_previous_verifier:
                         converged = torch.zeros_like(converged)
                     else:
                         converged = converged & (
-                            energy_delta <= self.config.energy_delta_epsilon
+                            verifier_delta <= self.config.verifier_delta_epsilon
                         )
                 if bool(converged.all()):
                     steps_executed = step
@@ -566,6 +592,16 @@ class ReasoningRecurrence(nn.Module):
             weight_stack * step_numbers.unsqueeze(0)
         ).sum(dim=-1).mean()
 
+        verifier_trace = (
+            torch.stack(verifier_scores, dim=1)
+            if verifier_scores
+            else None
+        )
+        verifier_delta_trace = (
+            torch.stack(verifier_deltas, dim=1)
+            if verifier_deltas
+            else None
+        )
         energy_trace = (
             torch.stack(energies, dim=1)
             if energies
@@ -583,6 +619,8 @@ class ReasoningRecurrence(nn.Module):
             halt_probabilities=probability_stack,
             halt_weights=weight_stack,
             relative_state_deltas=delta_stack,
+            verifier_trace=verifier_trace,
+            verifier_deltas=verifier_delta_trace,
             energy_trace=energy_trace,
             energy_deltas=energy_delta_trace,
             expected_steps=expected_steps,

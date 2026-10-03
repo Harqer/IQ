@@ -37,7 +37,9 @@ from iq_transfer import (
     apply_mamba3_bootstrap,
     build_donor_manifest,
     extract_shadow,
+    fit_ot_coordinate_map,
     fit_ridge_coordinate_map,
+    sinkhorn_transport,
     load_capture_records,
     load_coordinate_map,
     match_layers_monotonic,
@@ -180,6 +182,49 @@ class TransferTests(unittest.TestCase):
         self.assertEqual(learned.source_space, "phi.residual.0")
         self.assertIsNotNone(learned.diagnostics)
         self.assertLess(learned.diagnostics.validation_rmse, 1e-4)
+
+    def test_sinkhorn_transport_has_uniform_marginals(self):
+        cost = np.array([
+            [0.0, 2.0, 3.0],
+            [2.0, 0.0, 3.0],
+        ])
+        coupling = sinkhorn_transport(
+            cost,
+            regularization=0.2,
+            max_iterations=2000,
+            tolerance=1e-10,
+        )
+        self.assertEqual(coupling.shape, cost.shape)
+        self.assertTrue(np.allclose(coupling.sum(axis=1), 0.5, atol=1e-6))
+        self.assertTrue(np.allclose(coupling.sum(axis=0), 1.0 / 3.0, atol=1e-6))
+
+    def test_ot_coordinate_map_recovers_sparse_cross_architecture_basis(self):
+        rng = np.random.default_rng(44)
+        xs = rng.normal(size=(256, 12))
+        expected = np.zeros((12, 5))
+        expected[[1, 4, 8], 0] = [1.5, -0.3, 0.7]
+        expected[[0, 3, 10], 1] = [-1.2, 0.4, 0.9]
+        expected[[2, 5, 7], 2] = [0.8, 1.1, -0.5]
+        expected[[6, 9, 11], 3] = [1.3, -0.6, 0.2]
+        expected[[1, 5, 10], 4] = [-0.7, 0.6, 1.4]
+        xt = xs @ expected
+        learned = fit_ot_coordinate_map(
+            xs[:192],
+            xt[:192],
+            ridge=1e-6,
+            regularization=0.03,
+            top_k_source=3,
+            source_space="glm.residual",
+            target_space="iq.residual",
+            validation_source=xs[192:],
+            validation_target=xt[192:],
+        )
+        self.assertLess(learned.diagnostics.validation_rmse, 1e-4)
+        self.assertTrue(np.allclose(xs @ learned.matrix, xt, atol=1e-3))
+        self.assertEqual(
+            np.count_nonzero(np.abs(learned.matrix) > 1e-10),
+            15,
+        )
 
     def test_coordinate_map_artifact_round_trip(self):
         try:

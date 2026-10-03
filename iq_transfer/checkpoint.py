@@ -69,3 +69,45 @@ class SafetensorsSource:
         safe_open = self._safe_open()
         with safe_open(self._path(key), framework="pt", device="cpu") as handle:
             return handle.get_tensor(key)
+
+    def get_rows(self, key: str, row_indices: Any) -> Any:
+        """Read only requested rows from a rank-2 safetensors tensor."""
+        try:
+            import torch
+        except ImportError as exc:
+            raise DonorError("PyTorch is required for row-sliced checkpoint reads") from exc
+        indices = torch.as_tensor(row_indices, dtype=torch.long, device="cpu").reshape(-1)
+        if indices.numel() == 0:
+            shape = self.shape(key)
+            if len(shape) != 2:
+                raise DonorError(f"get_rows requires a rank-2 tensor: {key}")
+            return torch.empty((0, shape[1]))
+        if bool((indices < 0).any()):
+            raise DonorError("row indices must be non-negative")
+        shape = self.shape(key)
+        if len(shape) != 2:
+            raise DonorError(f"get_rows requires a rank-2 tensor: {key}")
+        if int(indices.max()) >= shape[0]:
+            raise DonorError(
+                f"row index {int(indices.max())} exceeds tensor rows {shape[0]}"
+            )
+
+        unique, inverse = torch.unique(indices, sorted=True, return_inverse=True)
+        safe_open = self._safe_open()
+        pieces: list[Any] = []
+        with safe_open(self._path(key), framework="pt", device="cpu") as handle:
+            view = handle.get_slice(key)
+            start = 0
+            while start < unique.numel():
+                first = int(unique[start])
+                end = start + 1
+                while (
+                    end < unique.numel()
+                    and int(unique[end]) == int(unique[end - 1]) + 1
+                ):
+                    end += 1
+                last = int(unique[end - 1]) + 1
+                pieces.append(view[first:last, :])
+                start = end
+        gathered_unique = torch.cat(pieces, dim=0)
+        return gathered_unique[inverse].contiguous()

@@ -1,3 +1,4 @@
+from .verifier import ReasoningVerifier, ReasoningVerifierProtocol, ReasoningVerifierSignal
 from .recurrence import (
     AdaptiveHaltingHead,
     ReasoningRecurrence,
@@ -10,6 +11,9 @@ from .recurrence import (
 
 __all__ = [
     "AdaptiveHaltingHead",
+    "ReasoningVerifier",
+    "ReasoningVerifierProtocol",
+    "ReasoningVerifierSignal",
     "ReasoningRecurrence",
     "ReasoningRecurrenceConfig",
     "ReasoningRecurrenceOutput",

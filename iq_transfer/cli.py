@@ -4,7 +4,16 @@ import argparse
 import json
 
 from .job import run_phi_dense_transfer
-from .glm53_job import validate_glm53_donor
+from .glm53_job import validate_glm53_donor, validate_glm53_streaming_donor
+from .glm53 import GLM53Inspector
+from .glm53_calibration import bootstrap_glm53_calibration
+from .glm53_compile import compile_glm53_iq_checkpoint
+from .glm53_shards import plan_glm53_bootstrap_shards, plan_glm53_compile_shards
+from .capture_runner import load_activation_bundle, save_activation_bundle
+from .checkpoint import SafetensorsSource
+from .batches import load_token_batches
+from .glm53_stream_capture import HubSafetensorsSource, capture_glm53_bootstrap_streaming
+from .complete_transplant import canonical_glm53_config
 from .mamba3_direct import compile_official_mamba3_mimo_15b_transplant
 from .complete_transplant import compile_complete_iq_checkpoint
 from .gpt_oss20b import GPT_OSS_20B_REVISION
@@ -26,6 +35,85 @@ def _parser() -> argparse.ArgumentParser:
         "--allow-quantized",
         action="store_true",
         help="allow an FP8/quantized checkpoint for inspection only",
+    )
+
+    glm_bootstrap = sub.add_parser(
+        "glm53-bootstrap-calibration",
+        help="build donor-only GLM-5.3 -> IQ bootstrap maps from captured GLM activations",
+    )
+    glm_bootstrap.add_argument("--checkpoint", required=True)
+    glm_bootstrap.add_argument(
+        "--source-activations",
+        help="optional captured GLM activations; omit for data-free weight-only bootstrap",
+    )
+    glm_bootstrap.add_argument("--output", required=True)
+    glm_bootstrap.add_argument("--checkpoint-revision", required=True)
+    glm_bootstrap.add_argument("--repo-id", default="zai-org/GLM-5.3-BF16")
+    glm_bootstrap.add_argument("--donor-license", required=True)
+    glm_bootstrap.add_argument("--source-uri")
+    glm_bootstrap.add_argument(
+        "--streaming-source",
+        action="store_true",
+        help="validate from config/index metadata and require only planned local shards",
+    )
+    glm_bootstrap.add_argument(
+        "--warm-device",
+        default="cpu",
+        help="device used for WARM Gram/eigendecomposition, e.g. cuda",
+    )
+
+    glm_compile = sub.add_parser(
+        "glm53-compile",
+        help="compile a complete IQ checkpoint from GLM-5.3-BF16 calibration plus official Mamba-3 MIMO weights",
+    )
+    glm_compile.add_argument("--checkpoint", required=True)
+    glm_compile.add_argument("--calibration", required=True)
+    glm_compile.add_argument("--mamba3-checkpoint", required=True)
+    glm_compile.add_argument("--output", required=True)
+    glm_compile.add_argument("--checkpoint-revision", required=True)
+    glm_compile.add_argument("--repo-id", default="zai-org/GLM-5.3-BF16")
+    glm_compile.add_argument("--mamba3-revision", required=True)
+    glm_compile.add_argument("--donor-license", required=True)
+    glm_compile.add_argument(
+        "--streaming-source",
+        action="store_true",
+        help="validate from config/index metadata and require only planned local shards",
+    )
+    glm_compile.add_argument(
+        "--skip-checkpoint-hashes",
+        action="store_true",
+        help="skip donor hash verification (not recommended)",
+    )
+
+    glm_plan_bootstrap = sub.add_parser(
+        "glm53-plan-bootstrap-shards",
+        help="list the GLM-5.3 safetensors shards required for WARM/bootstrap",
+    )
+    glm_plan_bootstrap.add_argument("--config", required=True)
+    glm_plan_bootstrap.add_argument("--index", required=True)
+
+    glm_plan_compile = sub.add_parser(
+        "glm53-plan-compile-shards",
+        help="list the GLM-5.3 shards required for calibrated IQ compile",
+    )
+    glm_plan_compile.add_argument("--config", required=True)
+    glm_plan_compile.add_argument("--index", required=True)
+    glm_plan_compile.add_argument("--calibration", required=True)
+
+    glm_stream_capture = sub.add_parser(
+        "glm53-stream-capture",
+        help="capture GLM-5.3 bootstrap activations by loading one raw checkpoint shard/layer at a time",
+    )
+    glm_stream_capture.add_argument("--checkpoint", required=True)
+    glm_stream_capture.add_argument("--repo-id", default="zai-org/GLM-5.3-BF16")
+    glm_stream_capture.add_argument("--checkpoint-revision", required=True)
+    glm_stream_capture.add_argument("--token-batches", required=True)
+    glm_stream_capture.add_argument("--output", required=True)
+    glm_stream_capture.add_argument("--device", default="cpu")
+    glm_stream_capture.add_argument(
+        "--attention-implementation",
+        default="eager",
+        choices=("eager", "sdpa"),
     )
 
     mamba = sub.add_parser(
@@ -106,6 +194,142 @@ def main(argv: list[str] | None = None) -> int:
                     "num_layers": artifact.manifest.num_layers,
                     "hidden_size": artifact.manifest.hidden_size,
                     "vocab_size": artifact.manifest.vocab_size,
+                },
+                sort_keys=True,
+            )
+        )
+        return 0
+    if args.command == "glm53-stream-capture":
+        batches = load_token_batches(args.token_batches)
+        source = HubSafetensorsSource(
+            args.checkpoint,
+            repo_id=args.repo_id,
+            revision=args.checkpoint_revision,
+        )
+        try:
+            bundle = capture_glm53_bootstrap_streaming(
+                source=source,
+                config_path=f"{args.checkpoint}/config.json",
+                batches=batches,
+                device=args.device,
+                attention_implementation=args.attention_implementation,
+            )
+            tensor_path, metadata_path = save_activation_bundle(
+                bundle,
+                args.output,
+            )
+        finally:
+            source.clear_ephemeral_shards()
+        print(
+            json.dumps(
+                {
+                    "activation_tensors": str(tensor_path),
+                    "activation_metadata": str(metadata_path),
+                    "sample_count": bundle.sample_count,
+                    "batch_count": bundle.batch_count,
+                },
+                sort_keys=True,
+            )
+        )
+        return 0
+    if args.command == "glm53-bootstrap-calibration":
+        if args.streaming_source:
+            artifact = validate_glm53_streaming_donor(
+                checkpoint=args.checkpoint,
+                checkpoint_revision=args.checkpoint_revision,
+                donor_license=args.donor_license,
+                source_uri=args.source_uri,
+            )
+        else:
+            artifact = validate_glm53_donor(
+                checkpoint=args.checkpoint,
+                checkpoint_revision=args.checkpoint_revision,
+                donor_license=args.donor_license,
+                source_uri=args.source_uri,
+                require_bf16=True,
+            )
+        config_data = json.loads(
+            (artifact.checkpoint_dir / "config.json").read_text(encoding="utf-8")
+        )
+        inspector = GLM53Inspector.from_config_mapping(config_data)
+        source = (
+            load_activation_bundle(args.source_activations)
+            if args.source_activations
+            else None
+        )
+        source_weights = (
+            HubSafetensorsSource(
+                artifact.checkpoint_dir,
+                repo_id=args.repo_id,
+                revision=args.checkpoint_revision,
+            )
+            if args.streaming_source
+            else SafetensorsSource(artifact.checkpoint_dir)
+        )
+        solution = bootstrap_glm53_calibration(
+            source,
+            source_weights=source_weights,
+            source_hidden_size=inspector.config.hidden_size,
+            target_config=canonical_glm53_config(),
+            source_layers=inspector.config.num_hidden_layers,
+            source_first_dense_layers=inspector.layout.first_k_dense_replace,
+            source_num_experts=inspector.layout.n_routed_experts,
+            source_indexer_types=inspector.layout.indexer_types,
+            warm_device=args.warm_device,
+        )
+        manifest = solution.write(args.output)
+        print(
+            json.dumps(
+                {
+                    "calibration_manifest": str(manifest),
+                    "donor_fingerprint": artifact.manifest.fingerprint,
+                    "target_fingerprint": solution.target_config_fingerprint,
+                    "source_layer_map": {
+                        str(k): int(v)
+                        for k, v in solution.source_layer_map.items()
+                    },
+                },
+                sort_keys=True,
+            )
+        )
+        return 0
+    if args.command == "glm53-plan-bootstrap-shards":
+        for shard in plan_glm53_bootstrap_shards(
+            config_path=args.config,
+            index_path=args.index,
+        ):
+            print(shard)
+        return 0
+    if args.command == "glm53-plan-compile-shards":
+        for shard in plan_glm53_compile_shards(
+            config_path=args.config,
+            index_path=args.index,
+            calibration_dir=args.calibration,
+        ):
+            print(shard)
+        return 0
+    if args.command == "glm53-compile":
+        result = compile_glm53_iq_checkpoint(
+            glm53_checkpoint=args.checkpoint,
+            calibration_dir=args.calibration,
+            mamba3_checkpoint=args.mamba3_checkpoint,
+            output_dir=args.output,
+            glm53_revision=args.checkpoint_revision,
+            mamba3_revision=args.mamba3_revision,
+            donor_license=args.donor_license,
+            verify_hashes=not args.skip_checkpoint_hashes,
+            streaming_source=args.streaming_source,
+            glm53_repo_id=args.repo_id,
+        )
+        print(
+            json.dumps(
+                {
+                    "output_dir": str(result.output_dir),
+                    "donor_fingerprint": result.donor_fingerprint,
+                    "target_fingerprint": result.target_fingerprint,
+                    "source_layer_map": {
+                        str(k): int(v) for k, v in result.source_layer_map.items()
+                    },
                 },
                 sort_keys=True,
             )

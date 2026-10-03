@@ -68,6 +68,7 @@ class GLM53InspectorTests(unittest.TestCase):
 
         p = "model.layers.1.mlp"
         tensors[f"{p}.gate.weight"] = torch.empty(2, 16)
+        tensors[f"{p}.gate.e_score_correction_bias"] = torch.empty(2)
         tensors[f"{p}.shared_experts.gate_proj.weight"] = torch.empty(6, 16)
         tensors[f"{p}.shared_experts.up_proj.weight"] = torch.empty(6, 16)
         tensors[f"{p}.shared_experts.down_proj.weight"] = torch.empty(16, 6)
@@ -90,9 +91,28 @@ class GLM53InspectorTests(unittest.TestCase):
         self.assertIn("dsa.indexer.q", roles)
         self.assertIn("mlp.gate", roles)
         self.assertIn("moe.router", roles)
+        self.assertIn("moe.routing_bias", roles)
         self.assertIn("moe.expert.1.down", roles)
         self.assertIn("embedding", roles)
         self.assertIn("lm_head", roles)
+
+    def test_index_key_validation_does_not_require_tensor_bytes(self):
+        inspector = GLM53Inspector.from_config_mapping(self.config())
+        keys = tuple(self.source().keys())
+        report = inspector.validate_index_keys(keys)
+        self.assertTrue(report.ok)
+        self.assertIn(
+            "model.layers.1.mlp.experts.1.down_proj.weight",
+            inspector.required_tensor_keys(),
+        )
+
+    def test_missing_index_key_fails_closed(self):
+        inspector = GLM53Inspector.from_config_mapping(self.config())
+        keys = list(self.source().keys())
+        keys.remove("model.layers.1.mlp.experts.1.down_proj.weight")
+        report = inspector.validate_index_keys(keys)
+        self.assertFalse(report.ok)
+        self.assertIn("missing GLM-5.3 checkpoint tensors in index", report.errors[0])
 
     def test_missing_expert_tensor_fails_closed(self):
         inspector = GLM53Inspector.from_config_mapping(self.config())

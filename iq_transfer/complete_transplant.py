@@ -170,8 +170,98 @@ def canonical_complete_config() -> IQHybridConfig:
             compressed_context=compressed,
             reasoning=reasoning,
             energy_critic=None,
-            require_energy_stability=False,
+            require_verifier_stability=False,
         )
+    )
+
+
+
+def canonical_glm53_config() -> IQHybridConfig:
+    """IQ geometry for a Mamba-3-founded model with GLM-5.3 capability transfer.
+
+    Official pretrained Mamba-3 MIMO owns the lexical boundary and recurrent
+    backbone. GLM-5.3 supplies architecture-aware transformed context/DSA/MoE
+    capability weights. Context geometry keeps GLM query-latent and rotary
+    semantics only where that enables a valid algebraic transfer.
+    """
+    base = canonical_complete_config()
+    assert base.stable_moe is not None
+    assert base.compressed_context is not None
+    model = replace(
+        base.model,
+        # Mamba-3 MIMO is the pretrained foundation and therefore owns the
+        # lexical boundary. GLM-5.3 contributes remapped capability modules,
+        # not the tokenizer/vocabulary or global embedding/head.
+        vocab_size=128256,
+        num_key_value_heads=64,
+        max_position_embeddings=202752,
+        rope_theta=8_000_000.0,
+    )
+    control_moe = replace(
+        base.moe,
+        expert_intermediate_size=2048,
+        top_k=8,
+        shared_expert_intermediate_size=2048,
+        router_bias=False,
+    )
+    stable = replace(
+        base.stable_moe,
+        latent_size=2048,
+        expert_intermediate_size=2048,
+        top_k=8,
+        situ_beta=1_000_000.0,
+        situ_linear_beta=1_000_000.0,
+        routed_scaling_factor=2.5,
+        expert_bias=False,
+        router_bias=False,
+    )
+    compressed = replace(
+        base.compressed_context,
+        head_dim=128,
+        q_lora_rank=2048,
+        partial_rotary_dim=64,
+        max_position_embeddings=202752,
+        o_lora_rank=1024,
+        index_n_heads=32,
+        index_head_dim=128,
+        index_topk=2048,
+        compress_rope_theta=8_000_000.0,
+        normalize_query_output=False,
+        normalize_candidate_nonrotary_only=True,
+        direct_token_indexer=True,
+        projection_bias=False,
+    )
+    return validate_canonical_hybrid_backbone(
+        replace(
+            base,
+            model=model,
+            moe=control_moe,
+            stable_moe=stable,
+            compressed_context=compressed,
+        )
+    )
+
+
+def canonical_glm53_multimodal_config() -> IQHybridConfig:
+    base = canonical_glm53_config()
+    context_layers = tuple(base.schedule.attention_positions)
+    fusion_layers = tuple(sorted(set((*context_layers, 39))))
+    multimodal = IQMultimodalConfig(
+        vision_model_name="zai-org/GLM-5.3-Flash-BF16",
+        vision_backend="glm5_next",
+        fusion_layers=fusion_layers,
+        transv_layers=(7, 39),
+        visual_mamba_layers=1,
+        cross_attention_heads=8,
+        transv_shallow_keep_ratio=0.5,
+        transv_deep_keep_ratio=0.1,
+        min_visual_tokens=16,
+        max_frames=16384,
+        freeze_vision_tower=True,
+        drop_cls_token=False,
+    )
+    return validate_canonical_hybrid_backbone(
+        replace(base, multimodal=multimodal)
     )
 
 
