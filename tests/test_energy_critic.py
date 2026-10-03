@@ -20,6 +20,18 @@ class ReasoningEnergyCriticTests(unittest.TestCase):
             dropout=0.0,
         )
 
+    def test_energy_backend_exposes_higher_is_better_verifier_signal(self):
+        torch.manual_seed(70)
+        critic = ReasoningEnergyCritic(self.config()).eval()
+        state = torch.randn(2, 16)
+        context = torch.randn(2, 12)
+        with torch.no_grad():
+            energy = critic(state, context)
+            signal = critic.verify(state, context)
+        self.assertEqual(signal.backend, "energy")
+        self.assertTrue(torch.equal(signal.raw_score, energy))
+        self.assertTrue(torch.equal(signal.score, -energy))
+
     def test_scores_single_states_and_backpropagates(self):
         torch.manual_seed(71)
         critic = ReasoningEnergyCritic(self.config())
