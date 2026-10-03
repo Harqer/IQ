@@ -460,10 +460,13 @@ class ReasoningRecurrence(nn.Module):
 
         halt_probabilities: list[torch.Tensor] = []
         relative_deltas: list[torch.Tensor] = []
+        verifier_scores: list[torch.Tensor] = []
+        verifier_deltas: list[torch.Tensor] = []
         energies: list[torch.Tensor] = []
         energy_deltas: list[torch.Tensor] = []
         states: list[torch.Tensor] = []
         previous_verifier_score: torch.Tensor | None = None
+        previous_energy: torch.Tensor | None = None
 
         steps_executed = self.config.max_steps
         for step in range(1, self.config.max_steps + 1):
