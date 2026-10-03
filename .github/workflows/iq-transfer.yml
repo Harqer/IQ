@@ -1,0 +1,42 @@
+name: IQ Weight Transfer
+
+on:
+  workflow_dispatch:
+    inputs:
+      stage:
+        description: Transfer stage
+        required: true
+        default: preflight
+        type: choice
+        options:
+          - preflight
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install current Hugging Face CLI
+        run: |
+          curl -LsSf https://hf.co/cli/install.sh | bash
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Verify OIDC access to Visionboxx/macha
+        env:
+          HF_OIDC_RESOURCE: buckets/Visionboxx/macha
+        run: |
+          set -euo pipefail
+          hf auth token >/dev/null
+          printf '%s\n' \
+            "repo=\${GITHUB_REPOSITORY}" \
+            "workflow=iq-transfer.yml" \
+            "ref=\${GITHUB_REF}" \
+            "sha=\${GITHUB_SHA}" \
+            "timestamp=$(date -u +%FT%TZ)" \
+            | hf buckets cp - hf://buckets/Visionboxx/macha/transfer/preflight.txt
+          hf buckets ls Visionboxx/macha --prefix transfer/
