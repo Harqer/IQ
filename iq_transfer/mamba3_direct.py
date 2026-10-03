@@ -798,6 +798,24 @@ def compile_official_mamba3_mimo_15b_transplant(
 
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
+
+    # Mamba-3 is the lexical foundation, not only a recurrent overlay.
+    # Persist the exact function-preserving 2048->4096 lexical widening as part
+    # of the same durable foundation artifact.
+    foundation_globals = expand_mamba3_foundation_globals(
+        source_config=donor,
+        state=state,
+        target_hidden_size=target_config.d_model,
+    )
+    _save_safetensors(
+        output / "model-global.safetensors",
+        {
+            key: value.to(torch.bfloat16)
+            for key, value in foundation_globals.items()
+        },
+    )
+    del foundation_globals
+
     placements: list[Mamba3LayerPlacement] = []
     populated_ordinals = set(ordinals)
     for source_layer, target_ordinal in enumerate(ordinals):
@@ -827,8 +845,8 @@ def compile_official_mamba3_mimo_15b_transplant(
     target_fingerprint = _mamba_target_fingerprint(target_config)
 
     manifest = {
-        "schema_version": 2,
-        "artifact_type": "iq_mamba3_direct_transplant",
+        "schema_version": 3,
+        "artifact_type": "iq_mamba3_foundation",
         "method": "exact_replication_embedding_plus_identity_depth_expansion",
         "teacher_student_distillation": False,
         "donor": {
@@ -847,10 +865,15 @@ def compile_official_mamba3_mimo_15b_transplant(
         "identity_mamba_ordinals": list(identity_ordinals),
         "identity_rule": "zero_mamba_out_proj",
         "scope": {
-            "transferred": ["mamba3_mixer", "mamba_pre_norm"],
-            "not_transferred": [
+            "transferred": [
                 "embedding",
+                "final_norm",
                 "lm_head",
+                "mamba3_mixer",
+                "mamba_pre_norm"
+            ],
+            "global_shard": "model-global.safetensors",
+            "not_transferred": [
                 "donor_gated_mlp",
                 "stable_latent_moe",
                 "csa_hca",
