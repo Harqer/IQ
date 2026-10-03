@@ -6,6 +6,8 @@ on:
       - feat/glm53-cross-architecture-transfer
     paths:
       - ".github/workflows/mamba-foundation-transfer.yml"
+      - "iq_transfer/mamba3_direct.py"
+      - "iq_transfer/mamba3_init.py"
   workflow_dispatch:
 
 permissions:
