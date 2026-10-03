@@ -177,19 +177,22 @@ def canonical_complete_config() -> IQHybridConfig:
 
 
 def canonical_glm53_config() -> IQHybridConfig:
-    """IQ recipient geometry for direct GLM-5.3-BF16 language transfer.
+    """IQ geometry for a Mamba-3-founded model with GLM-5.3 capability transfer.
 
-    The recurrent schedule stays IQ-native/Mamba-3. Context geometry keeps the
-    donor's query-latent and rotary semantics where doing so enables direct
-    algebraic transfer, while Stable LatentMoE retains IQ's compressed expert
-    topology.
+    Official pretrained Mamba-3 MIMO owns the lexical boundary and recurrent
+    backbone. GLM-5.3 supplies architecture-aware transformed context/DSA/MoE
+    capability weights. Context geometry keeps GLM query-latent and rotary
+    semantics only where that enables a valid algebraic transfer.
     """
     base = canonical_complete_config()
     assert base.stable_moe is not None
     assert base.compressed_context is not None
     model = replace(
         base.model,
-        vocab_size=154880,
+        # Mamba-3 MIMO is the pretrained foundation and therefore owns the
+        # lexical boundary. GLM-5.3 contributes remapped capability modules,
+        # not the tokenizer/vocabulary or global embedding/head.
+        vocab_size=128256,
         num_key_value_heads=64,
         max_position_embeddings=202752,
         rope_theta=8_000_000.0,
