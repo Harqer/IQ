@@ -288,6 +288,44 @@ def validate_official_mamba3_mimo_15b_config(config: Mamba3DonorConfig) -> None:
 
 
 
+def expand_mamba3_foundation_globals(
+    *,
+    source_config: Mamba3DonorConfig,
+    state: Mapping[str, torch.Tensor],
+    target_hidden_size: int,
+) -> dict[str, torch.Tensor]:
+    """Widen Mamba lexical/global tensors while preserving source logits."""
+    if target_hidden_size % source_config.d_model != 0:
+        raise Mamba3DirectTransferError(
+            "target hidden size must be an integer multiple of the Mamba foundation width"
+        )
+    factor = target_hidden_size // source_config.d_model
+    if factor <= 0:
+        raise Mamba3DirectTransferError("invalid Mamba foundation widening factor")
+    embedding = _require_tensor(
+        state,
+        "backbone.embedding.weight",
+        (source_config.vocab_size, source_config.d_model),
+    )
+    final_norm = _require_tensor(
+        state,
+        "backbone.norm_f.weight",
+        (source_config.d_model,),
+    )
+    lm_head = _require_tensor(
+        state,
+        "lm_head.weight",
+        (source_config.vocab_size, source_config.d_model),
+    )
+    return {
+        "embed_tokens.weight": embedding.repeat((1, factor)).contiguous(),
+        "norm.weight": final_norm.repeat(factor).contiguous(),
+        "lm_head.weight": (
+            lm_head.repeat((1, factor)) / float(factor)
+        ).contiguous(),
+    }
+
+
 def load_official_mamba3_foundation_globals(
     *,
     checkpoint: str | Path,
@@ -321,13 +359,6 @@ def load_official_mamba3_foundation_globals(
         )
     donor = Mamba3DonorConfig.from_json(config_path)
     validate_official_mamba3_mimo_15b_config(donor)
-    if target_hidden_size % donor.d_model != 0:
-        raise Mamba3DirectTransferError(
-            "target hidden size must be an integer multiple of the Mamba foundation width"
-        )
-    factor = target_hidden_size // donor.d_model
-    if factor <= 0:
-        raise Mamba3DirectTransferError("invalid Mamba foundation widening factor")
     donor_sha = _sha256_file(weights_path)
     if verify_checkpoint_hash and donor_sha != MAMBA3_MIMO_15B_BIN_SHA256:
         raise Mamba3DirectTransferError(
@@ -336,16 +367,11 @@ def load_official_mamba3_foundation_globals(
         )
     state = _load_official_state_dict(weights_path)
     validate_official_mamba3_mimo_state(donor, state)
-    embedding = state["backbone.embedding.weight"]
-    final_norm = state["backbone.norm_f.weight"]
-    lm_head = state["lm_head.weight"]
-    return {
-        "embed_tokens.weight": embedding.repeat((1, factor)).contiguous(),
-        "norm.weight": final_norm.repeat(factor).contiguous(),
-        "lm_head.weight": (
-            lm_head.repeat((1, factor)) / float(factor)
-        ).contiguous(),
-    }
+    return expand_mamba3_foundation_globals(
+        source_config=donor,
+        state=state,
+        target_hidden_size=target_hidden_size,
+    )
 
 def evenly_spaced_layer_placements(
     source_layers: int,
