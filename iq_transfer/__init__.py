@@ -30,6 +30,7 @@ from .scaling import ScaleGate, TransferMetrics
 from .shadows import FunctionalShadow, MeasurementPlan, ShadowError, extract_shadow, match_layers_monotonic, shadow_distance
 from .slots import SlotError, TargetAssignment, TargetRegistry, TargetSlot, TransferMethod
 from .transport import CoordinateMap, MapDiagnostics, TransportError, channel_correlation_cost, fit_ot_coordinate_map, fit_ridge_coordinate_map, load_coordinate_map, save_coordinate_map, sinkhorn_transport, transport_linear
+from .warm import WarmRemap, WarmRemapDiagnostics, WarmRemapError, WarmWeightOperator, fit_weight_orthogonal_remap, orthogonality_error
 
 __all__ = [
     "ActivationBundle",
@@ -218,5 +219,11 @@ __all__ = [
     "validate_official_mamba3_mimo_state",    "bootstrap_glm53_calibration",
     "load_activation_bundle",
     "save_activation_bundle",
+    "WarmRemap",
+    "WarmRemapDiagnostics",
+    "WarmRemapError",
+    "WarmWeightOperator",
+    "fit_weight_orthogonal_remap",
+    "orthogonality_error",
 
 ]
