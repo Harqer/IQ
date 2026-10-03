@@ -9,6 +9,7 @@ from .glm53 import GLM53Inspector
 from .glm53_calibration import bootstrap_glm53_calibration
 from .glm53_compile import compile_glm53_iq_checkpoint
 from .capture_runner import load_activation_bundle
+from .checkpoint import SafetensorsSource
 from .complete_transplant import canonical_glm53_config
 from .mamba3_direct import compile_official_mamba3_mimo_15b_transplant
 from .complete_transplant import compile_complete_iq_checkpoint
@@ -43,6 +44,11 @@ def _parser() -> argparse.ArgumentParser:
     glm_bootstrap.add_argument("--checkpoint-revision", required=True)
     glm_bootstrap.add_argument("--donor-license", required=True)
     glm_bootstrap.add_argument("--source-uri")
+    glm_bootstrap.add_argument(
+        "--warm-device",
+        default="cpu",
+        help="device used for WARM Gram/eigendecomposition, e.g. cuda",
+    )
 
     glm_compile = sub.add_parser(
         "glm53-compile",
@@ -159,11 +165,14 @@ def main(argv: list[str] | None = None) -> int:
         source = load_activation_bundle(args.source_activations)
         solution = bootstrap_glm53_calibration(
             source,
+            source_weights=SafetensorsSource(artifact.checkpoint_dir),
+            source_hidden_size=inspector.config.hidden_size,
             target_config=canonical_glm53_config(),
             source_layers=inspector.config.num_hidden_layers,
             source_first_dense_layers=inspector.layout.first_k_dense_replace,
             source_num_experts=inspector.layout.n_routed_experts,
             source_indexer_types=inspector.layout.indexer_types,
+            warm_device=args.warm_device,
         )
         manifest = solution.write(args.output)
         print(
