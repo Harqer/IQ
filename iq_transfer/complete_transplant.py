@@ -170,7 +170,7 @@ def canonical_complete_config() -> IQHybridConfig:
             compressed_context=compressed,
             reasoning=reasoning,
             energy_critic=None,
-            require_energy_stability=False,
+            require_verifier_stability=False,
         )
     )
 
