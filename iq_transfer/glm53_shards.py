@@ -96,6 +96,7 @@ def _bootstrap_tensor_keys(
             keys.update(
                 {
                     f"{mlp}.gate.weight",
+                    f"{mlp}.gate.e_score_correction_bias",
                     f"{shared}.gate_proj.weight",
                     f"{shared}.up_proj.weight",
                     f"{shared}.down_proj.weight",

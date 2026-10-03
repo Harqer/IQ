@@ -25,10 +25,6 @@ MAMBA_OUTPUT_DIR="$WORK_ROOT/mamba-foundation"
 OUTPUT_DIR="$WORK_ROOT/IQ"
 
 : "${HF_TOKEN:?HF_TOKEN must be supplied by the cloud worker/auth environment}"
-if [[ -z "${GLM53_ACTIVATIONS_URI:-}" && -z "${GLM53_TOKEN_BATCHES_URI:-}" ]]; then
-  echo "Set either GLM53_ACTIVATIONS_URI or GLM53_TOKEN_BATCHES_URI" >&2
-  exit 2
-fi
 
 mkdir -p \
   "$GLM_DIR" \
@@ -98,7 +94,7 @@ hf download "$MAMBA_REPO" \
 # GLM layer/shard at a time from a fixed token-batch artifact.
 if [[ -n "${GLM53_ACTIVATIONS_URI:-}" ]]; then
   hf sync "$GLM53_ACTIVATIONS_URI" "$ACTIVATIONS_DIR"
-else
+elif [[ -n "${GLM53_TOKEN_BATCHES_URI:-}" ]]; then
   hf sync "$GLM53_TOKEN_BATCHES_URI" "$TOKEN_BATCH_DIR"
   python -m iq_transfer.cli glm53-stream-capture \
     --checkpoint "$GLM_DIR" \
@@ -109,6 +105,8 @@ else
     --device "${GLM53_CAPTURE_DEVICE:-cpu}" \
     --attention-implementation "${GLM53_CAPTURE_ATTN:-eager}"
   sync_to_bucket "$ACTIVATIONS_DIR" "$HF_CALIBRATION_URI/activations"
+else
+  echo "No GLM activation artifact supplied; using data-free weight-only bootstrap"
 fi
 
 # Stage 1: compile the actual Mamba-3 foundation transplant and make it durable
@@ -121,14 +119,18 @@ python -m iq_transfer.cli mamba3-direct \
 sync_to_bucket "$MAMBA_OUTPUT_DIR" "$HF_MAMBA_URI"
 
 # Stage 2: construct WARM / MLA / DSA / MoE calibration state.
-python -m iq_transfer.cli glm53-bootstrap-calibration \
-  --checkpoint "$GLM_DIR" \
-  --source-activations "$ACTIVATIONS_DIR/glm53-activations" \
-  --output "$CALIBRATION_DIR" \
-  --checkpoint-revision "$GLM_REVISION" \
-  --donor-license "${GLM53_DONOR_LICENSE:-GLM-5.3}" \
-  --streaming-source \
+BOOTSTRAP_ARGS=(
+  --checkpoint "$GLM_DIR"
+  --output "$CALIBRATION_DIR"
+  --checkpoint-revision "$GLM_REVISION"
+  --donor-license "${GLM53_DONOR_LICENSE:-GLM-5.3}"
+  --streaming-source
   --warm-device "${WARM_DEVICE:-cuda}"
+)
+if [[ -f "$ACTIVATIONS_DIR/glm53-activations.safetensors" ]]; then
+  BOOTSTRAP_ARGS+=(--source-activations "$ACTIVATIONS_DIR/glm53-activations")
+fi
+python -m iq_transfer.cli glm53-bootstrap-calibration "${BOOTSTRAP_ARGS[@]}"
 
 sync_to_bucket "$CALIBRATION_DIR" "$HF_CALIBRATION_URI"
 

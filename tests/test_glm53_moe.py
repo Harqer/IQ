@@ -10,6 +10,7 @@ from iq_transfer import (
     GLM53MoETransformError,
     latent_codec_weights,
     router_usage_from_topk,
+    router_weight_prior,
     select_experts_by_usage,
     transform_glm53_dense_mlp,
     transform_glm53_moe,
@@ -31,6 +32,25 @@ class GLM53MoETransformTests(unittest.TestCase):
             select_experts_by_usage(usage, target_experts=2),
             (2, 1),
         )
+
+    def test_router_weight_prior_is_normalized_and_prefers_stronger_rows(self):
+        router = np.array([
+            [1.0, 0.0],
+            [4.0, 0.0],
+            [2.0, 0.0],
+            [3.0, 0.0],
+        ])
+        prior = router_weight_prior(router, np.zeros(4))
+        self.assertAlmostEqual(float(prior.sum()), 1.0)
+        self.assertEqual(
+            select_experts_by_usage(prior, target_experts=2),
+            (1, 3),
+        )
+
+    def test_router_weight_prior_uses_learned_correction_bias(self):
+        router = np.ones((2, 4))
+        prior = router_weight_prior(router, np.array([-10.0, 10.0]))
+        self.assertGreater(prior[1], prior[0])
 
     def test_latent_codec_matches_donor_coordinate_maps(self):
         rng = np.random.default_rng(81)

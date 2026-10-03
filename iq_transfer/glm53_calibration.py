@@ -13,8 +13,12 @@ from .calibration import solve_layer_correspondence
 from .capture_runner import ActivationBundle
 from .checkpoint import SafetensorsSource
 from .complete_transplant import donor_layer_positions
-from .glm53_direct import fit_importance_subcloning_map, fit_mla_compressed_subspace
-from .glm53_moe import router_usage_from_topk
+from .glm53_direct import (
+    fit_importance_subcloning_map,
+    fit_mla_compressed_subspace,
+    fit_weight_importance_subcloning_map,
+)
+from .glm53_moe import router_usage_from_topk, router_weight_prior
 from .warm import (
     WarmWeightOperator,
     align_to_mamba_replication_frame,
@@ -68,12 +72,17 @@ class GLM53CalibrationSolution:
     target_config_fingerprint: str
     lexical_input_map: CoordinateMap
     final_output_map: CoordinateMap
+    calibration_mode: str = "activation_refined"
 
     def __post_init__(self) -> None:
         if self.source_layers <= 0 or not self.target_config_fingerprint:
             raise GLM53CalibrationError("invalid calibration solution metadata")
         if not self.stages:
             raise GLM53CalibrationError("calibration solution has no stages")
+        if self.calibration_mode not in {"weight_only", "activation_refined"}:
+            raise GLM53CalibrationError(
+                f"unsupported calibration_mode: {self.calibration_mode!r}"
+            )
         stage_ids = [stage.stage for stage in self.stages]
         source_ids = [stage.source_layer for stage in self.stages]
         if stage_ids != list(range(len(self.stages))):
@@ -127,6 +136,7 @@ class GLM53CalibrationSolution:
         save_coordinate_map(self.final_output_map, root / "final-output")
         manifest = {
             "schema_version": 2,
+            "calibration_mode": self.calibration_mode,
             "source_layers": self.source_layers,
             "target_config_fingerprint": self.target_config_fingerprint,
             "lexical_input_map": "lexical-input",
@@ -182,6 +192,7 @@ class GLM53CalibrationSolution:
             target_config_fingerprint=str(raw["target_config_fingerprint"]),
             lexical_input_map=load_coordinate_map(root / raw["lexical_input_map"]),
             final_output_map=load_coordinate_map(root / raw["final_output_map"]),
+            calibration_mode=str(raw.get("calibration_mode", "activation_refined")),
         )
 
 
@@ -359,6 +370,7 @@ def solve_glm53_calibration(
         target_config_fingerprint=target_config.fingerprint,
         lexical_input_map=lexical_input_map,
         final_output_map=final_output_map,
+        calibration_mode="activation_refined",
     )
 
 
@@ -588,7 +600,7 @@ def _warm_glm_layer_maps(
 
 
 def bootstrap_glm53_calibration(
-    source_fit: ActivationBundle,
+    source_fit: ActivationBundle | None,
     *,
     source_weights: SafetensorsSource,
     source_hidden_size: int,
@@ -599,12 +611,13 @@ def bootstrap_glm53_calibration(
     source_indexer_types: tuple[str, ...],
     warm_device: str = "cpu",
 ) -> GLM53CalibrationSolution:
-    """Build the first GLM->IQ transfer using WARM-style weight remapping.
+    """Build the GLM->IQ bootstrap from pretrained weight geometry.
 
-    Hidden-space coordinate maps come directly from pretrained GLM weights as
-    dense semi-orthogonal bases. Calibration activations remain only where they
-    carry semantics not recoverable from weight geometry alone: layer routing
-    usage, dense intermediate importance, and MLA non-RoPE subspace fitting.
+    With ``source_fit=None`` the bootstrap is fully data-free: WARM supplies
+    residual geometry, MLA uses weight covariance, dense SwiGLU channels use
+    weight energy, and sparse experts use a learned-router geometry prior.
+    Captured activations are optional and refine those semantic choices when
+    supplied; they are not required to construct the initial checkpoint.
     """
     if target_config.compressed_context is None or target_config.stable_moe is None:
         raise GLM53CalibrationError(
@@ -634,8 +647,19 @@ def bootstrap_glm53_calibration(
             target_latent_size=stable.latent_size,
             device=warm_device,
         )
+        if source_fit is not None:
+            kv_basis_samples = source_fit.require(
+                f"layer.{source_layer}.compressed_kv"
+            )
+        else:
+            # Under an isotropic residual basis, W.T has exactly the output
+            # covariance W W.T used by activation PCA, without a forward pass.
+            kv_weight = source_weights.get(
+                f"model.layers.{source_layer}.self_attn.kv_a_proj_with_mqa.weight"
+            )
+            kv_basis_samples = kv_weight.detach().cpu().float().T
         kv = fit_mla_compressed_subspace(
-            source_fit.require(f"layer.{source_layer}.compressed_kv"),
+            kv_basis_samples,
             kv_lora_rank=512,
             rope_dim=c.partial_rotary_dim,
             target_latent_dim=target_nonrotary,
@@ -644,18 +668,35 @@ def bootstrap_glm53_calibration(
         usage: np.ndarray | None = None
         dense_map: CoordinateMap | None = None
         if source_layer < source_first_dense_layers:
-            # Intermediate-space reduction is a separate nonlinear SwiGLU
-            # boundary; keep the established importance baseline rather than
-            # pretending a residual-space orthogonal map applies across it.
-            dense_map = fit_importance_subcloning_map(
-                source_fit.require(f"layer.{source_layer}.mlp_hidden"),
-                target_features=stable.expert_intermediate_size,
-            ).coordinate_map
+            if source_fit is not None:
+                dense_map = fit_importance_subcloning_map(
+                    source_fit.require(f"layer.{source_layer}.mlp_hidden"),
+                    target_features=stable.expert_intermediate_size,
+                ).coordinate_map
+            else:
+                prefix = f"model.layers.{source_layer}.mlp"
+                dense_map = fit_weight_importance_subcloning_map(
+                    source_weights.get(f"{prefix}.gate_proj.weight"),
+                    source_weights.get(f"{prefix}.up_proj.weight"),
+                    source_weights.get(f"{prefix}.down_proj.weight"),
+                    target_features=stable.expert_intermediate_size,
+                ).coordinate_map
         else:
-            usage = router_usage_from_topk(
-                [source_fit.require(f"layer.{source_layer}.router_topk").detach().cpu().numpy()],
-                num_experts=source_num_experts,
-            )
+            if source_fit is not None:
+                usage = router_usage_from_topk(
+                    [
+                        source_fit.require(
+                            f"layer.{source_layer}.router_topk"
+                        ).detach().cpu().numpy()
+                    ],
+                    num_experts=source_num_experts,
+                )
+            else:
+                prefix = f"model.layers.{source_layer}.mlp.gate"
+                usage = router_weight_prior(
+                    source_weights.get(f"{prefix}.weight"),
+                    source_weights.get(f"{prefix}.e_score_correction_bias"),
+                )
         stages.append(
             GLM53StageCalibration(
                 stage=stage,
@@ -684,4 +725,7 @@ def bootstrap_glm53_calibration(
         target_config_fingerprint=target_config.fingerprint,
         lexical_input_map=lexical_input_map,
         final_output_map=final_output_map,
+        calibration_mode=(
+            "activation_refined" if source_fit is not None else "weight_only"
+        ),
     )

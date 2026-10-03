@@ -42,7 +42,10 @@ def _parser() -> argparse.ArgumentParser:
         help="build donor-only GLM-5.3 -> IQ bootstrap maps from captured GLM activations",
     )
     glm_bootstrap.add_argument("--checkpoint", required=True)
-    glm_bootstrap.add_argument("--source-activations", required=True)
+    glm_bootstrap.add_argument(
+        "--source-activations",
+        help="optional captured GLM activations; omit for data-free weight-only bootstrap",
+    )
     glm_bootstrap.add_argument("--output", required=True)
     glm_bootstrap.add_argument("--checkpoint-revision", required=True)
     glm_bootstrap.add_argument("--donor-license", required=True)
@@ -247,7 +250,11 @@ def main(argv: list[str] | None = None) -> int:
             (artifact.checkpoint_dir / "config.json").read_text(encoding="utf-8")
         )
         inspector = GLM53Inspector.from_config_mapping(config_data)
-        source = load_activation_bundle(args.source_activations)
+        source = (
+            load_activation_bundle(args.source_activations)
+            if args.source_activations
+            else None
+        )
         solution = bootstrap_glm53_calibration(
             source,
             source_weights=SafetensorsSource(artifact.checkpoint_dir),

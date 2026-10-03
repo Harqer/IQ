@@ -78,6 +78,29 @@ def router_usage_from_topk(
     return counts.astype(np.float64) / float(observed)
 
 
+def router_weight_prior(
+    router_weight: Any,
+    routing_bias: Any,
+) -> np.ndarray:
+    """Estimate a deterministic expert prior from learned router geometry.
+
+    This is a data-free fallback, not empirical routing frequency. Row energy
+    measures how strongly an expert responds across an isotropic residual
+    basis; the learned correction bias modulates that geometric prior.
+    """
+    router = _array(router_weight)
+    bias = _array(routing_bias).reshape(-1)
+    if router.ndim != 2 or bias.shape != (router.shape[0],):
+        raise GLM53MoETransformError("router weights/bias have incompatible shapes")
+    row_rms = np.sqrt(np.mean(router * router, axis=1))
+    bias_gate = 1.0 / (1.0 + np.exp(-np.clip(bias, -30.0, 30.0)))
+    score = row_rms * (0.5 + bias_gate)
+    total = float(score.sum())
+    if not np.isfinite(score).all() or total <= 0:
+        raise GLM53MoETransformError("router weight prior is invalid")
+    return score / total
+
+
 def select_experts_by_usage(
     usage: Any,
     *,

@@ -71,6 +71,79 @@ def fit_importance_subcloning_map(
     )
 
 
+def fit_weight_importance_subcloning_map(
+    gate_weight: Any,
+    up_weight: Any,
+    down_weight: Any,
+    *,
+    target_features: int,
+    chunk_size: int = 256,
+) -> SubcloningMap:
+    """Select SwiGLU channels from pretrained weight energy with bounded temporaries."""
+    gate_shape = tuple(int(x) for x in gate_weight.shape)
+    up_shape = tuple(int(x) for x in up_weight.shape)
+    down_shape = tuple(int(x) for x in down_weight.shape)
+    if len(gate_shape) != 2 or up_shape != gate_shape or len(down_shape) != 2:
+        raise GLM53DirectTransformError("dense MLP weights have incompatible shapes")
+    if down_shape != (gate_shape[1], gate_shape[0]):
+        raise GLM53DirectTransformError("dense MLP down projection shape is incompatible")
+    if target_features <= 0 or target_features > gate_shape[0]:
+        raise GLM53DirectTransformError(
+            "target_features must be in [1, donor_intermediate_size]"
+        )
+    if chunk_size <= 0:
+        raise GLM53DirectTransformError("chunk_size must be positive")
+
+    intermediate = gate_shape[0]
+    energy = np.zeros(intermediate, dtype=np.float64)
+    if hasattr(gate_weight, "detach"):
+        # Keep the 12,288x6,144 GLM dense matrices in their source dtype and
+        # promote only small blocks to FP32; never materialize three FP64 copies.
+        import torch
+
+        for weight in (gate_weight, up_weight):
+            source = weight.detach().cpu()
+            for start in range(0, intermediate, chunk_size):
+                stop = min(start + chunk_size, intermediate)
+                block = source[start:stop].float()
+                energy[start:stop] += (
+                    block.square().mean(dim=1).double().numpy()
+                )
+        source_down = down_weight.detach().cpu()
+        for start in range(0, intermediate, chunk_size):
+            stop = min(start + chunk_size, intermediate)
+            block = source_down[:, start:stop].float()
+            energy[start:stop] += (
+                block.square().mean(dim=0).double().numpy()
+            )
+        if not np.isfinite(energy).all():
+            raise GLM53DirectTransformError("source tensor contains non-finite values")
+    else:
+        gate = _array(gate_weight)
+        up = _array(up_weight)
+        down = _array(down_weight)
+        energy = (
+            np.mean(gate * gate, axis=1)
+            + np.mean(up * up, axis=1)
+            + np.mean(down * down, axis=0)
+        )
+
+    order = np.lexsort((np.arange(intermediate), -energy))
+    selected = order[:target_features]
+    matrix = np.zeros((intermediate, target_features), dtype=np.float64)
+    matrix[selected, np.arange(target_features)] = 1.0
+    return SubcloningMap(
+        coordinate_map=CoordinateMap(
+            matrix=matrix,
+            ridge=1e-12,
+            source_space="glm53.expert_intermediate",
+            target_space="iq.expert_intermediate",
+            diagnostics=None,
+        ),
+        source_indices=tuple(int(x) for x in selected),
+    )
+
+
 def transport_embedding_and_lm_head(
     embedding_weight: Any,
     lm_head_weight: Any,

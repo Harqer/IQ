@@ -70,12 +70,14 @@ class GLM53CalibrationTests(unittest.TestCase):
             target_config_fingerprint="cfg",
             lexical_input_map=CoordinateMap(np.eye(4), 1e-6, "glm.embed", "iq.embed"),
             final_output_map=CoordinateMap(np.eye(4), 1e-6, "glm.final", "iq.final"),
+            calibration_mode="weight_only",
         )
         with tempfile.TemporaryDirectory() as tmp:
             manifest = solution.write(tmp)
             self.assertTrue(manifest.is_file())
             loaded = GLM53CalibrationSolution.load(tmp)
         self.assertEqual(loaded.source_layer_map, {0: 3, 1: 7})
+        self.assertEqual(loaded.calibration_mode, "weight_only")
         self.assertTrue(np.array_equal(
             loaded.stages[0].expert_usage,
             sparse.expert_usage,

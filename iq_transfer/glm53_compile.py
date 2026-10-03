@@ -377,6 +377,7 @@ def compile_glm53_iq_checkpoint(
             "role": "WARM-remapped context/DSA/MoE capability weights",
         },
         "recipient_config_fingerprint": config.fingerprint,
+        "calibration_mode": calibration.calibration_mode,
         "source_layer_map": {
             str(stage.stage): stage.source_layer for stage in calibration.stages
         },

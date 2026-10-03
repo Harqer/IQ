@@ -9,6 +9,7 @@ from iq_transfer import (
     GLM53DirectTransformError,
     GLM53MLALayout,
     fit_importance_subcloning_map,
+    fit_weight_importance_subcloning_map,
     fit_mla_compressed_subspace,
     fit_orthogonal_subspace,
     transform_embedding_and_lm_head,
@@ -46,6 +47,55 @@ class GLM53DirectTransformTests(unittest.TestCase):
             [0.0, 1.0],
         ])
         self.assertTrue(np.array_equal(result.coordinate_map.matrix, expected))
+
+    def test_weight_importance_subcloning_ranks_swiglu_channels_deterministically(self):
+        gate = np.array([
+            [1.0, 0.0],
+            [5.0, 0.0],
+            [2.0, 0.0],
+            [4.0, 0.0],
+        ])
+        up = np.zeros_like(gate)
+        down = np.zeros((2, 4))
+        result = fit_weight_importance_subcloning_map(
+            gate,
+            up,
+            down,
+            target_features=2,
+        )
+        self.assertEqual(result.source_indices, (1, 3))
+        expected = np.array([
+            [0.0, 0.0],
+            [1.0, 0.0],
+            [0.0, 0.0],
+            [0.0, 1.0],
+        ])
+        self.assertTrue(np.array_equal(result.coordinate_map.matrix, expected))
+
+    def test_weight_importance_torch_chunking_matches_numpy(self):
+        import torch
+
+        rng = np.random.default_rng(75)
+        gate = rng.normal(size=(9, 5)).astype(np.float32)
+        up = rng.normal(size=(9, 5)).astype(np.float32)
+        down = rng.normal(size=(5, 9)).astype(np.float32)
+        numpy_result = fit_weight_importance_subcloning_map(
+            gate, up, down, target_features=4
+        )
+        torch_result = fit_weight_importance_subcloning_map(
+            torch.from_numpy(gate),
+            torch.from_numpy(up),
+            torch.from_numpy(down),
+            target_features=4,
+            chunk_size=3,
+        )
+        self.assertEqual(torch_result.source_indices, numpy_result.source_indices)
+        self.assertTrue(
+            np.array_equal(
+                torch_result.coordinate_map.matrix,
+                numpy_result.coordinate_map.matrix,
+            )
+        )
 
     def test_lexical_transport_preserves_logits_on_subcloned_residual(self):
         rng = np.random.default_rng(70)
