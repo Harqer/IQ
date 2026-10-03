@@ -201,11 +201,20 @@ def _require_tensor(
     return value
 
 
+def _physical_mlp_hidden_size(config: Mamba3DonorConfig) -> int:
+    """Match upstream GatedMLP(hidden_features, multiple_of=128) padding."""
+    multiple = 128
+    return (
+        (int(config.d_intermediate) + multiple - 1) // multiple
+    ) * multiple
+
+
 def validate_official_mamba3_mimo_state(
     config: Mamba3DonorConfig,
     state: Mapping[str, torch.Tensor],
 ) -> None:
     layout = config.layout
+    physical_mlp_hidden = _physical_mlp_hidden_size(config)
     expected_global = {
         "backbone.embedding.weight": (config.vocab_size, config.d_model),
         "backbone.norm_f.weight": (config.d_model,),
@@ -250,8 +259,8 @@ def validate_official_mamba3_mimo_state(
             f"{p}.mixer.D": (layout.nheads,),
             f"{p}.mixer.out_proj.weight": layout.out_proj_shape,
             f"{p}.norm2.weight": (config.d_model,),
-            f"{p}.mlp.fc1.weight": (2 * config.d_intermediate, config.d_model),
-            f"{p}.mlp.fc2.weight": (config.d_model, config.d_intermediate),
+            f"{p}.mlp.fc1.weight": (2 * physical_mlp_hidden, config.d_model),
+            f"{p}.mlp.fc2.weight": (config.d_model, physical_mlp_hidden),
         }
         for key, shape in expected.items():
             _require_tensor(state, key, shape)
