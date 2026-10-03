@@ -54,18 +54,6 @@ sync_to_bucket() {
   hf sync "$source" "$destination"
 }
 
-download_glm_shards() {
-  local -a shards=("$@")
-  if ((${#shards[@]} == 0)); then
-    echo "No GLM shards were planned" >&2
-    exit 1
-  fi
-  hf download "$GLM_REPO" "${shards[@]}" \
-    --revision "$GLM_REVISION" \
-    --local-dir "$GLM_DIR" \
-    --token "$HF_TOKEN"
-}
-
 python -m pip install -r requirements-model.txt
 
 # Fetch only immutable metadata first. The full ~753B BF16 checkpoint is never
@@ -81,8 +69,7 @@ mapfile -t BOOTSTRAP_SHARDS < <(
     --config "$GLM_DIR/config.json" \
     --index "$GLM_DIR/model.safetensors.index.json"
 )
-echo "GLM WARM/bootstrap shard count: ${#BOOTSTRAP_SHARDS[@]}"
-download_glm_shards "${BOOTSTRAP_SHARDS[@]}"
+echo "GLM WARM/bootstrap shard count (on-demand): ${#BOOTSTRAP_SHARDS[@]}"
 
 hf download "$MAMBA_REPO" \
   config.json pytorch_model.bin tokenizer.json tokenizer_config.json \
@@ -123,6 +110,7 @@ BOOTSTRAP_ARGS=(
   --checkpoint "$GLM_DIR"
   --output "$CALIBRATION_DIR"
   --checkpoint-revision "$GLM_REVISION"
+  --repo-id "$GLM_REPO"
   --donor-license "${GLM53_DONOR_LICENSE:-GLM-5.3}"
   --streaming-source
   --warm-device "${WARM_DEVICE:-cuda}"
@@ -140,8 +128,7 @@ mapfile -t COMPILE_SHARDS < <(
     --index "$GLM_DIR/model.safetensors.index.json" \
     --calibration "$CALIBRATION_DIR"
 )
-echo "GLM calibrated compile shard count: ${#COMPILE_SHARDS[@]}"
-download_glm_shards "${COMPILE_SHARDS[@]}"
+echo "GLM calibrated compile shard count (on-demand): ${#COMPILE_SHARDS[@]}"
 
 # Stage 3: compile the single IQ checkpoint. The compiler uses official
 # Mamba-3 globals/recurrent weights plus GLM-transformed capability modules.
@@ -151,6 +138,7 @@ python -m iq_transfer.cli glm53-compile \
   --mamba3-checkpoint "$MAMBA_DIR" \
   --output "$OUTPUT_DIR" \
   --checkpoint-revision "$GLM_REVISION" \
+  --repo-id "$GLM_REPO" \
   --mamba3-revision "$MAMBA_REVISION" \
   --donor-license "${GLM53_DONOR_LICENSE:-GLM-5.3}" \
   --streaming-source

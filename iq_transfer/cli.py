@@ -48,6 +48,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     glm_bootstrap.add_argument("--output", required=True)
     glm_bootstrap.add_argument("--checkpoint-revision", required=True)
+    glm_bootstrap.add_argument("--repo-id", default="zai-org/GLM-5.3-BF16")
     glm_bootstrap.add_argument("--donor-license", required=True)
     glm_bootstrap.add_argument("--source-uri")
     glm_bootstrap.add_argument(
@@ -70,6 +71,7 @@ def _parser() -> argparse.ArgumentParser:
     glm_compile.add_argument("--mamba3-checkpoint", required=True)
     glm_compile.add_argument("--output", required=True)
     glm_compile.add_argument("--checkpoint-revision", required=True)
+    glm_compile.add_argument("--repo-id", default="zai-org/GLM-5.3-BF16")
     glm_compile.add_argument("--mamba3-revision", required=True)
     glm_compile.add_argument("--donor-license", required=True)
     glm_compile.add_argument(
@@ -255,9 +257,18 @@ def main(argv: list[str] | None = None) -> int:
             if args.source_activations
             else None
         )
+        source_weights = (
+            HubSafetensorsSource(
+                artifact.checkpoint_dir,
+                repo_id=args.repo_id,
+                revision=args.checkpoint_revision,
+            )
+            if args.streaming_source
+            else SafetensorsSource(artifact.checkpoint_dir)
+        )
         solution = bootstrap_glm53_calibration(
             source,
-            source_weights=SafetensorsSource(artifact.checkpoint_dir),
+            source_weights=source_weights,
             source_hidden_size=inspector.config.hidden_size,
             target_config=canonical_glm53_config(),
             source_layers=inspector.config.num_hidden_layers,
@@ -308,6 +319,7 @@ def main(argv: list[str] | None = None) -> int:
             donor_license=args.donor_license,
             verify_hashes=not args.skip_checkpoint_hashes,
             streaming_source=args.streaming_source,
+            glm53_repo_id=args.repo_id,
         )
         print(
             json.dumps(

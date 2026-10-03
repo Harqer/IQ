@@ -26,6 +26,7 @@ from .glm53_calibration import GLM53CalibrationSolution, GLM53StageCalibration
 from .glm53_direct import GLM53MLALayout, transform_glm53_mla
 from .glm53_dsa import transform_glm53_dsa_indexer
 from .glm53_job import validate_glm53_donor, validate_glm53_streaming_donor
+from .glm53_stream_capture import HubSafetensorsSource
 from .glm53_moe import (
     ExpertWeights,
     select_experts_by_usage,
@@ -326,6 +327,7 @@ def compile_glm53_iq_checkpoint(
     donor_license: str,
     verify_hashes: bool = True,
     streaming_source: bool = False,
+    glm53_repo_id: str = "zai-org/GLM-5.3-BF16",
 ) -> GLM53CompileResult:
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
@@ -349,7 +351,15 @@ def compile_glm53_iq_checkpoint(
             donor_license=donor_license,
             require_bf16=True,
         )
-    source = SafetensorsSource(donor.checkpoint_dir)
+    source = (
+        HubSafetensorsSource(
+            donor.checkpoint_dir,
+            repo_id=glm53_repo_id,
+            revision=glm53_revision,
+        )
+        if streaming_source
+        else SafetensorsSource(donor.checkpoint_dir)
+    )
     config_data = json.loads(
         (donor.checkpoint_dir / "config.json").read_text(encoding="utf-8")
     )
@@ -431,6 +441,9 @@ def compile_glm53_iq_checkpoint(
             ),
             weight_map,
         )
+        clear = getattr(source, "clear_ephemeral_shards", None)
+        if callable(clear):
+            clear(completed_layer=stage.source_layer)
 
     with tempfile.TemporaryDirectory(prefix="iq-glm53-mamba-") as temporary:
         overlay = Path(temporary)

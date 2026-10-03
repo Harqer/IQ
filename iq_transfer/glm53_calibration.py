@@ -712,6 +712,9 @@ def bootstrap_glm53_calibration(
                 dense_intermediate_map=dense_map,
             )
         )
+        clear = getattr(source_weights, "clear_ephemeral_shards", None)
+        if callable(clear):
+            clear(completed_layer=source_layer)
 
     # Embeddings enter the first canonical IQ residual frame and the LM head
     # reads from the last one. Reusing those residual maps keeps additions and
