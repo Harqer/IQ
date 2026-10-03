@@ -48,7 +48,7 @@ class IQHybridConfig:
     reasoning: ReasoningRecurrenceConfig | None = None
     energy_critic: ReasoningEnergyCriticConfig | None = None
     multimodal: IQMultimodalConfig | None = None
-    require_energy_stability: bool = False
+    require_verifier_stability: bool = False
 
     def __post_init__(self) -> None:
         hidden = self.model.hidden_size
@@ -129,9 +129,9 @@ class IQHybridConfig:
             raise HybridModelError(
                 "energy_critic requires reasoning recurrence"
             )
-        if self.require_energy_stability and self.energy_critic is None:
+        if self.require_verifier_stability and self.energy_critic is None:
             raise HybridModelError(
-                "require_energy_stability requires energy_critic"
+                "require_verifier_stability requires a configured reasoning verifier"
             )
         if self.multimodal is not None:
             layer_count = len(self.schedule.layers)
@@ -186,7 +186,7 @@ class IQHybridConfig:
                 if self.multimodal is not None
                 else None
             ),
-            "require_energy_stability": self.require_energy_stability,
+            "require_verifier_stability": self.require_verifier_stability,
         }
 
     @classmethod
@@ -206,8 +206,8 @@ class IQHybridConfig:
         reasoning = data.get("reasoning")
         energy_critic = data.get("energy_critic")
         multimodal = data.get("multimodal")
-        require_energy_stability = bool(
-            data.get("require_energy_stability", False)
+        require_verifier_stability = bool(
+            data.get("require_verifier_stability", False)
         )
         if not isinstance(model, dict):
             raise HybridModelError("hybrid config model must be an object")
@@ -278,7 +278,7 @@ class IQHybridConfig:
                     if isinstance(multimodal, dict)
                     else None
                 ),
-                require_energy_stability=require_energy_stability,
+                require_verifier_stability=require_verifier_stability,
             )
         except (TypeError, ValueError) as exc:
             raise HybridModelError(
@@ -368,6 +368,8 @@ class HybridCausalLMOutput:
     halt_probabilities: torch.Tensor | None = None
     halt_weights: torch.Tensor | None = None
     relative_state_deltas: torch.Tensor | None = None
+    verifier_trace: torch.Tensor | None = None
+    verifier_deltas: torch.Tensor | None = None
     energy_trace: torch.Tensor | None = None
     energy_deltas: torch.Tensor | None = None
     expected_reasoning_steps: torch.Tensor | None = None
@@ -826,7 +828,7 @@ class IQHybridForCausalLM(nn.Module):
 
         self.reasoning: ReasoningRecurrence | None = None
         self.reasoning_injector: ReasoningStateInjector | None = None
-        self.energy_critic: ReasoningEnergyCritic | None = None
+        self.reasoning_verifier: ReasoningEnergyCritic | None = None
         if config.reasoning is not None:
             self.reasoning = ReasoningRecurrence(
                 config.reasoning
@@ -836,7 +838,7 @@ class IQHybridForCausalLM(nn.Module):
                 config.reasoning.state_dim,
             ).to(device=device_obj, dtype=dtype)
             if config.energy_critic is not None:
-                self.energy_critic = ReasoningEnergyCritic(
+                self.reasoning_verifier = ReasoningEnergyCritic(
                     config.energy_critic
                 ).to(device=device_obj, dtype=dtype)
 
@@ -1052,8 +1054,8 @@ class IQHybridForCausalLM(nn.Module):
                 attention_mask=attention_mask,
                 reasoning_context_mask=reasoning_context_mask,
                 document_ids=document_ids,
-                energy_critic=self.energy_critic,
-                require_energy_stability=self.config.require_energy_stability,
+                verifier=self.reasoning_verifier,
+                require_verifier_stability=self.config.require_verifier_stability,
             )
             assert self.reasoning_injector is not None
             hidden = self.reasoning_injector(
@@ -1139,6 +1141,16 @@ class IQHybridForCausalLM(nn.Module):
             ),
             relative_state_deltas=(
                 reasoning_output.relative_state_deltas
+                if reasoning_output is not None
+                else None
+            ),
+            verifier_trace=(
+                reasoning_output.verifier_trace
+                if reasoning_output is not None
+                else None
+            ),
+            verifier_deltas=(
+                reasoning_output.verifier_deltas
                 if reasoning_output is not None
                 else None
             ),
