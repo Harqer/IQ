@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 import numpy as np
 
@@ -95,6 +95,85 @@ def select_experts_by_usage(
     # Primary key: descending usage. Secondary key: stable source expert id.
     order = np.lexsort((np.arange(scores.shape[0]), -scores))
     return tuple(int(x) for x in order[:target_experts])
+
+
+def transform_glm53_moe_selected(
+    *,
+    router_weight: Any,
+    routing_bias: Any,
+    selected_experts: Mapping[int, ExpertWeights],
+    shared_expert: ExpertWeights,
+    expert_usage: Any,
+    target_experts: int,
+    residual_map: CoordinateMap,
+    latent_map: CoordinateMap,
+    intermediate_map: CoordinateMap,
+    input_map: CoordinateMap | None = None,
+) -> GLM53MoETransform:
+    """Transform only the usage-selected donor experts.
+
+    The caller may lazily load exactly the retained experts. Router rows and
+    correction bias are sliced from the full lightweight routing tensors, so
+    no unselected expert FFN weights need to be materialized.
+    """
+    router = _array(router_weight)
+    source_bias = _array(routing_bias).reshape(-1)
+    if router.ndim != 2:
+        raise GLM53MoETransformError("router weight must be rank-2")
+    if source_bias.shape != (router.shape[0],):
+        raise GLM53MoETransformError(
+            "routing_bias must have one entry per donor expert"
+        )
+    source_input = input_map if input_map is not None else residual_map
+    if source_input.matrix.shape[0] != router.shape[1]:
+        raise GLM53MoETransformError(
+            "input map source width must equal router input width"
+        )
+    selected = select_experts_by_usage(
+        expert_usage,
+        target_experts=target_experts,
+    )
+    missing = tuple(index for index in selected if index not in selected_experts)
+    unexpected = tuple(index for index in selected_experts if index not in selected)
+    if missing or unexpected:
+        raise GLM53MoETransformError(
+            f"selected_experts mismatch: missing={missing} unexpected={unexpected}"
+        )
+
+    selection = np.asarray(selected)
+    selected_router = router[selection]
+    target_router = selected_router @ np.linalg.pinv(source_input.matrix).T
+    target_bias = source_bias[selection].copy()
+    target_bias -= target_bias.mean()
+    latent_down, latent_up = latent_codec_weights(
+        source_input,
+        latent_map,
+        residual_map,
+    )
+    target_routed = tuple(
+        _transport_expert(
+            selected_experts[index],
+            input_map=latent_map,
+            intermediate_map=intermediate_map,
+            output_map=latent_map,
+        )
+        for index in selected
+    )
+    target_shared = _transport_expert(
+        shared_expert,
+        input_map=source_input,
+        intermediate_map=intermediate_map,
+        output_map=residual_map,
+    )
+    return GLM53MoETransform(
+        source_expert_indices=selected,
+        router_weight=target_router,
+        routing_bias=target_bias,
+        latent_down_weight=latent_down,
+        latent_up_weight=latent_up,
+        routed_experts=target_routed,
+        shared_expert=target_shared,
+    )
 
 
 def latent_codec_weights(

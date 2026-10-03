@@ -13,6 +13,7 @@ from iq_transfer import (
     select_experts_by_usage,
     transform_glm53_dense_mlp,
     transform_glm53_moe,
+    transform_glm53_moe_selected,
 )
 
 
@@ -132,6 +133,43 @@ class GLM53MoETransformTests(unittest.TestCase):
             self.assertTrue(np.allclose(target.up, source.up))
             self.assertTrue(np.allclose(target.down, source.down))
         self.assertTrue(np.allclose(result.shared_expert.gate, shared.gate))
+
+    def test_selected_moe_transform_requires_only_retained_experts(self):
+        rng = np.random.default_rng(84)
+        hidden = 4
+        intermediate = 3
+        residual = CoordinateMap(np.eye(hidden), 1e-6)
+        latent = CoordinateMap(np.eye(hidden), 1e-6)
+        middle = CoordinateMap(np.eye(intermediate), 1e-6)
+        router = rng.normal(size=(4, hidden))
+        usage = np.array([0.1, 0.4, 0.2, 0.3])
+        selected = {
+            index: ExpertWeights(
+                gate=rng.normal(size=(intermediate, hidden)),
+                up=rng.normal(size=(intermediate, hidden)),
+                down=rng.normal(size=(hidden, intermediate)),
+            )
+            for index in (1, 3)
+        }
+        shared = ExpertWeights(
+            gate=rng.normal(size=(intermediate, hidden)),
+            up=rng.normal(size=(intermediate, hidden)),
+            down=rng.normal(size=(hidden, intermediate)),
+        )
+        result = transform_glm53_moe_selected(
+            router_weight=router,
+            routing_bias=np.array([0.3, -0.1, 0.2, 0.7]),
+            selected_experts=selected,
+            shared_expert=shared,
+            expert_usage=usage,
+            target_experts=2,
+            residual_map=residual,
+            latent_map=latent,
+            intermediate_map=middle,
+        )
+        self.assertEqual(result.source_expert_indices, (1, 3))
+        self.assertEqual(len(result.routed_experts), 2)
+        self.assertTrue(np.array_equal(result.router_weight, router[[1, 3]]))
 
     def test_empty_router_capture_fails_closed(self):
         with self.assertRaisesRegex(GLM53MoETransformError, "empty"):

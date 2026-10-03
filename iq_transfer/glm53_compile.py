@@ -28,8 +28,9 @@ from .glm53_dsa import transform_glm53_dsa_indexer
 from .glm53_job import validate_glm53_donor
 from .glm53_moe import (
     ExpertWeights,
+    select_experts_by_usage,
     transform_glm53_dense_mlp,
-    transform_glm53_moe,
+    transform_glm53_moe_selected,
 )
 from .mamba3_direct import (
     compile_official_mamba3_mimo_15b_transplant,
@@ -265,16 +266,20 @@ def _moe_state(
         inspector.layout.moe_intermediate_size,
         space=f"glm53.layer.{source_layer}.expert_intermediate",
     )
-    routed = tuple(
-        _expert(source, f"{donor_prefix}.mlp.experts.{i}")
-        for i in range(inspector.layout.n_routed_experts)
+    selected_ids = select_experts_by_usage(
+        stage.expert_usage,
+        target_experts=stable.num_experts,
     )
-    transformed = transform_glm53_moe(
+    selected_experts = {
+        index: _expert(source, f"{donor_prefix}.mlp.experts.{index}")
+        for index in selected_ids
+    }
+    transformed = transform_glm53_moe_selected(
         router_weight=_tensor(source, f"{donor_prefix}.mlp.gate.weight"),
         routing_bias=_tensor(
             source, f"{donor_prefix}.mlp.gate.e_score_correction_bias"
         ),
-        routed_experts=routed,
+        selected_experts=selected_experts,
         shared_expert=_expert(source, f"{donor_prefix}.mlp.shared_experts"),
         expert_usage=stage.expert_usage,
         target_experts=stable.num_experts,
