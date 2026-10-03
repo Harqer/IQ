@@ -21,11 +21,12 @@ from .phi4 import Phi4Inspector
 from .glm53 import GLM53_BF16_REPO, GLM53_FLASH_BF16_REPO, GLM53Inspector, GLM53Layout
 from .glm53_calibration import GLM53CalibrationError, GLM53CalibrationSolution, GLM53StageCalibration, bootstrap_glm53_calibration, solve_glm53_calibration
 from .glm53_dsa import GLM53DSATransform, GLM53DSATransformError, resolve_indexer_source_layer, transform_glm53_dsa_indexer
-from .glm53_job import GLM53DonorArtifact, GLM53TransferError, validate_glm53_donor
+from .glm53_job import GLM53DonorArtifact, GLM53TransferError, validate_glm53_donor, validate_glm53_streaming_donor
 from .glm53_moe import ExpertWeights, GLM53DenseMLPTransform, GLM53MoETransform, GLM53MoETransformError, latent_codec_weights, router_usage_from_topk, select_experts_by_usage, transform_glm53_dense_mlp, transform_glm53_moe, transform_glm53_moe_selected
 from .glm53_direct import GLM53DirectTransformError, GLM53MLALayout, GLM53MLATransform, SubcloningMap, fit_importance_subcloning_map, fit_mla_compressed_subspace, fit_orthogonal_subspace, grouped_output_identity, transform_embedding_and_lm_head, transform_glm53_mla
 from .glm53_compile import GLM53CompileError, GLM53CompileResult, compile_glm53_iq_checkpoint
 from .glm53_policy import GLM53SourcePolicy, GLM53TransferDisposition, GLM53_SOURCE_POLICIES, IQ_RECIPIENT_NATIVE_FAMILIES, classify_glm53_source_role
+from .glm53_shards import GLM53ShardPlanError, load_safetensors_weight_map, plan_glm53_bootstrap_shards, plan_glm53_compile_shards
 from .scaling import ScaleGate, TransferMetrics
 from .shadows import FunctionalShadow, MeasurementPlan, ShadowError, extract_shadow, match_layers_monotonic, shadow_distance
 from .slots import SlotError, TargetAssignment, TargetRegistry, TargetSlot, TransferMethod
@@ -77,6 +78,7 @@ __all__ = [
     "GQAProjection",
     "GQATransportError",
     "GLM53CompileError",
+    "GLM53ShardPlanError",
     "GLM53CompileResult",
     "compile_glm53_iq_checkpoint",
     "GLM53DirectTransformError",
@@ -206,6 +208,9 @@ __all__ = [
     "solve_phi_layer_maps",
     "save_coordinate_map",
     "select_experts_by_usage",
+    "load_safetensors_weight_map",
+    "plan_glm53_bootstrap_shards",
+    "plan_glm53_compile_shards",
     "shadow_distance",
     "sinkhorn_transport",
     "transport_linear",
@@ -216,6 +221,7 @@ __all__ = [
     "transform_embedding_and_lm_head",
     "transform_glm53_mla",
     "validate_glm53_donor",
+    "validate_glm53_streaming_donor",
     "validate_official_mamba3_mimo_15b_config",
     "validate_official_mamba3_mimo_state",    "bootstrap_glm53_calibration",
     "load_activation_bundle",

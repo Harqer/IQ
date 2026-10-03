@@ -25,7 +25,7 @@ from .glm53 import GLM53Inspector
 from .glm53_calibration import GLM53CalibrationSolution, GLM53StageCalibration
 from .glm53_direct import GLM53MLALayout, transform_glm53_mla
 from .glm53_dsa import transform_glm53_dsa_indexer
-from .glm53_job import validate_glm53_donor
+from .glm53_job import validate_glm53_donor, validate_glm53_streaming_donor
 from .glm53_moe import (
     ExpertWeights,
     select_experts_by_usage,
@@ -325,6 +325,7 @@ def compile_glm53_iq_checkpoint(
     mamba3_revision: str,
     donor_license: str,
     verify_hashes: bool = True,
+    streaming_source: bool = False,
 ) -> GLM53CompileResult:
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
@@ -335,12 +336,19 @@ def compile_glm53_iq_checkpoint(
             "GLM calibration target fingerprint does not match canonical GLM recipient"
         )
 
-    donor = validate_glm53_donor(
-        checkpoint=glm53_checkpoint,
-        checkpoint_revision=glm53_revision,
-        donor_license=donor_license,
-        require_bf16=True,
-    )
+    if streaming_source:
+        donor = validate_glm53_streaming_donor(
+            checkpoint=glm53_checkpoint,
+            checkpoint_revision=glm53_revision,
+            donor_license=donor_license,
+        )
+    else:
+        donor = validate_glm53_donor(
+            checkpoint=glm53_checkpoint,
+            checkpoint_revision=glm53_revision,
+            donor_license=donor_license,
+            require_bf16=True,
+        )
     source = SafetensorsSource(donor.checkpoint_dir)
     config_data = json.loads(
         (donor.checkpoint_dir / "config.json").read_text(encoding="utf-8")

@@ -96,6 +96,24 @@ class GLM53InspectorTests(unittest.TestCase):
         self.assertIn("embedding", roles)
         self.assertIn("lm_head", roles)
 
+    def test_index_key_validation_does_not_require_tensor_bytes(self):
+        inspector = GLM53Inspector.from_config_mapping(self.config())
+        keys = tuple(self.source().keys())
+        report = inspector.validate_index_keys(keys)
+        self.assertTrue(report.ok)
+        self.assertIn(
+            "model.layers.1.mlp.experts.1.down_proj.weight",
+            inspector.required_tensor_keys(),
+        )
+
+    def test_missing_index_key_fails_closed(self):
+        inspector = GLM53Inspector.from_config_mapping(self.config())
+        keys = list(self.source().keys())
+        keys.remove("model.layers.1.mlp.experts.1.down_proj.weight")
+        report = inspector.validate_index_keys(keys)
+        self.assertFalse(report.ok)
+        self.assertIn("missing GLM-5.3 checkpoint tensors in index", report.errors[0])
+
     def test_missing_expert_tensor_fails_closed(self):
         inspector = GLM53Inspector.from_config_mapping(self.config())
         source = self.source()

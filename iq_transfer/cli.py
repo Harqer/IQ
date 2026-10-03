@@ -4,10 +4,11 @@ import argparse
 import json
 
 from .job import run_phi_dense_transfer
-from .glm53_job import validate_glm53_donor
+from .glm53_job import validate_glm53_donor, validate_glm53_streaming_donor
 from .glm53 import GLM53Inspector
 from .glm53_calibration import bootstrap_glm53_calibration
 from .glm53_compile import compile_glm53_iq_checkpoint
+from .glm53_shards import plan_glm53_bootstrap_shards, plan_glm53_compile_shards
 from .capture_runner import load_activation_bundle
 from .checkpoint import SafetensorsSource
 from .complete_transplant import canonical_glm53_config
@@ -45,6 +46,11 @@ def _parser() -> argparse.ArgumentParser:
     glm_bootstrap.add_argument("--donor-license", required=True)
     glm_bootstrap.add_argument("--source-uri")
     glm_bootstrap.add_argument(
+        "--streaming-source",
+        action="store_true",
+        help="validate from config/index metadata and require only planned local shards",
+    )
+    glm_bootstrap.add_argument(
         "--warm-device",
         default="cpu",
         help="device used for WARM Gram/eigendecomposition, e.g. cuda",
@@ -62,10 +68,30 @@ def _parser() -> argparse.ArgumentParser:
     glm_compile.add_argument("--mamba3-revision", required=True)
     glm_compile.add_argument("--donor-license", required=True)
     glm_compile.add_argument(
+        "--streaming-source",
+        action="store_true",
+        help="validate from config/index metadata and require only planned local shards",
+    )
+    glm_compile.add_argument(
         "--skip-checkpoint-hashes",
         action="store_true",
         help="skip donor hash verification (not recommended)",
     )
+
+    glm_plan_bootstrap = sub.add_parser(
+        "glm53-plan-bootstrap-shards",
+        help="list the GLM-5.3 safetensors shards required for WARM/bootstrap",
+    )
+    glm_plan_bootstrap.add_argument("--config", required=True)
+    glm_plan_bootstrap.add_argument("--index", required=True)
+
+    glm_plan_compile = sub.add_parser(
+        "glm53-plan-compile-shards",
+        help="list the GLM-5.3 shards required for calibrated IQ compile",
+    )
+    glm_plan_compile.add_argument("--config", required=True)
+    glm_plan_compile.add_argument("--index", required=True)
+    glm_plan_compile.add_argument("--calibration", required=True)
 
     mamba = sub.add_parser(
         "mamba3-direct",
@@ -151,13 +177,21 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
     if args.command == "glm53-bootstrap-calibration":
-        artifact = validate_glm53_donor(
-            checkpoint=args.checkpoint,
-            checkpoint_revision=args.checkpoint_revision,
-            donor_license=args.donor_license,
-            source_uri=args.source_uri,
-            require_bf16=True,
-        )
+        if args.streaming_source:
+            artifact = validate_glm53_streaming_donor(
+                checkpoint=args.checkpoint,
+                checkpoint_revision=args.checkpoint_revision,
+                donor_license=args.donor_license,
+                source_uri=args.source_uri,
+            )
+        else:
+            artifact = validate_glm53_donor(
+                checkpoint=args.checkpoint,
+                checkpoint_revision=args.checkpoint_revision,
+                donor_license=args.donor_license,
+                source_uri=args.source_uri,
+                require_bf16=True,
+            )
         config_data = json.loads(
             (artifact.checkpoint_dir / "config.json").read_text(encoding="utf-8")
         )
@@ -190,6 +224,21 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
         return 0
+    if args.command == "glm53-plan-bootstrap-shards":
+        for shard in plan_glm53_bootstrap_shards(
+            config_path=args.config,
+            index_path=args.index,
+        ):
+            print(shard)
+        return 0
+    if args.command == "glm53-plan-compile-shards":
+        for shard in plan_glm53_compile_shards(
+            config_path=args.config,
+            index_path=args.index,
+            calibration_dir=args.calibration,
+        ):
+            print(shard)
+        return 0
     if args.command == "glm53-compile":
         result = compile_glm53_iq_checkpoint(
             glm53_checkpoint=args.checkpoint,
@@ -200,6 +249,7 @@ def main(argv: list[str] | None = None) -> int:
             mamba3_revision=args.mamba3_revision,
             donor_license=args.donor_license,
             verify_hashes=not args.skip_checkpoint_hashes,
+            streaming_source=args.streaming_source,
         )
         print(
             json.dumps(

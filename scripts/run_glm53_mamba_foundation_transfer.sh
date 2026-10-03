@@ -52,13 +52,35 @@ sync_to_bucket() {
   hf sync "$source" "$destination"
 }
 
+download_glm_shards() {
+  local -a shards=("$@")
+  if ((${#shards[@]} == 0)); then
+    echo "No GLM shards were planned" >&2
+    exit 1
+  fi
+  hf download "$GLM_REPO" "${shards[@]}" \
+    --revision "$GLM_REVISION" \
+    --local-dir "$GLM_DIR" \
+    --token "$HF_TOKEN"
+}
+
 python -m pip install -r requirements-transfer.txt
 
-# All model bytes are downloaded only into ephemeral worker storage.
+# Fetch only immutable metadata first. The full ~753B BF16 checkpoint is never
+# downloaded as one local snapshot.
 hf download "$GLM_REPO" \
+  config.json model.safetensors.index.json \
   --revision "$GLM_REVISION" \
   --local-dir "$GLM_DIR" \
   --token "$HF_TOKEN"
+
+mapfile -t BOOTSTRAP_SHARDS < <(
+  python -m iq_transfer.cli glm53-plan-bootstrap-shards \
+    --config "$GLM_DIR/config.json" \
+    --index "$GLM_DIR/model.safetensors.index.json"
+)
+echo "GLM WARM/bootstrap shard count: ${#BOOTSTRAP_SHARDS[@]}"
+download_glm_shards "${BOOTSTRAP_SHARDS[@]}"
 
 hf download "$MAMBA_REPO" \
   config.json pytorch_model.bin tokenizer.json tokenizer_config.json \
@@ -85,9 +107,19 @@ python -m iq_transfer.cli glm53-bootstrap-calibration \
   --output "$CALIBRATION_DIR" \
   --checkpoint-revision "$GLM_REVISION" \
   --donor-license "${GLM53_DONOR_LICENSE:-GLM-5.3}" \
+  --streaming-source \
   --warm-device "${WARM_DEVICE:-cuda}"
 
 sync_to_bucket "$CALIBRATION_DIR" "$HF_CALIBRATION_URI"
+
+mapfile -t COMPILE_SHARDS < <(
+  python -m iq_transfer.cli glm53-plan-compile-shards \
+    --config "$GLM_DIR/config.json" \
+    --index "$GLM_DIR/model.safetensors.index.json" \
+    --calibration "$CALIBRATION_DIR"
+)
+echo "GLM calibrated compile shard count: ${#COMPILE_SHARDS[@]}"
+download_glm_shards "${COMPILE_SHARDS[@]}"
 
 # Stage 3: compile the single IQ checkpoint. The compiler uses official
 # Mamba-3 globals/recurrent weights plus GLM-transformed capability modules.
@@ -98,7 +130,8 @@ python -m iq_transfer.cli glm53-compile \
   --output "$OUTPUT_DIR" \
   --checkpoint-revision "$GLM_REVISION" \
   --mamba3-revision "$MAMBA_REVISION" \
-  --donor-license "${GLM53_DONOR_LICENSE:-GLM-5.3}"
+  --donor-license "${GLM53_DONOR_LICENSE:-GLM-5.3}" \
+  --streaming-source
 
 sync_to_bucket "$OUTPUT_DIR" "$HF_IQ_URI"
 
