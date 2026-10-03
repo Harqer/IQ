@@ -11,9 +11,11 @@ from iq_model import HybridLayerType, IQHybridConfig
 
 from .calibration import solve_layer_correspondence
 from .capture_runner import ActivationBundle
+from .checkpoint import SafetensorsSource
 from .complete_transplant import donor_layer_positions
 from .glm53_direct import fit_importance_subcloning_map, fit_mla_compressed_subspace
 from .glm53_moe import router_usage_from_topk
+from .warm import WarmWeightOperator, fit_weight_orthogonal_remap
 from .transport import (
     CoordinateMap,
     fit_ridge_coordinate_map,
@@ -407,16 +409,172 @@ def _bootstrap_source_mapping(
     return {stage: int(chosen[stage]) for stage in range(nt)}
 
 
+def _warm_glm_layer_maps(
+    source: SafetensorsSource,
+    *,
+    source_layer: int,
+    source_hidden_size: int,
+    source_first_dense_layers: int,
+    source_indexer_types: tuple[str, ...],
+    target_hidden_size: int,
+    target_latent_size: int,
+    device: str,
+) -> tuple[CoordinateMap, CoordinateMap, CoordinateMap, CoordinateMap]:
+    """Build WARM-style weight-space maps for one GLM layer.
+
+    residual_map is informed by both operators consuming and producing the
+    residual stream. attention_input_map and moe_input_map are specialized
+    input-side bases. latent_map compresses the GLM MoE input directly into
+    IQ's Stable LatentMoE latent width. All maps are dense semi-orthogonal.
+    """
+    prefix = f"model.layers.{source_layer}"
+    attn_ops: list[WarmWeightOperator] = [
+        WarmWeightOperator(
+            source.get(f"{prefix}.self_attn.q_a_proj.weight"),
+            "input",
+            f"layer.{source_layer}.attn.q_a",
+        ),
+        WarmWeightOperator(
+            source.get(f"{prefix}.self_attn.kv_a_proj_with_mqa.weight"),
+            "input",
+            f"layer.{source_layer}.attn.kv_a",
+        ),
+    ]
+    if source_indexer_types[source_layer] == "full":
+        indexer = f"{prefix}.self_attn.indexer"
+        attn_ops.extend(
+            [
+                WarmWeightOperator(
+                    source.get(f"{indexer}.wk.weight"),
+                    "input",
+                    f"layer.{source_layer}.dsa.wk",
+                ),
+                WarmWeightOperator(
+                    source.get(f"{indexer}.weights_proj.weight"),
+                    "input",
+                    f"layer.{source_layer}.dsa.head_weights",
+                ),
+            ]
+        )
+
+    moe_ops: list[WarmWeightOperator] = []
+    moe_output_ops: list[WarmWeightOperator] = []
+    if source_layer < source_first_dense_layers:
+        mlp = f"{prefix}.mlp"
+        moe_ops.extend(
+            [
+                WarmWeightOperator(
+                    source.get(f"{mlp}.gate_proj.weight"),
+                    "input",
+                    f"layer.{source_layer}.mlp.gate",
+                ),
+                WarmWeightOperator(
+                    source.get(f"{mlp}.up_proj.weight"),
+                    "input",
+                    f"layer.{source_layer}.mlp.up",
+                ),
+            ]
+        )
+        moe_output_ops.append(
+            WarmWeightOperator(
+                source.get(f"{mlp}.down_proj.weight"),
+                "output",
+                f"layer.{source_layer}.mlp.down",
+            )
+        )
+    else:
+        mlp = f"{prefix}.mlp"
+        shared = f"{mlp}.shared_experts"
+        moe_ops.extend(
+            [
+                WarmWeightOperator(
+                    source.get(f"{mlp}.gate.weight"),
+                    "input",
+                    f"layer.{source_layer}.moe.router",
+                ),
+                WarmWeightOperator(
+                    source.get(f"{shared}.gate_proj.weight"),
+                    "input",
+                    f"layer.{source_layer}.moe.shared.gate",
+                ),
+                WarmWeightOperator(
+                    source.get(f"{shared}.up_proj.weight"),
+                    "input",
+                    f"layer.{source_layer}.moe.shared.up",
+                ),
+            ]
+        )
+        moe_output_ops.append(
+            WarmWeightOperator(
+                source.get(f"{shared}.down_proj.weight"),
+                "output",
+                f"layer.{source_layer}.moe.shared.down",
+            )
+        )
+
+    attention = fit_weight_orthogonal_remap(
+        attn_ops,
+        source_features=source_hidden_size,
+        target_features=target_hidden_size,
+        source_space=f"glm53.layer.{source_layer}.attn_input",
+        target_space=f"iq.layer.{source_layer}.attn_input",
+        device=device,
+    ).coordinate_map
+    moe = fit_weight_orthogonal_remap(
+        (*moe_ops, *moe_output_ops),
+        source_features=source_hidden_size,
+        target_features=target_hidden_size,
+        source_space=f"glm53.layer.{source_layer}.moe_input",
+        target_space=f"iq.layer.{source_layer}.moe_input",
+        device=device,
+    ).coordinate_map
+    latent = fit_weight_orthogonal_remap(
+        (*moe_ops, *moe_output_ops),
+        source_features=source_hidden_size,
+        target_features=target_latent_size,
+        source_space=f"glm53.layer.{source_layer}.moe_input",
+        target_space=f"iq.layer.{source_layer}.latent",
+        device=device,
+    ).coordinate_map
+    residual = fit_weight_orthogonal_remap(
+        (
+            *attn_ops,
+            WarmWeightOperator(
+                source.get(f"{prefix}.self_attn.o_proj.weight"),
+                "output",
+                f"layer.{source_layer}.attn.o",
+            ),
+            *moe_ops,
+            *moe_output_ops,
+        ),
+        source_features=source_hidden_size,
+        target_features=target_hidden_size,
+        source_space=f"glm53.layer.{source_layer}.residual",
+        target_space=f"iq.layer.{source_layer}.residual",
+        device=device,
+    ).coordinate_map
+    return residual, attention, moe, latent
+
+
 def bootstrap_glm53_calibration(
     source_fit: ActivationBundle,
     *,
+    source_weights: SafetensorsSource,
+    source_hidden_size: int,
     target_config: IQHybridConfig,
     source_layers: int,
     source_first_dense_layers: int,
     source_num_experts: int,
     source_indexer_types: tuple[str, ...],
+    warm_device: str = "cpu",
 ) -> GLM53CalibrationSolution:
-    """Build first transfer coordinates solely from pretrained GLM activations."""
+    """Build the first GLM->IQ transfer using WARM-style weight remapping.
+
+    Hidden-space coordinate maps come directly from pretrained GLM weights as
+    dense semi-orthogonal bases. Calibration activations remain only where they
+    carry semantics not recoverable from weight geometry alone: layer routing
+    usage, dense intermediate importance, and MLA non-RoPE subspace fitting.
+    """
     if target_config.compressed_context is None or target_config.stable_moe is None:
         raise GLM53CalibrationError(
             "GLM bootstrap requires compressed context and Stable LatentMoE"
@@ -431,44 +589,33 @@ def bootstrap_glm53_calibration(
     c = target_config.compressed_context
     stable = target_config.stable_moe
     target_nonrotary = c.head_dim - c.partial_rotary_dim
-    lexical_input_map = fit_importance_subcloning_map(
-        source_fit.require("embedding"),
-        target_features=target_config.model.hidden_size,
-    ).coordinate_map
-    final_output_map = fit_importance_subcloning_map(
-        source_fit.require("final"),
-        target_features=target_config.model.hidden_size,
-    ).coordinate_map
 
     stages: list[GLM53StageCalibration] = []
     for stage, (context_physical, moe_physical) in enumerate(stage_positions):
         source_layer = mapping[stage]
-        residual = fit_importance_subcloning_map(
-            source_fit.require(f"layer.{source_layer}.residual_in"),
-            target_features=target_config.model.hidden_size,
-        ).coordinate_map
-        attention_input = fit_importance_subcloning_map(
-            source_fit.require(f"layer.{source_layer}.attn_in"),
-            target_features=target_config.model.hidden_size,
-        ).coordinate_map
-        moe_input = fit_importance_subcloning_map(
-            source_fit.require(f"layer.{source_layer}.mlp_in"),
-            target_features=target_config.model.hidden_size,
-        ).coordinate_map
+        residual, attention_input, moe_input, latent = _warm_glm_layer_maps(
+            source_weights,
+            source_layer=source_layer,
+            source_hidden_size=source_hidden_size,
+            source_first_dense_layers=source_first_dense_layers,
+            source_indexer_types=source_indexer_types,
+            target_hidden_size=target_config.model.hidden_size,
+            target_latent_size=stable.latent_size,
+            device=warm_device,
+        )
         kv = fit_mla_compressed_subspace(
             source_fit.require(f"layer.{source_layer}.compressed_kv"),
             kv_lora_rank=512,
             rope_dim=c.partial_rotary_dim,
             target_latent_dim=target_nonrotary,
         )
-        latent = fit_importance_subcloning_map(
-            source_fit.require(f"layer.{source_layer}.mlp_in"),
-            target_features=stable.latent_size,
-        ).coordinate_map
 
         usage: np.ndarray | None = None
         dense_map: CoordinateMap | None = None
         if source_layer < source_first_dense_layers:
+            # Intermediate-space reduction is a separate nonlinear SwiGLU
+            # boundary; keep the established importance baseline rather than
+            # pretending a residual-space orthogonal map applies across it.
             dense_map = fit_importance_subcloning_map(
                 source_fit.require(f"layer.{source_layer}.mlp_hidden"),
                 target_features=stable.expert_intermediate_size,
@@ -493,6 +640,13 @@ def bootstrap_glm53_calibration(
                 dense_intermediate_map=dense_map,
             )
         )
+
+    # Embeddings enter the first canonical IQ residual frame and the LM head
+    # reads from the last one. Reusing those residual maps keeps additions and
+    # lexical I/O in coherent coordinate systems instead of inventing separate
+    # unrelated rotations.
+    lexical_input_map = stages[0].residual_map
+    final_output_map = stages[-1].residual_map
     return GLM53CalibrationSolution(
         stages=tuple(stages),
         source_layers=source_layers,
