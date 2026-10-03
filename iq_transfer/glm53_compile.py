@@ -31,7 +31,10 @@ from .glm53_moe import (
     transform_glm53_dense_mlp,
     transform_glm53_moe,
 )
-from .mamba3_direct import compile_official_mamba3_mimo_15b_transplant
+from .mamba3_direct import (
+    compile_official_mamba3_mimo_15b_transplant,
+    load_official_mamba3_foundation_globals,
+)
 from .transport import CoordinateMap
 
 
@@ -345,13 +348,20 @@ def compile_glm53_iq_checkpoint(
 
     weight_map: dict[str, str] = {}
     provenance: dict[str, object] = {
-        "schema_version": 1,
-        "method": "glm53_cross_architecture_direct_refactor",
-        "donor": {
+        "schema_version": 2,
+        "method": "mamba3_foundation_plus_glm53_capability_weight_transfer",
+        "foundation": {
+            "repo": "state-spaces/mamba3-mimo-1.5b",
+            "revision": mamba3_revision,
+            "role": "pretrained lexical + recurrent foundation",
+            "width_transfer": "2048->4096 exact replication embedding",
+        },
+        "capability_source": {
             "repo": "zai-org/GLM-5.3-BF16",
             "revision": glm53_revision,
             "fingerprint": donor.manifest.fingerprint,
             "checkpoint_hash": donor.manifest.checkpoint_hash,
+            "role": "WARM-remapped context/DSA/MoE capability weights",
         },
         "recipient_config_fingerprint": config.fingerprint,
         "source_layer_map": {
@@ -359,26 +369,27 @@ def compile_glm53_iq_checkpoint(
         },
         "context": "MLA compressed-latent refactor + DSA direct-token indexer",
         "moe": "usage-selected expert subcloning into Stable LatentMoE",
-        "mamba": "official Mamba-3 MIMO donor; no GLM QKV-to-recurrence fabrication",
+        "mamba": "official Mamba-3 MIMO foundation; no GLM QKV-to-recurrence fabrication",
     }
 
-    embedding = _tensor(source, "model.embed_tokens.weight")
-    lm_head = _tensor(source, "lm_head.weight")
-    target_embedding = (
-        embedding.detach().cpu().double().numpy()
-        @ calibration.lexical_input_map.matrix
+    # Mamba-3 is the pretrained foundation and owns the lexical boundary.
+    # GLM-5.3 never replaces the tokenizer, embedding, final norm, or LM head.
+    foundation_globals = load_official_mamba3_foundation_globals(
+        checkpoint=mamba3_checkpoint,
+        checkpoint_revision=mamba3_revision,
+        verify_checkpoint_hash=verify_hashes,
+        target_hidden_size=config.model.hidden_size,
     )
-    target_lm = (
-        lm_head.detach().cpu().double().numpy()
-        @ np.linalg.pinv(calibration.final_output_map.matrix).T
-    )
+    if foundation_globals["embed_tokens.weight"].shape[0] != config.model.vocab_size:
+        raise GLM53CompileError(
+            "Mamba foundation vocabulary does not match canonical IQ config"
+        )
     _save_shard(
         output,
         "model-global.safetensors",
         {
-            "embed_tokens.weight": _as_tensor(target_embedding),
-            "norm.weight": torch.ones(config.model.hidden_size, dtype=torch.bfloat16),
-            "lm_head.weight": _as_tensor(target_lm),
+            key: value.to(torch.bfloat16)
+            for key, value in foundation_globals.items()
         },
         weight_map,
     )
@@ -440,7 +451,7 @@ def compile_glm53_iq_checkpoint(
         )
 
     config.write_json(str(output / "iq_config.json"))
-    _copy_tokenizer_assets(donor.checkpoint_dir, output)
+    _copy_tokenizer_assets(Path(mamba3_checkpoint), output)
     index = {
         "metadata": {
             "total_size": sum(
