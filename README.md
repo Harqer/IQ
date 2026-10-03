@@ -77,22 +77,24 @@ IQ does **not** claim that ordinary language-model reasoning requires quantum ha
 
 `iq_transfer/` is the canonical donor-independent transfer package.
 
-Current flow:
+Current production flow:
 
 ```text
-donor checkpoint
-  → DonorInspector
-  → lazy operator catalog
-  → calibration activations
-  → functional shadows
-  → layer correspondence
-  → coordinate maps
-  → operator transport
-  → DoRA correction
-  → IQ adaptation
+official Mamba-3 MIMO checkpoint
+  → exact 2048→4096 lexical/recurrent widening
+  → canonical IQ residual frame
+
+GLM-5.3 BF16 capability weights
+  → strict operator inspection
+  → WARM semi-orthogonal remapping into the Mamba frame
+  → MLA→CSA/HCA + DSA + Stable LatentMoE transforms
+
+Mamba foundation + GLM capability modules + IQ-native controllers
+  → one IQ checkpoint
+  → stabilization/post-training
 ```
 
-GLM-5.3 BF16 is the primary production donor. `GLM53Inspector` validates its MLA/DSA + sigmoid-MoE checkpoint layout before any transport occurs. Phi-4 remains a regression/control donor. The transfer engine stays donor-independent: new donors add inspectors rather than separate graft architectures.
+The official pretrained Mamba-3 MIMO 1.5B checkpoint is IQ's lexical and recurrent foundation. Its 2048-wide representation is widened to IQ's 4096-wide residual frame by exact replication, preserving the pretrained Mamba function on the embedded subspace. GLM-5.3 BF16 is a secondary capability-weight source: `GLM53Inspector` validates its MLA/DSA + sigmoid-MoE layout, then WARM-style remapping plus IQ-specific algebra transports context/DSA/MoE capability weights into the Mamba-anchored 4096-D frame. GLM does not replace the Mamba tokenizer, embedding, final norm, LM head, or recurrent dynamics. Phi-4 remains a regression/control source.
 
 See:
 
