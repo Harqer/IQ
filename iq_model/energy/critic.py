@@ -7,6 +7,7 @@ import torch.nn.functional as F
 from torch import nn
 
 from ..norm import RMSNorm
+from ..reasoning.verifier import ReasoningVerifier, ReasoningVerifierSignal
 
 
 @dataclass(frozen=True)
@@ -37,13 +38,15 @@ class ReasoningEnergyCriticConfig:
             raise ValueError("rms_norm_eps must be positive")
 
 
-class ReasoningEnergyCritic(nn.Module):
+class ReasoningEnergyCritic(ReasoningVerifier):
     """Scalar EBM critic for candidate reasoning states.
 
     Lower energy means the candidate is more compatible with the supplied
     context. The module is intentionally a scorer only: it has no transition,
     integration, routing, residual-mixing, or halting authority.
     """
+
+    backend = "energy"
 
     def __init__(self, config: ReasoningEnergyCriticConfig) -> None:
         super().__init__()
@@ -64,6 +67,26 @@ class ReasoningEnergyCritic(nn.Module):
             nn.Dropout(config.dropout),
         )
         self.energy_head = nn.Linear(config.hidden_dim, 1, bias=False)
+
+    @property
+    def state_dim(self) -> int:
+        return self.config.state_dim
+
+    @property
+    def context_dim(self) -> int:
+        return self.config.context_dim
+
+    def verify(
+        self,
+        state: torch.Tensor,
+        context: torch.Tensor,
+    ) -> ReasoningVerifierSignal:
+        energy = self(state, context)
+        return ReasoningVerifierSignal(
+            score=-energy,
+            raw_score=energy,
+            backend=self.backend,
+        )
 
     def _broadcast_context(
         self,
