@@ -180,6 +180,39 @@ class PerHeadMuonTests(unittest.TestCase):
         self.assertIn("blocks.0.attn.q_proj.weight", canonical.per_head)
         self.assertEqual(set(standard.trainable), set(canonical.trainable))
 
+    def test_checkpoint_rejects_mutated_head_layout(self):
+        p = nn.Parameter(torch.randn(4, 6))
+        optimizer = PerHeadMuon(
+            {p: HeadLayout(2, 2)},
+            lr=0.01, momentum=0.9, nesterov=True,
+            weight_decay=0, ns_steps=5, adjust_lr_fn="match_rms_adamw"
+        )
+        corrupted = optimizer.state_dict()
+        corrupted["param_groups"][0]["heads"] = 1
+        with self.assertRaisesRegex(ValueError, "heads layout changed"):
+            optimizer.load_state_dict(corrupted)
+        self.assertEqual(optimizer.param_groups[0]["heads"], 2)
+
+    def test_nonfinite_gradient_blocks_all_optimizer_components(self):
+        config = IQModelConfig(
+            vocab_size=31, hidden_size=16,
+            num_hidden_layers=2, num_attention_heads=4,
+            num_key_value_heads=2, intermediate_size=32,
+            max_position_embeddings=32,
+        )
+        model = IQForCausalLM(config)
+        opt = build_optimizer(model, OptimizerConfig(lr=1e-3))
+        original = {name: p.detach().clone() for name, p in model.named_parameters()}
+        for param in model.parameters():
+            if param.requires_grad:
+                param.grad = torch.ones_like(param)
+        model.blocks[0].attn.q_proj.weight.grad[0, 0] = float("nan")
+        with self.assertRaisesRegex(FloatingPointError, "non-finite"):
+            opt.step()
+        for name, param in model.named_parameters():
+            torch.testing.assert_close(param.detach(), original[name], atol=0, rtol=0)
+        self.assertFalse(opt.per_head_muon.state)
+
     def test_head_layout_rejects_invalid_width(self):
         with self.assertRaisesRegex(ValueError, "output width"):
             HeadLayout(3, 2).validate(torch.randn(5, 4))
