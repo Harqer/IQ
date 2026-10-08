@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, Mapping
+from typing import Iterable, Literal, Mapping
 
 import torch
 
@@ -18,6 +18,8 @@ class TrainStepConfig:
     gradient_accumulation_steps: int = 1
     max_grad_norm: float = 1.0
     precision: str = "fp32"
+    quantile_balancing_backend: Literal["exact", "histogram"] = "exact"
+    quantile_histogram_bins: int = 1000
 
     def __post_init__(self) -> None:
         if self.gradient_accumulation_steps <= 0:
@@ -30,6 +32,10 @@ class TrainStepConfig:
             raise TrainingError(
                 "precision must be 'fp32' or 'bf16'"
             )
+        if self.quantile_balancing_backend not in {"exact", "histogram"}:
+            raise TrainingError("quantile_balancing_backend must be exact or histogram")
+        if self.quantile_histogram_bins <= 1:
+            raise TrainingError("quantile_histogram_bins must be greater than one")
 
 
 @dataclass(frozen=True)
@@ -146,7 +152,11 @@ def train_step(
 
     # Kimi K3 Quantile Balancing samples *the full optimizer step*, not each
     # microbatch separately. Bias remains frozen until the optimizer succeeds.
-    with QuantileBalancingWindow(model) as balancing:
+    with QuantileBalancingWindow(
+        model,
+        backend=config.quantile_balancing_backend,
+        histogram_bins=config.quantile_histogram_bins,
+    ) as balancing:
         for batch in batches:
             model_inputs = _validate_batch(batch)
             attention_mask = model_inputs.get("attention_mask")
