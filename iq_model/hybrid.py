@@ -896,8 +896,16 @@ class IQHybridForCausalLM(nn.Module):
         """Allocate using pinned upstream Mamba-3 InferenceParams."""
         if batch_size <= 0 or max_seqlen <= 0:
             raise ValueError("batch_size and max_seqlen must be positive")
+        from mamba_ssm.modules import mamba3 as mamba3_module
         from mamba_ssm.utils.generation import InferenceParams
 
+        # The pinned Mamba3.step() explicitly requires the CuTe decode
+        # kernel. Reject non-decodable installations at cache allocation,
+        # rather than failing only after mutating the prefill state.
+        if mamba3_module.mamba3_step_fn is None:
+            raise HybridModelError(
+                "pinned Mamba-3 CuTe step kernel is unavailable for cached decoding"
+            )
         params = InferenceParams(max_seqlen=max_seqlen, max_batch_size=batch_size)
         caches: dict[
             int, DeepseekV4CSACache | DeepseekV4HCACache | DenseContextCache
@@ -934,6 +942,8 @@ class IQHybridForCausalLM(nn.Module):
         return_hidden_states: bool = False,
         inference_cache: IQHybridInferenceCache | None = None,
     ) -> HybridCausalLMOutput:
+        if input_ids.ndim != 2:
+            raise ValueError("input_ids must have shape [batch, sequence]")
         if inference_cache is not None:
             if self.training:
                 raise HybridModelError("cached generation requires eval mode")
@@ -960,8 +970,6 @@ class IQHybridForCausalLM(nn.Module):
                 ).expand(input_ids.shape[0], -1)
                 if not torch.equal(position_ids.to(input_ids.device), expected):
                     raise HybridModelError("cached position_ids must follow token offset")
-        if input_ids.ndim != 2:
-            raise ValueError("input_ids must have shape [batch, sequence]")
         if input_ids.dtype not in (torch.int32, torch.int64):
             raise ValueError("input_ids must be integer token ids")
         if input_ids.numel() and (
