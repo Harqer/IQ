@@ -112,12 +112,28 @@ class PerHeadMuon(torch.optim.Optimizer):
         }
         super().__init__(groups, defaults)
 
+    def load_state_dict(self, state_dict: dict) -> None:
+        # torch.optim.Optimizer.load_state_dict otherwise replaces our group
+        # head metadata from the serialized payload without validating it.
+        incoming = state_dict.get("param_groups", [])
+        if len(incoming) != len(self.param_groups):
+            raise ValueError("per-head Muon checkpoint parameter-group count mismatch")
+        for saved, current in zip(incoming, self.param_groups, strict=True):
+            for field in ("heads", "head_dim"):
+                if int(saved.get(field, -1)) != int(current[field]):
+                    raise ValueError(
+                        f"per-head Muon checkpoint {field} layout changed"
+                    )
+        super().load_state_dict(state_dict)
+
     @torch.no_grad()
     def step(self, closure=None):
         if closure is not None:
             raise ValueError("PerHeadMuon does not support closures")
+        # Preflight every parameter before any update or momentum mutation.
         for group in self.param_groups:
             param = group["params"][0]
+            HeadLayout(int(group["heads"]), int(group["head_dim"])).validate(param)
             grad = param.grad
             if grad is None:
                 continue
@@ -125,6 +141,11 @@ class PerHeadMuon(torch.optim.Optimizer):
                 raise ValueError("per-head Muon requires real, dense gradients")
             if not bool(torch.isfinite(grad).all()):
                 raise FloatingPointError("non-finite Q/K/V gradient")
+        for group in self.param_groups:
+            param = group["params"][0]
+            grad = param.grad
+            if grad is None:
+                continue
             heads, width = int(group["heads"]), int(group["head_dim"])
             HeadLayout(heads, width).validate(param)
             state = self.state[param]
