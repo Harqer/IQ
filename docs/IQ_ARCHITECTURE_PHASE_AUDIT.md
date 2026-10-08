@@ -37,6 +37,21 @@
 5. Run compile + full CPU suite. Independently re-audit new/previous findings and re-run until green or explicitly record remaining code blocker. Avoid editing during a CI run except to remediate an observed failure.
 6. Advance to the next **coding** phase once its source-grounded CPU/repo gates pass, even if final hardware gates remain unexecuted. H200 is the last step.
 
+## Independent adversarial review and remediation log
+
+**Review source:** [PR #39 inline review threads](https://github.com/Harqer/IQ/pull/39) (CodeRabbit, 2026-10-08). Treat review comments as hypotheses until checked against actual IQ source. The following were inspected and reproduced as logical hazards.
+
+| Severity | Finding and direct source | Correction committed | Re-audit gate |
+| --- | --- | --- | --- |
+| P1 | `IQHybridForCausalLM.forward` failed to reject multi-token **decode** before CSA/HCA/dense layers mutated caches, while pinned Mamba-3 `step` accepts one token. Review thread on `iq_model/hybrid.py` lines 947–972. | Commit `d396bdeb2e1cf9ed52aea392ae23c2954859f799`: fail-closed length validation before all physical layers. Commit `4f224acdd5781686701760048d9ed418fdad1d06`: genuine CUDA regression asserts error and unchanged Mamba offset plus every attention cache length. | Source/read verification; full CPU compilation, CUDA behavioral test deferred until final H200 gate. |
+| P2 security | `.github/workflows/mamba3-h200-parity.yml` retained checkout GitHub token on the future GPU runner. Review thread on workflow line 23–24. | Commit `9f01e22b36bec7fe6356e6d6b4986e3f88a2943e` adds `persist-credentials: false`. | Source/run configuration review; hardware workflow not dispatched. |
+| P1 numerical drift | Original Per-Head Muon NS computed FP32 while official `torch.optim._muon` computes quintic NS in BF16, then applies adjusted LR to the parameter update. | Commits `cb157de28e96a0d4116aa9a81fccecd138ad0eaa` and `be1a3d39429859bdc80d262e870d9bf7ad883079` match official NS dtype, `addmm` recurrence, and parameter-precision LR scaling; independent 1-head-vs-PyTorch `torch.optim.Muon` test committed `2f370cc7458dd614b6b3f45dabce5cc0bab39f17`. | Full CPU CI plus numerical equivalence test; no claim about yet-unrun H200 kernel. |
+| P2 test/reference mismatch | GitHub Actions [#37860162816](https://github.com/Harqer/IQ/actions/runs/37860162816) executed 163 tests; 1 failed because test expected-update multiplication prematurely rounded BF16; source itself had already been corrected. | Commit `6c01f78cd763ddccf7d27f961274ab77dea378bd` casts *expected* quintic output to FP32 before adjusted-LR multiplication, preserving the strict test tolerance. | A later successful run of **all** tests is required; do not cite the failed run as success. |
+
+**Additional security/failure boundaries:** `iq_harness/runtime.py` now emits `model.error`, `delegate.error`, and `run.error` with typed error codes and correlation IDs without raw user prompts. No inference retry or model downgrade occurs after partial cache/tool mutations. `IQOptimizer` preflights gradients to avoid known partial multi-optimizer mutation on NaN/Inf; unrecoverable device/runtime faults still require explicit checkpoint recovery, not an automatic fallback.
+
+**Final hardware sequencing:** H200 test source has been strengthened, but it is **not to be executed now**. Remaining architecture, actual tokenizer model adapter, data/eval and deployment/restart work come first.
+
 ## Source reference: Per-Head Muon
 
 - [Kimi K3 official technical report](https://arxiv.org/html/2607.24653v2) §2.5 describes treating Q/K/V momentum **per attention head** for Muon orthogonalization, rather than orthogonalizing the concatenated projection.
