@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from math import ceil
 from types import SimpleNamespace
 
 import torch
@@ -189,6 +190,122 @@ class QuantileBalancingTrainingTests(unittest.TestCase):
             )
         for layer, bias in zip(model.blocks, old, strict=True):
             torch.testing.assert_close(layer.moe.routing_bias, bias, atol=0, rtol=0)
+
+    def test_histogram_backend_matches_published_required_bias_bin_equation(self):
+        # Kimi K3 Appendix D: H[j,b] counts r=alpha-s, and recovers
+        # b_hat = lower + (bin + clamp((mk/n - prior)/count,0,1)) * width.
+        torch.manual_seed(112)
+        model = TinyLatentTrainingModel()
+        samples = self.batches()
+        observations: dict[int, list[torch.Tensor]] = {0: [], 1: []}
+        handles = []
+        for idx, layer in enumerate(model.blocks):
+            def capture(module, inputs, output, idx=idx):
+                observations[idx].append(output.raw_router_scores.detach().float().clone())
+            handles.append(layer.moe.register_forward_hook(capture))
+        try:
+            with QuantileBalancingWindow(
+                model, backend="histogram", histogram_bins=64
+            ) as window:
+                for batch in samples:
+                    window.begin_microbatch(batch["attention_mask"])
+                    try:
+                        model(
+                            batch["input_ids"],
+                            labels=batch["input_ids"],
+                            attention_mask=batch["attention_mask"],
+                        )
+                    finally:
+                        window.end_microbatch()
+                proposals = window.propose()
+                self.assertEqual(window.tokens, 12)
+                for idx, layer in enumerate(model.blocks):
+                    scores = torch.cat(
+                        [
+                            record[batch["attention_mask"].bool()]
+                            for record, batch in zip(
+                                observations[idx], samples, strict=True
+                            )
+                        ]
+                    )
+                    bias = layer.moe.routing_bias.detach()
+                    n = scores.shape[-1]
+                    k = layer.moe.config.top_k
+                    lower, upper = float(bias.min()) - 1, float(bias.max()) + 1
+                    width = (upper - lower) / 64
+                    cutoff = (scores + bias).topk(k + 1, dim=-1).values[:, -1]
+                    required = cutoff[:, None] - scores
+                    expected_hist = torch.zeros(n, 64, dtype=torch.int64)
+                    for expert in range(n):
+                        for value in required[:, expert]:
+                            index = max(0, min(63, int((float(value) - lower) / width)))
+                            expected_hist[expert, index] += 1
+                    name = f"blocks.{idx}.moe"
+                    self.assertTrue(torch.equal(window._histograms[name], expected_hist))
+                    target = len(scores) * k / n
+                    estimates = []
+                    for expert in range(n):
+                        cumulative = expected_hist[expert].cumsum(0)
+                        selected = int(torch.nonzero(cumulative >= ceil(target))[0])
+                        prior = int(cumulative[selected - 1]) if selected else 0
+                        count = int(expected_hist[expert, selected])
+                        fraction = max(0.0, min(1.0, (target - prior) / count))
+                        estimates.append(lower + (selected + fraction) * width)
+                    expected = torch.tensor(estimates)
+                    expected -= expected.mean()
+                    torch.testing.assert_close(
+                        proposals[name], expected, atol=1e-6, rtol=1e-6
+                    )
+        finally:
+            for handle in handles:
+                handle.remove()
+
+    def test_histogram_microbatch_partition_invariance_and_commit(self):
+        torch.manual_seed(113)
+        model = TinyLatentTrainingModel()
+        inputs = torch.tensor([[1, 2, 3, 4, 5, 6, 7, 8]])
+        mask = torch.tensor([[1, 1, 1, 1, 0, 1, 1, 1]])
+        proposals = []
+        for sizes in ((8,), (3, 2, 3), (1,) * 8):
+            with QuantileBalancingWindow(
+                model, backend="histogram", histogram_bins=128
+            ) as window:
+                start = 0
+                for size in sizes:
+                    window.begin_microbatch(mask[:, start : start + size])
+                    try:
+                        ids = inputs[:, start : start + size]
+                        model(
+                            ids,
+                            labels=ids,
+                            attention_mask=mask[:, start : start + size],
+                        )
+                    finally:
+                        window.end_microbatch()
+                    start += size
+                proposals.append(window.propose())
+                self.assertEqual(window.tokens, 7)
+        for other in proposals[1:]:
+            for name in proposals[0]:
+                torch.testing.assert_close(
+                    other[name], proposals[0][name], atol=0, rtol=0
+                )
+        optimizer = build_optimizer(model, OptimizerConfig(lr=1e-3, weight_decay=0))
+        train_step(
+            model, optimizer,
+            [{"input_ids": inputs, "attention_mask": mask}],
+            TrainStepConfig(
+                quantile_balancing_backend="histogram",
+                quantile_histogram_bins=128,
+            ),
+        )
+        for idx, layer in enumerate(model.blocks):
+            torch.testing.assert_close(
+                layer.moe.routing_bias,
+                proposals[0][f"blocks.{idx}.moe"],
+                atol=0,
+                rtol=0,
+            )
 
     def test_exact_window_is_explicitly_single_process(self):
         model = TinyLatentTrainingModel()
