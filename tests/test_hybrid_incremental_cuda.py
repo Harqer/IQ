@@ -12,6 +12,7 @@ from iq_model import (
     HybridSchedule,
     IQHybridConfig,
     IQHybridForCausalLM,
+    HybridModelError,
     IQModelConfig,
     Mamba3MIMOConfig,
     RoutedMoEConfig,
@@ -109,6 +110,27 @@ class HybridIncrementalCudaTests(unittest.TestCase):
                         parts = [
                             model(tokens[:, :first_chunk], inference_cache=state).logits
                         ]
+                        if first_chunk <= tokens.shape[1] - 2:
+                            previous_offset = state.mamba.seqlen_offset
+                            previous_lengths = {
+                                key: cache.cumulative_length
+                                for key, cache in state.attention.items()
+                            }
+                            with self.assertRaisesRegex(
+                                HybridModelError, "exactly one token"
+                            ):
+                                model(
+                                    tokens[:, first_chunk:first_chunk + 2],
+                                    inference_cache=state,
+                                )
+                            self.assertEqual(
+                                state.mamba.seqlen_offset, previous_offset
+                            )
+                            for key, cache in state.attention.items():
+                                self.assertEqual(
+                                    cache.cumulative_length,
+                                    previous_lengths[key],
+                                )
                         for index in range(first_chunk, tokens.shape[1]):
                             parts.append(
                                 model(
