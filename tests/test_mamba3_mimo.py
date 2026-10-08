@@ -48,7 +48,7 @@ class Mamba3MIMOContractTests(unittest.TestCase):
                 mimo_rank=4,
                 dtype=torch.float32,
             ),
-            8,
+            16,
         )
         with self.assertRaises(Mamba3MIMORuntimeError):
             recommended_mamba3_chunk_size(
