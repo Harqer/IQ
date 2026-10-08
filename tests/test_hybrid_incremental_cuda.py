@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import unittest
+from dataclasses import replace
 
 import torch
 
 from iq_model import (
     CompressedContextConfig,
+    BlockAttnResConfig,
+    StableLatentMoEConfig,
     HybridSchedule,
     IQHybridConfig,
     IQHybridForCausalLM,
@@ -74,24 +77,73 @@ class HybridIncrementalCudaTests(unittest.TestCase):
                 compress_rope_theta=10000.0,
             ),
         )
+        canonical = replace(
+            config,
+            moe_variant="stable_latent",
+            stable_moe=StableLatentMoEConfig(
+                hidden_size=64,
+                latent_size=32,
+                expert_intermediate_size=64,
+                num_experts=4,
+                top_k=2,
+            ),
+            attnres=BlockAttnResConfig(
+                hidden_size=64,
+                num_layers=len(config.schedule.layers),
+                block_size=2,
+            ),
+        )
         torch.manual_seed(81)
-        model = IQHybridForCausalLM(config, dtype=torch.bfloat16, device="cuda").eval()
         tokens = torch.randint(0, 97, (1, 11), device="cuda")
-        with torch.no_grad():
-            full = model(tokens).logits
-            for first_chunk in (1, 3, 7):
-                state = model.allocate_inference_cache(batch_size=1, max_seqlen=16)
-                parts = [model(tokens[:, :first_chunk], inference_cache=state).logits]
-                for index in range(first_chunk, tokens.shape[1]):
-                    parts.append(
-                        model(tokens[:, index : index + 1], inference_cache=state).logits
-                    )
-                actual = torch.cat(parts, dim=1)
-                torch.testing.assert_close(actual, full, atol=0.05, rtol=0.05)
-                self.assertEqual(state.mamba.seqlen_offset, 11)
-                state.reset()
-                self.assertEqual(state.mamba.seqlen_offset, 0)
-                self.assertFalse(state.mamba.key_value_memory_dict)
+        for model_config in (config, canonical):
+            with self.subTest(moe_variant=model_config.moe_variant):
+                model = IQHybridForCausalLM(
+                    model_config, dtype=torch.bfloat16, device="cuda"
+                ).eval()
+                with torch.no_grad():
+                    full = model(tokens).logits
+                    for first_chunk in (1, 3, 7, 11):
+                        state = model.allocate_inference_cache(
+                            batch_size=1, max_seqlen=16
+                        )
+                        parts = [
+                            model(tokens[:, :first_chunk], inference_cache=state).logits
+                        ]
+                        for index in range(first_chunk, tokens.shape[1]):
+                            parts.append(
+                                model(
+                                    tokens[:, index:index + 1],
+                                    inference_cache=state,
+                                ).logits
+                            )
+                        actual = torch.cat(parts, dim=1)
+                        torch.testing.assert_close(
+                            actual, full, atol=0.05, rtol=0.05
+                        )
+                        self.assertEqual(state.mamba.seqlen_offset, 11)
+                        state.reset()
+                        self.assertEqual(state.mamba.seqlen_offset, 0)
+                        self.assertFalse(state.mamba.key_value_memory_dict)
+                        # The pinned Mamba3.step must be deterministic after
+                        # resetting all four recurrent states.
+                        replay = [
+                            model(
+                                tokens[:, :first_chunk], inference_cache=state
+                            ).logits
+                        ]
+                        for index in range(first_chunk, tokens.shape[1]):
+                            replay.append(
+                                model(
+                                    tokens[:, index:index + 1],
+                                    inference_cache=state,
+                                ).logits
+                            )
+                        torch.testing.assert_close(
+                            torch.cat(replay, dim=1),
+                            actual,
+                            atol=0.05,
+                            rtol=0.05,
+                        )
 
 
 if __name__ == "__main__":
