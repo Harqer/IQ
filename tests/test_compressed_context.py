@@ -120,6 +120,35 @@ class CompressedContextAttentionTests(unittest.TestCase):
         self.assertTrue(torch.allclose(out_a[:, :4], out_b[:, :4], atol=1e-6, rtol=1e-5))
         self.assertTrue(torch.equal(out_a[:, 4:], torch.zeros_like(out_a[:, 4:])))
 
+    def test_closed_window_visibility_matches_deepseek_v4_reference(self):
+        # Official DeepseekV4HCACompressor: (position_ids + 1) // rate.
+        # Official CSA indexer uses the same closed-window threshold.
+        torch.manual_seed(35)
+        config = self.config()
+        x = torch.randn(1, 9, config.hidden_size)
+        for cls, rate in (
+            (CompressedSparseContextAttention, config.csa_compress_rate),
+            (HeavilyCompressedContextAttention, config.hca_compress_rate),
+        ):
+            attention = cls(config).eval()
+            with torch.no_grad():
+                compressed = attention._compress_main(
+                    x[0], torch.arange(x.shape[1])
+                )
+            self.assertEqual(compressed.shape[0], x.shape[1] // rate)
+            if cls is CompressedSparseContextAttention:
+                with torch.no_grad():
+                    scores = attention.indexer_scores(x)[0]
+                expected = (
+                    torch.arange(compressed.shape[0]).unsqueeze(0)
+                    < ((torch.arange(x.shape[1]) + 1) // rate).unsqueeze(1)
+                )
+                self.assertTrue(torch.equal(scores.valid_mask.cpu(), expected))
+                self.assertTrue(
+                    torch.equal(scores.selected_indices[~expected.any(dim=1)], 
+                                torch.full_like(scores.selected_indices[~expected.any(dim=1)], -1))
+                )
+
     def test_interleaved_partial_rope_inverse_round_trip(self):
         torch.manual_seed(34)
         rope = InterleavedRotaryEmbedding(4, 32, 10000.0)
