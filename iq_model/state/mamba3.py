@@ -95,7 +95,8 @@ def recommended_mamba3_chunk_size(
         raise Mamba3MIMORuntimeError(
             "IQ requires Mamba-3 MIMO; mimo_rank must be >= 2"
         )
-    base = 64 if dtype is torch.bfloat16 else 32
+    # Pinned upstream Mamba3.__init__: 64 / mimo_rank, independent of dtype.
+    base = 64
     if base % mimo_rank != 0:
         raise Mamba3MIMORuntimeError(
             f"Mamba-3 chunk-size base {base} is not divisible by mimo_rank={mimo_rank}"
