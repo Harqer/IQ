@@ -38,6 +38,23 @@ DeepSeek's "hybrid" refers to interleaved CSA and HCA, **not** to a published co
 - `tests/test_mamba3_mimo.py`: validates pinned MIMO chunk recommendation for bf16 and float32.
 - `tests/test_hybrid_incremental_cuda.py`: actual pinned CUDA Mamba-3 MIMO plus CSA/HCA/dense prefill-decode parity; **skips** if that actual GPU kernel and source revision are unavailable. A CPU-only CI success does not verify Mamba-3 GPU parity.
 
+## Independent cross-check against DeepSeek's first-party inference
+
+Additional upstream owner source: [DeepSeek-V4-Pro `inference/model.py`](https://huggingface.co/deepseek-ai/DeepSeek-V4-Pro/blob/main/inference/model.py), including its `Compressor`, `Indexer` and `Attention`, and its companion `inference/kernel.py`. This source corroborates CSA previous-Ca/current-Cb overlap, FP32 compression softmax, token-aligned compressed-window writes, and local shared-KV sliding attention.
+
+**Important differences, not covered by the current CPU parity tests:**
+
+- DeepSeek's first-party production inference uses quantized FP8/FP4 operations and an indexer-side activation rotation before score projection; IQ's PyTorch/HF-Transformers-style eager reference uses ordinary floating point without those first-party quantized kernels. Numerical parity against DeepSeek's quantized checkpoint therefore **has not been proven**.
+- The first-party source uses preallocated circular KV/cache buffers and dedicated `sparse_attn` kernel; IQ retains capped local K and appends long-range KV tensors, calculating candidates eagerly. This preserves the mathematical candidate selection tested in IQ but does not reproduce the first-party kernel throughput or memory allocations.
+- First-party DeepSeek `Attention` implements CSA/HCA only. It contains no Mamba-3 recurrence; integration in IQ is the composition of two independent documented cache contracts, **not** a verbatim upstream combined reference.
+
+These differences are not silently marked `no issue` by a passing suite. Matching the first-party quantized execution path requires adopting and validating the actual DeepSeek kernels/weight format, not inventing lookalike quantization.
+
+## GitHub Actions verification
+
+- Final validated commit before this audit addendum: `cc3f44eeb1acb718ad91f274796629e26feb2ed5`.
+- [GitHub Actions #37856052642](https://github.com/Harqer/IQ/actions/runs/37856052642) **success**: compileall and **141 Python tests passed, 1 skipped** (the hardware-dependent real Mamba-3 CUDA integration test). This validates compressed/dense CPU cache equivalence, not real end-to-end MIMO GPU parity.
+
 ## Acceptance gates and unresolved boundaries
 
 1. **Critical:** GitHub Actions must pass on the final head SHA, including new CSA/HCA and dense parity tests. Prior failed/cancelled builds do not satisfy this.
