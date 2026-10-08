@@ -118,6 +118,13 @@ def main() -> None:
     device = _require_h200()
 
     config = IQHybridConfig.from_json(args.config)
+    if config.moe_variant == "stable_latent" and (
+        args.load_balance_weight > 0 or args.router_z_weight > 0
+    ):
+        raise SystemExit(
+            "Stable LatentMoE uses quantile-balancing routing, not SwiGLU "
+            "load-balance/router-z auxiliary losses; pass both weights as zero"
+        )
     artifact = load_token_batches(args.batches)
     batch = _to_device(dict(artifact.batches[0]), device)
     batch["labels"] = batch["input_ids"]
@@ -147,32 +154,40 @@ def main() -> None:
         raise AssertionError("next-token loss is missing/non-finite")
     if output.mtp_loss is None or not bool(torch.isfinite(output.mtp_loss)):
         raise AssertionError("MTP loss is missing/non-finite")
-    if (
-        output.moe_load_balance_loss is None
-        or not bool(torch.isfinite(output.moe_load_balance_loss))
-    ):
-        raise AssertionError("MoE load-balance loss is missing/non-finite")
-    if (
-        output.moe_router_z_loss is None
-        or not bool(torch.isfinite(output.moe_router_z_loss))
-    ):
-        raise AssertionError("MoE router-z loss is missing/non-finite")
+    if config.moe_variant == "swiglu":
+        if (
+            output.moe_load_balance_loss is None
+            or not bool(torch.isfinite(output.moe_load_balance_loss))
+        ):
+            raise AssertionError("SwiGLU MoE load-balance loss is missing/non-finite")
+        if (
+            output.moe_router_z_loss is None
+            or not bool(torch.isfinite(output.moe_router_z_loss))
+        ):
+            raise AssertionError("SwiGLU MoE router-z loss is missing/non-finite")
+    elif output.moe_load_balance_loss is not None or output.moe_router_z_loss is not None:
+        raise AssertionError("Stable LatentMoE must not emit SwiGLU auxiliary losses")
 
     output.loss.backward()
     missing_required: list[str] = []
     nonfinite: list[str] = []
     routed_expert_gradients = 0
+    routed_names = (
+        ".moe.routed_experts."
+        if config.moe_variant == "stable_latent"
+        else ".moe.experts."
+    )
     for name, parameter in training_model.named_parameters():
         if not parameter.requires_grad:
             continue
         if parameter.grad is None:
-            if ".moe.experts." in name:
+            if routed_names in name:
                 continue
             missing_required.append(name)
             continue
         if not bool(torch.isfinite(parameter.grad).all()):
             nonfinite.append(name)
-        if ".moe.experts." in name:
+        if routed_names in name:
             routed_expert_gradients += 1
     if routed_expert_gradients == 0:
         missing_required.append("at least one routed MoE expert gradient")
@@ -194,11 +209,15 @@ def main() -> None:
             "loss": float(output.loss.detach()),
             "ntp_loss": float(output.ntp_loss.detach()),
             "mtp_loss": float(output.mtp_loss.detach()),
-            "moe_load_balance_loss": float(
-                output.moe_load_balance_loss.detach()
+            "moe_load_balance_loss": (
+                float(output.moe_load_balance_loss.detach())
+                if output.moe_load_balance_loss is not None
+                else None
             ),
-            "moe_router_z_loss": float(
-                output.moe_router_z_loss.detach()
+            "moe_router_z_loss": (
+                float(output.moe_router_z_loss.detach())
+                if output.moe_router_z_loss is not None
+                else None
             ),
         },
     )

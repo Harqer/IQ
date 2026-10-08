@@ -1,10 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Optional
-
 import torch
-from torch import Tensor
 
 from iq_model import Mamba3MIMOConfig, Mamba3MIMOState, require_mamba3_mimo_runtime
 
@@ -13,17 +9,6 @@ RTOL = 0.1
 ATOL = 0.1
 BATCH = 1
 SEQLEN = 32
-
-
-@dataclass
-class InferenceParams:
-    max_seqlen: int
-    max_batch_size: int
-    seqlen_offset: int = 0
-    batch_size_offset: int = 0
-    key_value_memory_dict: dict = field(default_factory=dict)
-    new_key_value_memory_dict: dict = field(default_factory=dict)
-    lengths_per_sample: Optional[Tensor] = None
 
 
 def _assert_h200() -> torch.device:
@@ -37,18 +22,10 @@ def _assert_h200() -> torch.device:
     return device
 
 
-def _config(chunk_size: int) -> Mamba3MIMOConfig:
-    return Mamba3MIMOConfig(
-        d_model=4096,
-        num_layers=32,
-        d_state=128,
-        headdim=64,
-        mimo_rank=4,
-        expand=2.0,
-        rope_fraction=0.5,
-        chunk_size=chunk_size,
-        outproj_norm=False,
-    )
+def _config() -> Mamba3MIMOConfig:
+    # Use IQ's canonical MIMO rank-4 production configuration.
+    # Pinned Mamba-3 recommends 64 / rank = 16 for all supported dtypes.
+    return Mamba3MIMOConfig.production_4096x32()
 
 
 def _assert_all_finite_gradients(model: torch.nn.Module) -> None:
@@ -73,7 +50,7 @@ def main() -> None:
     torch.cuda.manual_seed_all(42)
 
     prod = Mamba3MIMOState(
-        _config(chunk_size=16),
+        _config(),
         layer_idx=0,
         dtype=torch.bfloat16,
         device=device,
@@ -93,14 +70,14 @@ def main() -> None:
 
     prod.eval()
     ref = Mamba3MIMOState(
-        _config(chunk_size=8),
+        _config(),
         layer_idx=0,
         dtype=torch.float32,
         device=device,
     ).eval()
     ref.load_state_dict(
         {name: tensor.detach().float() for name, tensor in prod.state_dict().items()},
-        strict=False,
+        strict=True,
     )
 
     x = torch.randn(BATCH, SEQLEN, 4096, device=device, dtype=torch.bfloat16)
@@ -108,7 +85,7 @@ def main() -> None:
         full_ref = ref(x.float())
 
         state = prod.allocate_inference_cache(
-            BATCH, 1, device=device, dtype=torch.bfloat16
+            BATCH, SEQLEN, device=device, dtype=torch.bfloat16
         )
         step_outputs = []
         for t in range(SEQLEN):
@@ -122,21 +99,24 @@ def main() -> None:
 
         split = SEQLEN // 2
         mixed = Mamba3MIMOState(
-            _config(chunk_size=16),
+            _config(),
             layer_idx=0,
             dtype=torch.bfloat16,
             device=device,
         ).eval()
         mixed.load_state_dict(prod.state_dict(), strict=True)
+        from mamba_ssm.utils.generation import InferenceParams
+
         inference = InferenceParams(max_seqlen=SEQLEN, max_batch_size=BATCH)
         prefix = mixed(x[:, :split], inference_params=inference)
-        mixed_state = inference.key_value_memory_dict[mixed.core.layer_idx]
+        inference.seqlen_offset = split
         suffix = []
         for t in range(split, SEQLEN):
-            out, angle, ssm, k_state, v_state = mixed.core.step(x[:, t], *mixed_state)
-            mixed_state = (angle, ssm, k_state, v_state)
-            suffix.append(out)
-        mixed_out = torch.cat([prefix, torch.stack(suffix, dim=1)], dim=1)
+            suffix.append(mixed(x[:, t : t + 1], inference_params=inference))
+            inference.seqlen_offset += 1
+        mixed_out = torch.cat([prefix, *suffix], dim=1)
+        if inference.seqlen_offset != SEQLEN:
+            raise AssertionError("Mamba-3 streaming inference offset was not advanced")
         torch.testing.assert_close(
             mixed_out.float(), full_ref.float(), rtol=RTOL, atol=ATOL
         )

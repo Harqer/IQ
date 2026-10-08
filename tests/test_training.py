@@ -38,7 +38,10 @@ class TrainingTests(unittest.TestCase):
     def test_optimizer_coverage_is_exact_and_semantic(self):
         model = IQForCausalLM(self.config())
         coverage = classify_parameters(model)
-        self.assertIn("blocks.0.attn.q_proj.weight", coverage.muon)
+        self.assertIn("blocks.0.attn.q_proj.weight", coverage.per_head)
+        self.assertIn("blocks.0.attn.k_proj.weight", coverage.per_head)
+        self.assertIn("blocks.0.attn.v_proj.weight", coverage.per_head)
+        self.assertNotIn("blocks.0.attn.q_proj.weight", coverage.muon)
         self.assertIn("blocks.0.mlp.down_proj.weight", coverage.muon)
         self.assertIn("embed_tokens.weight", coverage.adamw)
         self.assertIn("lm_head.weight", coverage.adamw)

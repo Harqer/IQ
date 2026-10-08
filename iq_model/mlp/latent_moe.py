@@ -261,14 +261,14 @@ class StableLatentMoE(nn.Module):
             largest=True,
             sorted=True,
         ).values
+        # Kimi K3 §2.3.3 (Eq. 14): use the unbiased router-score
+        # margin relative to the current *biased* Top-(k+1) cutoff.
+        # The inverse margin quantile is centered to remove a common
+        # expert offset, which has no effect on Top-k assignments.
         cutoff = top_values[:, -1]
-        required_bias = cutoff.unsqueeze(-1) - scores
-        q = self.config.top_k / self.config.num_experts
-        next_bias = torch.quantile(
-            required_bias,
-            q=q,
-            dim=0,
-        )
+        margins = scores - cutoff.unsqueeze(-1)
+        q = 1.0 - self.config.top_k / self.config.num_experts
+        next_bias = -torch.quantile(margins, q=q, dim=0)
         return next_bias - next_bias.mean()
 
     @torch.no_grad()

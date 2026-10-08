@@ -209,5 +209,86 @@ class HarnessTests(unittest.TestCase):
         self.assertIn("blocked", model.seen)
 
 
+    def test_model_failure_traces_type_without_input_or_exception_secret(self) -> None:
+        secret = "private-credential-9a27"
+
+        class BrokenModel:
+            def generate(self, request: ModelRequest) -> ModelTurn:
+                raise RuntimeError(f"remote backend failed with {secret}")
+
+        traces = []
+        runtime = AgentRuntime(
+            BrokenModel(),
+            [AgentSpec("main", "system", skills=())],
+            hooks=[traces.append],
+        )
+        with self.assertRaisesRegex(RuntimeError, "remote backend failed"):
+            runtime.run("main", secret)
+
+        names = [event.event for event in traces]
+        self.assertEqual(
+            names, ["run.start", "model.request", "model.error", "run.error"]
+        )
+        self.assertEqual(traces[0].payload, {"input_chars": len(secret)})
+        self.assertEqual(traces[-1].payload["error_code"], "RuntimeError")
+        self.assertEqual(traces[-2].payload["error_code"], "RuntimeError")
+        self.assertEqual(len({event.run_id for event in traces}), 1)
+        self.assertNotIn(secret, repr([event.payload for event in traces]))
+        self.assertNotIn("run.end", names)
+
+    def test_guardrail_denial_traces_error_without_session_commit(self) -> None:
+        class RefuseInput(Guardrail):
+            def check_input(self, agent: str, value: object) -> GuardrailDecision:
+                return GuardrailDecision(False, "credential rejected")
+
+        traces = []
+        session = InMemorySession()
+        runtime = AgentRuntime(
+            ScriptedModel([]),
+            [AgentSpec("main", "system", skills=())],
+            guardrails=[RefuseInput()],
+            hooks=[traces.append],
+        )
+        with self.assertRaisesRegex(Exception, "credential rejected"):
+            runtime.run("main", "secret input", session=session)
+        self.assertEqual(session.load(), [])
+        self.assertEqual(
+            [e.event for e in traces], ["run.start", "run.error"]
+        )
+        self.assertEqual(traces[-1].payload["error_code"], "AgentRuntimeError")
+        self.assertNotIn("secret input", repr([e.payload for e in traces]))
+
+    def test_delegate_failure_is_traced_without_retry(self) -> None:
+        class Model:
+            def __init__(self):
+                self.child_calls = 0
+
+            def generate(self, request: ModelRequest) -> ModelTurn:
+                if "main agent" in request.system_prompt:
+                    return ModelTurn(tool_calls=[
+                        ToolCall("d1", "agent.delegate", {"agent": "worker", "input": "x"})
+                    ])
+                self.child_calls += 1
+                raise RuntimeError("failed worker")
+
+        model = Model()
+        traces = []
+        runtime = AgentRuntime(
+            model,
+            [
+                AgentSpec("manager", "main agent", delegates=("worker",), skills=()),
+                AgentSpec("worker", "worker", skills=()),
+            ],
+            hooks=[traces.append],
+        )
+        with self.assertRaisesRegex(RuntimeError, "failed worker"):
+            runtime.run("manager", "delegate task")
+        self.assertEqual(model.child_calls, 1)
+        self.assertIn("delegate.error", [e.event for e in traces])
+        self.assertIn("run.error", [e.event for e in traces])
+        self.assertNotIn("delegate.end", [e.event for e in traces])
+
+
+
 if __name__ == "__main__":
     unittest.main()

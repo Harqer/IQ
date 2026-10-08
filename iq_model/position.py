@@ -116,9 +116,16 @@ def apply_rotary_to_tensor(
 
     sign = -1.0 if inverse else 1.0
     rotate_fn = rotate_interleaved_pairs if rotary_at_end else rotate_half
-    rotated = (rotated * cos) + (sign * rotate_fn(rotated) * sin)
     if rotary_at_end:
+        # DeepSeek-V4 apply_rotary_pos_emb computes interleaved partial RoPE
+        # in FP32 even when inputs/cos/sin are BF16 or FP16, then casts
+        # the rotated rope slice back to the input dtype.
+        rotated = (
+            rotated.float() * cos.float()
+            + sign * rotate_fn(rotated).float() * sin.float()
+        ).to(x.dtype)
         return torch.cat((passthrough, rotated), dim=-1)
+    rotated = (rotated * cos) + (sign * rotate_fn(rotated) * sin)
     return torch.cat((rotated, passthrough), dim=-1)
 
 

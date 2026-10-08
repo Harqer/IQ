@@ -156,6 +156,92 @@ def _segments(
     return result
 
 
+
+class DeepseekV4HCACache:
+    """DeepSeek-V4 HCA cache state, adapted to IQ's shared-KV attention.
+
+    The buffer, compressed-entry and entry-count contracts follow the upstream
+    DeepseekV4HCACache. IQ owns its local KV tensor rather than subclassing
+    Transformers' DynamicSlidingWindowLayer.
+    """
+
+    def __init__(self, config: CompressedContextConfig) -> None:
+        self.compress_rate = config.hca_compress_rate
+        self.sliding_window = config.sliding_window
+        self.keys: torch.Tensor | None = None
+        self.cumulative_length = 0
+        self.buffer_kv: dict[str, torch.Tensor | None] = {"compressor": None}
+        self.buffer_gate: dict[str, torch.Tensor | None] = {"compressor": None}
+        self.compressed_kv: dict[str, torch.Tensor | None] = {"compressor": None}
+        self.entry_count: dict[str, int] = {"compressor": 0}
+
+    def update(self, key_states: torch.Tensor, value_states: torch.Tensor) -> torch.Tensor:
+        if key_states.shape != value_states.shape:
+            raise ValueError("shared-KV update requires matching K/V shapes")
+        full = key_states if self.keys is None else torch.cat([self.keys, key_states], dim=1)
+        self.keys = full[:, -self.sliding_window + 1 :] if self.sliding_window > 1 else full[:, :0]
+        self.cumulative_length += key_states.shape[1]
+        return full
+
+    def store_compression_weights(
+        self, name: str, kv: torch.Tensor, gate: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, int]:
+        first_window_position = self.entry_count[name] * self.compress_rate
+        buffered_kv, buffered_gate = self.buffer_kv[name], self.buffer_gate[name]
+        if buffered_kv is not None and buffered_kv.shape[1]:
+            kv = torch.cat([buffered_kv, kv], dim=1)
+            gate = torch.cat([buffered_gate, gate], dim=1)
+        usable = (kv.shape[1] // self.compress_rate) * self.compress_rate
+        self.buffer_kv[name], self.buffer_gate[name] = kv[:, usable:], gate[:, usable:]
+        return kv[:, :usable], gate[:, :usable], first_window_position
+
+    def update_compressor_states(self, name: str, compressed: torch.Tensor) -> torch.Tensor:
+        previous = self.compressed_kv[name]
+        if previous is None:
+            self.compressed_kv[name] = compressed
+        elif compressed.shape[1]:
+            self.compressed_kv[name] = torch.cat([previous, compressed], dim=1)
+        self.entry_count[name] += compressed.shape[1]
+        assert self.compressed_kv[name] is not None
+        return self.compressed_kv[name]
+
+    def reset(self) -> None:
+        self.keys = None
+        self.cumulative_length = 0
+        for name in self.compressed_kv:
+            self.buffer_kv[name] = None
+            self.buffer_gate[name] = None
+            self.compressed_kv[name] = None
+            self.entry_count[name] = 0
+
+
+class DeepseekV4CSACache(DeepseekV4HCACache):
+    """CSA extends HCA's state with an indexer and Ca overlap per stream."""
+
+    def __init__(self, config: CompressedContextConfig) -> None:
+        super().__init__(config)
+        self.compress_rate = config.csa_compress_rate
+        self.buffer_kv["indexer"] = None
+        self.buffer_gate["indexer"] = None
+        self.compressed_kv["indexer"] = None
+        self.entry_count["indexer"] = 0
+        self.overlap_kv: dict[str, torch.Tensor | None] = {"compressor": None, "indexer": None}
+        self.overlap_gate: dict[str, torch.Tensor | None] = {"compressor": None, "indexer": None}
+
+    def update_overlap_state(
+        self, name: str, chunk_kv: torch.Tensor, chunk_gate: torch.Tensor, head_dim: int
+    ) -> tuple[torch.Tensor | None, torch.Tensor | None]:
+        prior_kv, prior_gate = self.overlap_kv[name], self.overlap_gate[name]
+        self.overlap_kv[name] = chunk_kv[:, -1, :, :head_dim].clone()
+        self.overlap_gate[name] = chunk_gate[:, -1, :, :head_dim].clone()
+        return prior_kv, prior_gate
+
+    def reset(self) -> None:
+        super().reset()
+        for name in self.overlap_kv:
+            self.overlap_kv[name] = self.overlap_gate[name] = None
+
+
 class _V4CompressedContextAttention(nn.Module):
     """Stateless PyTorch reference for DeepSeek-V4-style CSA/HCA.
 
@@ -646,6 +732,152 @@ class _V4CompressedContextAttention(nn.Module):
         attended = self._rope(attended, positions, inverse=True)
         return self.output(attended)
 
+
+    def _cache_compress(
+        self,
+        cache: DeepseekV4HCACache,
+        name: str,
+        hidden: torch.Tensor,
+    ) -> torch.Tensor:
+        if name == "compressor":
+            kv_proj, gate_proj = self.compressor_kv_proj, self.compressor_gate_proj
+            bias, norm, width = (
+                self.compressor_position_bias,
+                self.compressor_kv_norm,
+                self.config.head_dim,
+            )
+        else:
+            assert self.mode == "csa"
+            assert self.index_kv_proj is not None
+            assert self.index_gate_proj is not None
+            assert self.index_position_bias is not None
+            assert self.index_kv_norm is not None
+            kv_proj, gate_proj = self.index_kv_proj, self.index_gate_proj
+            bias, norm, width = self.index_position_bias, self.index_kv_norm, self.config.index_head_dim
+
+        kv = kv_proj(hidden)
+        gate = gate_proj(hidden)
+        chunk_kv, chunk_gate, first_position = cache.store_compression_weights(name, kv, gate)
+        batch = hidden.shape[0]
+        ratio = cache.compress_rate
+        if chunk_kv.shape[1]:
+            n_windows = chunk_kv.shape[1] // ratio
+            chunk_kv = chunk_kv.view(batch, n_windows, ratio, -1)
+            chunk_gate = chunk_gate.view(batch, n_windows, ratio, -1) + bias
+            if self.mode == "hca":
+                weights = chunk_gate.softmax(dim=2, dtype=torch.float32).to(chunk_kv.dtype)
+                compressed = norm((chunk_kv * weights).sum(dim=2))
+            else:
+                assert isinstance(cache, DeepseekV4CSACache)
+                new_kv = chunk_kv.new_zeros((batch, n_windows, 2 * ratio, width))
+                new_gate = chunk_gate.new_full(
+                    (batch, n_windows, 2 * ratio, width), float("-inf")
+                )
+                new_kv[:, :, ratio:] = chunk_kv[..., width:]
+                new_gate[:, :, ratio:] = chunk_gate[..., width:]
+                if n_windows > 1:
+                    new_kv[:, 1:, :ratio] = chunk_kv[:, :-1, :, :width]
+                    new_gate[:, 1:, :ratio] = chunk_gate[:, :-1, :, :width]
+                prior_kv, prior_gate = cache.update_overlap_state(
+                    name, chunk_kv, chunk_gate, width
+                )
+                if prior_kv is not None:
+                    new_kv[:, 0, :ratio] = prior_kv
+                    new_gate[:, 0, :ratio] = prior_gate
+                weights = new_gate.softmax(dim=2, dtype=torch.float32).to(new_kv.dtype)
+                compressed = norm((new_kv * weights).sum(dim=2))
+            positions = (
+                torch.arange(n_windows, device=hidden.device) * ratio + first_position
+            ).repeat(batch)
+            compressed = self._rope(
+                compressed.reshape(batch * n_windows, 1, width), positions
+            ).reshape(batch, n_windows, width)
+        else:
+            compressed = hidden.new_zeros((batch, 0, width))
+        return cache.update_compressor_states(name, compressed)
+
+    def _forward_cached(
+        self,
+        x: torch.Tensor,
+        cache: DeepseekV4HCACache,
+        position_ids: torch.Tensor | None,
+        attention_mask: torch.Tensor | None,
+        document_ids: torch.Tensor | None,
+    ) -> torch.Tensor:
+        if self.mode == "csa" and not isinstance(cache, DeepseekV4CSACache):
+            raise ValueError("CSA needs a DeepseekV4CSACache")
+        if self.mode == "hca" and type(cache) is not DeepseekV4HCACache:
+            raise ValueError("HCA needs a DeepseekV4HCACache")
+        batch, sequence, _ = x.shape
+        if self.training:
+            raise ValueError("incremental compressed attention requires eval mode")
+        if document_ids is not None:
+            raise ValueError("cached generation does not support packed document_ids")
+        if attention_mask is not None and not bool(attention_mask.to(torch.bool).all()):
+            raise ValueError("cached generation requires unpadded new tokens")
+        if cache.keys is not None and cache.keys.shape[0] != batch:
+            raise ValueError("cache batch size changed without reset")
+        expected = torch.arange(
+            cache.cumulative_length,
+            cache.cumulative_length + sequence,
+            device=x.device,
+        ).expand(batch, -1)
+        if position_ids is not None and not torch.equal(position_ids.to(x.device), expected):
+            raise ValueError("cached position_ids must follow the uninterrupted token offset")
+        outputs: list[torch.Tensor] = []
+        for token in range(sequence):
+            hidden = x[:, token : token + 1, :]
+            positions = expected[:, token]
+            residual = self.q_a_norm(self.q_a_proj(hidden))
+            q = self.q_b_norm(
+                self.q_b_proj(residual).view(
+                    batch, self.config.num_attention_heads, self.config.head_dim
+                )
+            )
+            q = self._rope(q, positions)
+            local = self.kv_norm(self.kv_proj(hidden))
+            local = self._rope(local, positions)
+            local = cache.update(local, local)
+            compressed = self._cache_compress(cache, "compressor", hidden)
+            index_kv = (
+                self._cache_compress(cache, "indexer", hidden)
+                if self.mode == "csa"
+                else None
+            )
+            attended: list[torch.Tensor] = []
+            for row in range(batch):
+                long_range = compressed[row]
+                if index_kv is not None:
+                    assert self.index_q_proj is not None
+                    assert self.index_weight_proj is not None
+                    index_query = self.index_q_proj(residual[row]).view(
+                        self.config.index_n_heads, self.config.index_head_dim
+                    )
+                    index_query = self._rope(index_query.unsqueeze(0), positions[row : row + 1]).squeeze(0)
+                    scores = torch.einsum(
+                        "hd,sd->hs", index_query.float(), index_kv[row].float()
+                    )
+                    scores = F.relu(scores) * (self.config.index_head_dim**-0.5)
+                    head_weights = (
+                        self.index_weight_proj(hidden[row]).float().squeeze(0)
+                        * (self.config.index_n_heads**-0.5)
+                    )
+                    scores = (scores * head_weights.unsqueeze(-1)).sum(dim=0)
+                    if scores.numel():
+                        indices = scores.topk(min(self.config.index_topk, scores.numel())).indices
+                        long_range = long_range.index_select(0, indices)
+                    else:
+                        long_range = long_range[:0]
+                candidates = (
+                    torch.cat([local[row], long_range], dim=0)
+                    if long_range.shape[0]
+                    else local[row]
+                )
+                attended.append(self._attend_candidates(q[row], candidates))
+            inverse = self._rope(torch.stack(attended, dim=0), positions, inverse=True)
+            outputs.append(self.output(inverse))
+        return torch.stack(outputs, dim=1) if outputs else x.new_zeros(x.shape)
+
     def forward(
         self,
         x: torch.Tensor,
@@ -653,10 +885,15 @@ class _V4CompressedContextAttention(nn.Module):
         position_ids: torch.Tensor | None = None,
         attention_mask: torch.Tensor | None = None,
         document_ids: torch.Tensor | None = None,
+        past_key_values: DeepseekV4HCACache | None = None,
     ) -> torch.Tensor:
         if x.ndim != 3 or x.shape[-1] != self.config.hidden_size:
             raise ValueError(
                 f"compressed attention input must have shape [batch, sequence, {self.config.hidden_size}]"
+            )
+        if past_key_values is not None:
+            return self._forward_cached(
+                x, past_key_values, position_ids, attention_mask, document_ids
             )
         batch, sequence, _ = x.shape
         prepared = prepare_causal_attention(

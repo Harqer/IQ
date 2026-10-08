@@ -95,7 +95,8 @@ def recommended_mamba3_chunk_size(
         raise Mamba3MIMORuntimeError(
             "IQ requires Mamba-3 MIMO; mimo_rank must be >= 2"
         )
-    base = 64 if dtype is torch.bfloat16 else 32
+    # Pinned upstream Mamba3.__init__: 64 / mimo_rank, independent of dtype.
+    base = 64
     if base % mimo_rank != 0:
         raise Mamba3MIMORuntimeError(
             f"Mamba-3 chunk-size base {base} is not divisible by mimo_rank={mimo_rank}"
@@ -272,11 +273,31 @@ class Mamba3MIMOState(nn.Module):
             raise Mamba3MIMORuntimeError(
                 "IQ Mamba-3 MIMO forward requires CUDA; no CPU/SISO fallback is allowed"
             )
-        output = self.core(
-            hidden_states,
-            cu_seqlens=cu_seqlens,
-            inference_params=inference_params,
-        )
+        if inference_params is not None and (
+            inference_params.seqlen_offset > 0
+            or (hidden_states.shape[1] == 1 and cu_seqlens is None)
+        ):
+            # Pinned upstream Mamba3.step expects [B, D], not the [B, 1, D]
+            # supplied by Mamba3.forward. The MIMO fused prefill kernel also
+            # fails for sequence length 1 (state-spaces/mamba#985).
+            # For a single-token initial prefill or subsequent decode, use
+            # the upstream step kernel with its four zero-initialized/cached
+            # recurrent states instead of an unsupported fused MIMO prefill.
+            if hidden_states.shape[1] != 1 or cu_seqlens is not None:
+                raise Mamba3MIMORuntimeError(
+                    "Mamba-3 cached decode requires one unpacked token per call"
+                )
+            states = self.core._get_states_from_cache(
+                inference_params, hidden_states.shape[0]
+            )
+            output, _, _, _, _ = self.core.step(hidden_states[:, 0], *states)
+            output = output.unsqueeze(1)
+        else:
+            output = self.core(
+                hidden_states,
+                cu_seqlens=cu_seqlens,
+                inference_params=inference_params,
+            )
         if output.shape != hidden_states.shape:
             raise Mamba3MIMORuntimeError(
                 f"Mamba-3 output shape changed unexpectedly: {tuple(output.shape)}"

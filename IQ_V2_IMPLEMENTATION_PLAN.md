@@ -2,6 +2,17 @@
 
 Status: canonical implementation plan for the trainable IQ architecture.
 
+**Architecture-first execution decision (2026-10-08):** Complete and independently
+re-audit every coding phase, source reference, CPU correctness test, training
+lifecycle, explicit fallback contract, logging/observability integration,
+checkpoint/data/evaluation pathway, and deployment configuration **before**
+running the final H200 hardware promotion suite. A pending H200 result does
+not block proceeding to the next coding phase. It does block claiming
+production readiness, optimized-kernel parity, or GPU deployment. Do not
+substitute SISO/CPU Mamba-3 for MIMO or weaken tests to bypass the final gate.
+The implementation/source status for each phase is recorded in
+`docs/IQ_ARCHITECTURE_PHASE_AUDIT.md`.
+
 Current execution state (2026-09-28):
 
 - **architecture frozen for weight transfer**: Mamba-3 MIMO rank 4 is the dominant token-time mixer; Stable LatentMoE + SiTU-GLU is the production expert path; CSA/HCA + sliding-window attention is the production context path; Block AttnRes is the canonical depth/residual mechanism; dense attention remains teacher/control/fallback only;
@@ -968,6 +979,11 @@ A stage is not promoted because training loss decreased. Require:
 
 ### GPU integration
 
+The following checks run in the **final hardware validation phase**, after
+source-grounded coding/CPU integration and independent review are complete.
+The manual `.github/workflows/mamba3-h200-parity.yml` is an execution artifact,
+not a reason to stop architecture remediation midway.
+
 - BF16 forward/backward numerical checks
 - optimized-kernel vs reference parity
 - gradient parity
@@ -1057,7 +1073,7 @@ Exit: Phi->IQ transported model trains and evaluates end-to-end before reasoning
 ### Phase 2 — Mamba-3 + Transformer hybrid execution
 
 1. integrate the pinned Mamba-3 **MIMO** state path with exact recurrent-state semantics; rank-4 MIMO is the production baseline, not an ablation behind a Boolean flag
-2. verify MIMO forward/backward, chunk/state continuation, and H200 decode-step parity with no SISO fallback
+2. verify MIMO forward/backward contracts, chunk/state continuation, and cache lifecycle against pinned upstream code using code inspection and CPU-reference tests first; preserve H200 decode-step parity as the **final hardware promotion gate** after the complete architecture is code-complete, with no SISO fallback
 3. implement the Mamba-dominant context-service hybrid so attention retrieves/compares context and Mamba performs token-time sequence/state evolution; reasoning-time recurrence remains a separate post/backbone control path
 4. implement bounded context injection/fusion without allowing an always-on Transformer branch to bypass Mamba reasoning
 5. implement a DeepSeek V4/V4.1-style compressed context service: sliding window + compressed KV memory + learned top-k indexer

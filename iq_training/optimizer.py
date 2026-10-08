@@ -5,6 +5,15 @@ from typing import Any
 
 import torch
 
+from iq_model.attention.compressed import (
+    CompressedSparseContextAttention,
+    HeavilyCompressedContextAttention,
+)
+from iq_model.attention.context_dense import DenseContextAttention
+from iq_model.attention.gqa import GroupedQueryAttention
+
+from .per_head_muon import HeadLayout, PerHeadMuon
+
 
 class OptimizerConfigError(ValueError):
     pass
@@ -20,6 +29,7 @@ class OptimizerConfig:
     muon_nesterov: bool = True
     muon_ns_steps: int = 5
     muon_adjust_lr_fn: str | None = "match_rms_adamw"
+    per_head_qkv: bool = True
 
     def __post_init__(self) -> None:
         if self.lr <= 0:
@@ -32,8 +42,12 @@ class OptimizerConfig:
             raise OptimizerConfigError("adam_eps must be positive")
         if not (0.0 <= self.muon_momentum < 1.0):
             raise OptimizerConfigError("muon_momentum must be in [0, 1)")
-        if self.muon_ns_steps <= 0:
-            raise OptimizerConfigError("muon_ns_steps must be positive")
+        if not 0 < self.muon_ns_steps < 100:
+            raise OptimizerConfigError("muon_ns_steps must be between 1 and 99")
+        if self.muon_adjust_lr_fn not in (
+            None, "original", "match_rms_adamw", "spectral_unclamped"
+        ):
+            raise OptimizerConfigError("unsupported Muon learning rate adjustment")
 
 
 @dataclass(frozen=True)
@@ -41,10 +55,11 @@ class OptimizerCoverage:
     muon: tuple[str, ...]
     adamw: tuple[str, ...]
     frozen: tuple[str, ...]
+    per_head: tuple[str, ...] = ()
 
     @property
     def trainable(self) -> tuple[str, ...]:
-        return self.muon + self.adamw
+        return self.muon + self.adamw + self.per_head
 
 
 def _is_muon_parameter(name: str, parameter: torch.nn.Parameter) -> bool:
@@ -57,19 +72,68 @@ def _is_muon_parameter(name: str, parameter: torch.nn.Parameter) -> bool:
     return True
 
 
-def classify_parameters(model: torch.nn.Module) -> OptimizerCoverage:
+def _qkv_head_layout(
+    modules: dict[str, torch.nn.Module],
+    name: str,
+    parameter: torch.nn.Parameter,
+) -> HeadLayout | None:
+    if not name.endswith(".weight") or parameter.ndim != 2:
+        return None
+    owner_path, _, _ = name.rpartition(".")
+    parent_path, _, attribute = owner_path.rpartition(".")
+    parent = modules.get(parent_path)
+    if isinstance(parent, (GroupedQueryAttention, DenseContextAttention)):
+        if attribute == "q_proj":
+            heads = parent.config.num_attention_heads
+        elif attribute in {"k_proj", "v_proj"}:
+            heads = parent.config.num_key_value_heads
+        else:
+            return None
+        layout = HeadLayout(heads, parent.config.head_dim)
+    elif isinstance(
+        parent,
+        (CompressedSparseContextAttention, HeavilyCompressedContextAttention),
+    ):
+        if attribute == "q_b_proj":
+            layout = HeadLayout(
+                parent.config.num_attention_heads, parent.config.head_dim
+            )
+        elif attribute == "index_q_proj" and isinstance(
+            parent, CompressedSparseContextAttention
+        ):
+            layout = HeadLayout(
+                parent.config.index_n_heads, parent.config.index_head_dim
+            )
+        else:
+            # Shared K=V, compressor, and low-rank matrices are NOT
+            # independent per-head Q/K/V and remain ordinary Muon matrices.
+            return None
+    else:
+        return None
+    layout.validate(parameter)
+    return layout
+
+
+def classify_parameters(
+    model: torch.nn.Module, *,
+    per_head_qkv: bool = True,
+) -> OptimizerCoverage:
+    modules = dict(model.named_modules())
     muon: list[str] = []
     adamw: list[str] = []
+    per_head: list[str] = []
     frozen: list[str] = []
     for name, parameter in model.named_parameters():
         if not parameter.requires_grad:
             frozen.append(name)
+        elif per_head_qkv and _qkv_head_layout(modules, name, parameter) is not None:
+            per_head.append(name)
         elif _is_muon_parameter(name, parameter):
             muon.append(name)
         else:
             adamw.append(name)
 
-    trainable = muon + adamw
+    trainable = muon + adamw + per_head
     if len(trainable) != len(set(trainable)):
         raise RuntimeError("optimizer parameter classification produced duplicate trainable names")
     expected = [name for name, parameter in model.named_parameters() if parameter.requires_grad]
@@ -77,7 +141,9 @@ def classify_parameters(model: torch.nn.Module) -> OptimizerCoverage:
         missing = sorted(set(expected) - set(trainable))
         extra = sorted(set(trainable) - set(expected))
         raise RuntimeError(f"optimizer coverage mismatch: missing={missing}, extra={extra}")
-    return OptimizerCoverage(tuple(muon), tuple(adamw), tuple(frozen))
+    return OptimizerCoverage(
+        tuple(muon), tuple(adamw), tuple(frozen), tuple(per_head)
+    )
 
 
 class IQOptimizer:
@@ -89,11 +155,13 @@ class IQOptimizer:
         muon: torch.optim.Optimizer | None,
         adamw: torch.optim.Optimizer | None,
         coverage: OptimizerCoverage,
+        per_head_muon: PerHeadMuon | None = None,
     ) -> None:
-        if muon is None and adamw is None:
+        if muon is None and adamw is None and per_head_muon is None:
             raise ValueError("at least one underlying optimizer is required")
         self.muon = muon
         self.adamw = adamw
+        self.per_head_muon = per_head_muon
         self.coverage = coverage
 
     @property
@@ -103,6 +171,8 @@ class IQOptimizer:
             groups.extend(self.muon.param_groups)
         if self.adamw is not None:
             groups.extend(self.adamw.param_groups)
+        if self.per_head_muon is not None:
+            groups.extend(self.per_head_muon.param_groups)
         return groups
 
     def zero_grad(self, set_to_none: bool = True) -> None:
@@ -110,34 +180,66 @@ class IQOptimizer:
             self.muon.zero_grad(set_to_none=set_to_none)
         if self.adamw is not None:
             self.adamw.zero_grad(set_to_none=set_to_none)
+        if self.per_head_muon is not None:
+            self.per_head_muon.zero_grad(set_to_none=set_to_none)
 
     def step(self, closure=None):
         if closure is not None:
-            raise ValueError("IQOptimizer does not support closures across two optimizers")
+            raise ValueError("IQOptimizer does not support closures across optimizers")
+        # Muon, Per-Head Muon and AdamW mutate different tensors. Detect
+        # nonfinite gradients before ANY optimizer mutates parameters; never
+        # silently skip a failed update or call a fallback optimizer.
+        for group in self.param_groups:
+            for parameter in group["params"]:
+                grad = parameter.grad
+                if grad is None:
+                    continue
+                if grad.is_sparse or not bool(torch.isfinite(grad).all()):
+                    raise FloatingPointError(
+                        "optimizer gradient is sparse or non-finite"
+                    )
         muon_loss = self.muon.step() if self.muon is not None else None
+        head_loss = (
+            self.per_head_muon.step() if self.per_head_muon is not None else None
+        )
         adam_loss = self.adamw.step() if self.adamw is not None else None
-        return adam_loss if adam_loss is not None else muon_loss
+        return adam_loss if adam_loss is not None else (
+            head_loss if head_loss is not None else muon_loss
+        )
 
     def state_dict(self) -> dict[str, Any]:
         return {
-            "schema_version": 1,
+            "schema_version": 2,
             "muon": self.muon.state_dict() if self.muon is not None else None,
             "adamw": self.adamw.state_dict() if self.adamw is not None else None,
+            "per_head_muon": (
+                self.per_head_muon.state_dict()
+                if self.per_head_muon is not None else None
+            ),
             "coverage": {
                 "muon": list(self.coverage.muon),
                 "adamw": list(self.coverage.adamw),
                 "frozen": list(self.coverage.frozen),
+                "per_head": list(self.coverage.per_head),
             },
         }
 
     def load_state_dict(self, state_dict: dict[str, Any]) -> None:
-        if int(state_dict.get("schema_version", -1)) != 1:
+        version = int(state_dict.get("schema_version", -1))
+        if version not in {1, 2}:
             raise ValueError("unsupported IQOptimizer state schema")
+        if version == 1 and self.per_head_muon is not None:
+            raise ValueError(
+                "legacy Muon checkpoint cannot be loaded into per-head QKV "
+                "without explicit parameter and optimizer-state conversion"
+            )
         expected = {
             "muon": list(self.coverage.muon),
             "adamw": list(self.coverage.adamw),
             "frozen": list(self.coverage.frozen),
         }
+        if version == 2:
+            expected["per_head"] = list(self.coverage.per_head)
         if state_dict.get("coverage") != expected:
             raise ValueError("optimizer coverage changed since checkpoint creation")
         if self.muon is None:
@@ -154,13 +256,30 @@ class IQOptimizer:
             if state_dict.get("adamw") is None:
                 raise ValueError("checkpoint is missing AdamW state")
             self.adamw.load_state_dict(state_dict["adamw"])
+        if version == 2:
+            if self.per_head_muon is None:
+                if state_dict.get("per_head_muon") is not None:
+                    raise ValueError(
+                        "checkpoint has per-head Muon state but optimizer has none"
+                    )
+            else:
+                if state_dict.get("per_head_muon") is None:
+                    raise ValueError("checkpoint is missing per-head Muon state")
+                self.per_head_muon.load_state_dict(state_dict["per_head_muon"])
 
 
 def build_optimizer(model: torch.nn.Module, config: OptimizerConfig = OptimizerConfig()) -> IQOptimizer:
-    coverage = classify_parameters(model)
+    coverage = classify_parameters(model, per_head_qkv=config.per_head_qkv)
     by_name = dict(model.named_parameters())
+    modules = dict(model.named_modules())
     muon_params = [by_name[name] for name in coverage.muon]
     adam_params = [by_name[name] for name in coverage.adamw]
+    head_layouts: dict[torch.nn.Parameter, HeadLayout] = {}
+    for name in coverage.per_head:
+        layout = _qkv_head_layout(modules, name, by_name[name])
+        if layout is None:
+            raise RuntimeError(f"missing head layout for {name}")
+        head_layouts[by_name[name]] = layout
 
     muon_cls = getattr(torch.optim, "Muon", None)
     if muon_params and muon_cls is None:
@@ -190,4 +309,22 @@ def build_optimizer(model: torch.nn.Module, config: OptimizerConfig = OptimizerC
         if adam_params
         else None
     )
-    return IQOptimizer(muon=muon, adamw=adamw, coverage=coverage)
+    per_head_muon = (
+        PerHeadMuon(
+            head_layouts,
+            lr=config.lr,
+            weight_decay=config.weight_decay,
+            momentum=config.muon_momentum,
+            nesterov=config.muon_nesterov,
+            ns_steps=config.muon_ns_steps,
+            adjust_lr_fn=config.muon_adjust_lr_fn,
+        )
+        if head_layouts
+        else None
+    )
+    return IQOptimizer(
+        muon=muon,
+        adamw=adamw,
+        coverage=coverage,
+        per_head_muon=per_head_muon,
+    )
