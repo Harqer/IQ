@@ -55,6 +55,22 @@ These differences are not silently marked `no issue` by a passing suite. Matchin
 - Final validated commit before this audit addendum: `cc3f44eeb1acb718ad91f274796629e26feb2ed5`.
 - [GitHub Actions #37856052642](https://github.com/Harqer/IQ/actions/runs/37856052642) **success**: compileall and **141 Python tests passed, 1 skipped** (the hardware-dependent real Mamba-3 CUDA integration test). This validates compressed/dense CPU cache equivalence, not real end-to-end MIMO GPU parity.
 
+## Subsequent source-verified remediation pass (2026-10-08)
+
+| Severity | Exact reference finding | IQ correction | Validation |
+| --- | --- | --- | --- |
+| P0 | Pinned Mamba-3 MIMO fused `forward()` has a sequence-length-one failure ([upstream issue #985](https://github.com/state-spaces/mamba/issues/985)); `step()` consumes `[B,D]` with angle/SSM/K/V state. | `iq_model/state/mamba3.py` dispatches cached initial one-token prefill **and** decode to the actual `core.step()`. Full multi-token prefill still invokes upstream `core.forward()`. No SISO/CPU substitute. | Hardware-only single-token + chunked parity regression added; actual H200 run pending. |
+| P1 | The Mamba-3 CuTe step kernel is a hard upstream dependency of decode. | `iq_model/hybrid.py:allocate_inference_cache` fails at allocation when `mamba3_step_fn` is absent, before prefill mutates the cache. Input shape is validated before cache indexing. | CPU suite exercises shape through pure components; hardware availability remains unverified. |
+| P1 | `scripts/verify_mamba3_mimo_h200.py` used invalid FP32 `chunk_size=8` and a hand-written duplicate `InferenceParams`. | Reuses `Mamba3MIMOConfig.production_4096x32()` and pinned upstream `mamba_ssm.utils.generation.InferenceParams`. Replays the actual IQ wrapper with explicit `seqlen_offset` advancement. | CPU regression imports actual H200 script via `runpy` to verify canonical config; GPU verification still pending. |
+| P1 | DeepSeek-V4 `apply_rotary_pos_emb` computes the interleaved trailing RoPE slice in float32 before casting back. IQ previously multiplied BF16/FP16 directly. | `iq_model/position.py` now mirrors pinned DeepSeek FP32 partial RoPE and inverse; dense anchor's separate leading-half RoPE remains unchanged. | CPU exact-formula float16/bfloat16 regression test added. |
+| P1 | The canonical hybrid uses Stable LatentMoE and Block AttnRes; prior CUDA test had only SwiGLU and no AttnRes. | GPU test now runs both architectures, first-token prefill, chunked decoding, reset/replay; CPU regression verifies the real Stable LatentMoE/Block AttnRes token-local path. | CPU test in standard suite; canonical full GPU gate not yet executed. |
+| P1 | `scripts/verify_hybrid_h200.py` incorrectly required SwiGLU auxiliary load-balance and router-z losses and counted `.moe.experts.` gradients even for Stable LatentMoE. | Variant-specific auxiliary checks and routed-expert name handling; Stable LatentMoE positive SwiGLU loss weights are explicitly rejected, as required by `PretrainingObjectiveConfig`. | Script now included in standard `compileall`; H200 training run pending. |
+| P1 | Standard GitHub-hosted CPU runner skips all real MIMO kernel testing. | `.github/workflows/mamba3-h200-parity.yml` provides an **opt-in** GitHub H200 workflow with hard GPU/step checks, pinned runtime installation, production verifier, and full heterogeneous CUDA parity. | Hardware execution requires an authorized H200 self-hosted runner; workflow is not itself a completed hardware test. |
+
+**Known upstream hardware concern:** [state-spaces/mamba issue #1024](https://github.com/state-spaces/mamba/issues/1024) reports nondeterministic SISO `step()`/forward differences on a GPU. This does **not** prove the MIMO kernel is affected. IQ's CUDA test specifically checks MIMO parity and repeatability instead of assuming upstream equivalence.
+
+**Next-phase preparation, not an accepted current-phase fix:** `iq_model/mlp/latent_moe.py` exposes quantile-bias computation/commit, but `iq_training/train.py` does not call them. Stable LatentMoE training orchestration must be independently audited against the official Kimi-K3 quantile-balancing specification before declaring the subsequent phase ready.
+
 ## Acceptance gates and unresolved boundaries
 
 1. **Critical:** GitHub Actions must pass on the final head SHA, including new CSA/HCA and dense parity tests. Prior failed/cancelled builds do not satisfy this.
