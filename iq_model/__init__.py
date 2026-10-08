@@ -1,7 +1,7 @@
 from .reasoning import AdaptiveHaltingHead, ReasoningRecurrence, ReasoningRecurrenceConfig, ReasoningRecurrenceOutput, ReasoningStateInjector, ReasoningStateTransition, SpectralDepthEncoding
 from .energy import ReasoningEnergyCritic, ReasoningEnergyCriticConfig, energy_margin_ranking_loss
 from .residual import AttentionResidualMixer, AttnResError, BlockAttentionResidual, BlockAttnResConfig, BlockAttnResState, MHCConfig, MHCError, MHCHead, MHCWeights, ManifoldHyperConnection, expand_mhc_streams, sinkhorn_doubly_stochastic
-from .hybrid import CompressedContextResidualLayer, HybridCausalLMOutput, HybridModelError, IQHybridConfig, IQHybridForCausalLM, Mamba3ResidualLayer, DenseContextResidualLayer, MambaPackedLayout, pack_mamba_varlen, unpack_mamba_varlen, validate_canonical_hybrid_backbone
+from .hybrid import CompressedContextResidualLayer, HybridCausalLMOutput, HybridModelError, IQHybridConfig, IQHybridForCausalLM, IQHybridInferenceCache, Mamba3ResidualLayer, DenseContextResidualLayer, MambaPackedLayout, pack_mamba_varlen, unpack_mamba_varlen, validate_canonical_hybrid_backbone
 from .objectives import IndexerObjectiveError, MTPConfig, MTPConfigError, MTPDepthOutput, MTPOutput, MTPPredictionBlock, MultiTokenPrediction, lightning_indexer_kl_loss, lightning_indexer_topk_recall
 from .mlp import MoEConfigError, MoEOutput, RoutedMoEConfig, RoutedSwiGLUMoE, RoutedSwiGLUMoELayer, SiTUAndMul, SiTUExpert, StableLatentMoE, StableLatentMoEConfig, StableLatentMoEError, StableLatentMoELayer, StableLatentMoEOutput, SwiGLU, SwiGLUExpert
 from .architecture import ArchitectureError, HybridLayerType, HybridSchedule
@@ -18,6 +18,9 @@ from .state import (
 from .adapters import DoRALinear, install_dora
 from .attention import (
     CompressedContextConfig,
+    DeepseekV4CSACache,
+    DeepseekV4HCACache,
+    DenseContextCache,
     CompressedContextError,
     CompressedSparseContextAttention,
     IndexerSegmentScores,
@@ -48,6 +51,9 @@ __all__ = [
     "ManifoldHyperConnection",
     "CompressedContextResidualLayer",
     "CompressedContextConfig",
+    "DeepseekV4CSACache",
+    "DeepseekV4HCACache",
+    "DenseContextCache",
     "CompressedContextError",
     "CompressedSparseContextAttention",
     "DenseContextAttention",
@@ -57,6 +63,7 @@ __all__ = [
     "HybridModelError",
     "IQHybridConfig",
     "IQHybridForCausalLM",
+    "IQHybridInferenceCache",
     "MambaPackedLayout",
     "Mamba3ResidualLayer",
     "DenseContextResidualLayer",
