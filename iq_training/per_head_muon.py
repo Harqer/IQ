@@ -169,7 +169,9 @@ class PerHeadMuon(torch.optim.Optimizer):
                     (part.shape[0], part.shape[1]),
                     group["adjust_lr_fn"],
                 )
-                update_parts.append(update * adjusted)
+                # Keep Muon LR scaling at parameter precision; do not round
+                # the scaled update back into BF16 before param.add_.
+                update_parts.append(update.float() * adjusted)
             update = torch.stack(update_parts, dim=0).reshape_as(param)
             param.mul_(1.0 - group["lr"] * group["weight_decay"])
             param.add_(update.to(param.dtype), alpha=-1.0)
