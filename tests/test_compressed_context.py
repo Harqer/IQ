@@ -249,6 +249,36 @@ class CompressedContextAttentionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "batch size"):
             attention(torch.randn(2, 1, self.config().hidden_size), past_key_values=cache)
 
+    def test_v4_interleaved_partial_rope_uses_fp32_math_in_low_precision(self):
+        # Pinned Transformers DeepseekV4.apply_rotary_pos_emb:
+        # (rope.float() * cos + rotate_half(rope).float() * sin).to(x.dtype)
+        # with adjacent (even, odd) rotary pairs in the trailing rope slice.
+        torch.manual_seed(45)
+        rotary = InterleavedRotaryEmbedding(4, 64, 10000.0)
+        positions = torch.tensor([[0, 3, 6, 17, 22], [1, 2, 10, 15, 31]])
+        for dtype in (torch.float16, torch.bfloat16):
+            cos, sin = rotary.cos_sin(
+                positions, dtype=dtype, device=torch.device("cpu")
+            )
+            x = torch.randn(2, 3, 5, 8).to(dtype)
+            nope, rope = x[..., :-4], x[..., -4:]
+            hf_rotate_half = torch.stack(
+                (-rope[..., 1::2], rope[..., 0::2]), dim=-1
+            ).flatten(-2)
+            for inverse in (False, True):
+                sign = -1.0 if inverse else 1.0
+                expected_rope = (
+                    rope.float() * cos.unsqueeze(1).float()
+                    + sign * hf_rotate_half.float() * sin.unsqueeze(1).float()
+                ).to(dtype)
+                expected = torch.cat((nope, expected_rope), dim=-1)
+                actual = (
+                    apply_inverse_partial_rotary_at_end(x, cos, sin, 4)
+                    if inverse
+                    else apply_partial_rotary_at_end(x, cos, sin, 4)
+                )
+                torch.testing.assert_close(actual, expected, atol=0, rtol=0)
+
     def test_interleaved_partial_rope_inverse_round_trip(self):
         torch.manual_seed(34)
         rope = InterleavedRotaryEmbedding(4, 32, 10000.0)
