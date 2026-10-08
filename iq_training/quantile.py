@@ -35,6 +35,7 @@ class QuantileBalancingWindow:
         *,
         backend: str = "exact",
         histogram_bins: int = 1000,
+        process_group: torch.distributed.ProcessGroup | None = None,
     ) -> None:
         if backend not in {"exact", "histogram"}:
             raise ValueError("QB backend must be exact or histogram")
@@ -42,6 +43,8 @@ class QuantileBalancingWindow:
             raise ValueError("QB histogram_bins must exceed 1")
         self.backend = backend
         self.histogram_bins = histogram_bins
+        self.process_group = process_group
+        self._global_tokens: int | None = None
         self.layers = {
             name: module
             for name, module in model.named_modules()
@@ -63,17 +66,25 @@ class QuantileBalancingWindow:
         return self._tokens
 
     def __enter__(self) -> QuantileBalancingWindow:
-        if (
-            self.backend == "exact"
-            and self.layers
-            and torch.distributed.is_available()
+        distributed = (
+            torch.distributed.is_available()
             and torch.distributed.is_initialized()
-            and torch.distributed.get_world_size() > 1
-        ):
+        )
+        if self.process_group is not None and not distributed:
             raise QuantileBalancingError(
-                "distributed Stable LatentMoE requires the histogram backend "
-                "with a global per-expert all-reduce; local quantiles are invalid"
+                "QB process_group provided but torch.distributed is not initialized"
             )
+        if self.layers and distributed and torch.distributed.get_world_size() > 1:
+            if self.backend == "exact":
+                raise QuantileBalancingError(
+                    "distributed Stable LatentMoE requires the histogram backend "
+                    "with a global per-expert all-reduce; local quantiles are invalid"
+                )
+            if self.process_group is None:
+                raise QuantileBalancingError(
+                    "distributed K3 histogram requires an explicit process_group "
+                    "matching the model's synchronized expert replicas"
+                )
         for name, module in self.layers.items():
             if self.backend == "histogram":
                 current = module.routing_bias.detach().float()
@@ -223,7 +234,9 @@ class QuantileBalancingWindow:
                 # The single count all-reduce implements Kimi K3 Appendix D.
                 # All ranks must start with synchronized routing biases.
                 torch.distributed.all_reduce(
-                    counts, op=torch.distributed.ReduceOp.SUM
+                    counts,
+                    op=torch.distributed.ReduceOp.SUM,
+                    group=self.process_group,
                 )
         totals = counts.sum(dim=1)
         if bool((totals == 0).any()) or not bool(torch.equal(totals, totals[0].expand_as(totals))):
@@ -231,6 +244,7 @@ class QuantileBalancingWindow:
                 "QB histogram experts have inconsistent global token counts"
             )
         total = int(totals[0])
+        self._global_tokens = total
         target = total * module.config.top_k / module.config.num_experts
         cumulative = counts.cumsum(dim=1)
         selected = (cumulative >= ceil(target)).to(torch.int64).argmax(dim=1)
@@ -268,6 +282,7 @@ class QuantileBalancingWindow:
                     "event": "quantile_balancing_committed",
                     "moe_layers": len(self.layers),
                     "valid_tokens": self._tokens,
+                    "global_valid_tokens": self._global_tokens,
                     "backend": self.backend,
                 },
             )
