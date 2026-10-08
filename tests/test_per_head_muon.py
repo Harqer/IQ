@@ -51,6 +51,48 @@ class PerHeadMuonTests(unittest.TestCase):
         torch.testing.assert_close(parameter.detach(), expected, atol=1e-6, rtol=1e-6)
         torch.testing.assert_close(optimizer.state[parameter]["momentum_buffer"], buffer)
 
+    def test_single_head_matches_official_torch_muon_for_two_updates(self):
+        # With only one head, headwise Muon must collapse to the documented
+        # PyTorch Muon algorithm. This is an independent implementation
+        # cross-check, not an assertion using our own NS implementation twice.
+        torch.manual_seed(144)
+        initial = torch.randn(2, 7)
+        ours_param = nn.Parameter(initial.clone())
+        torch_param = nn.Parameter(initial.clone())
+        ours = PerHeadMuon(
+            {ours_param: HeadLayout(1, 2)},
+            lr=0.01,
+            weight_decay=0.02,
+            momentum=0.95,
+            nesterov=True,
+            ns_steps=5,
+            adjust_lr_fn="match_rms_adamw",
+        )
+        reference = torch.optim.Muon(
+            [torch_param],
+            lr=0.01,
+            weight_decay=0.02,
+            momentum=0.95,
+            nesterov=True,
+            ns_steps=5,
+            adjust_lr_fn="match_rms_adamw",
+        )
+        for _ in range(2):
+            grad = torch.randn_like(initial)
+            ours_param.grad = grad.clone()
+            torch_param.grad = grad.clone()
+            ours.step()
+            reference.step()
+            torch.testing.assert_close(
+                ours_param.detach(), torch_param.detach(),
+                atol=1e-6, rtol=1e-6,
+            )
+            torch.testing.assert_close(
+                ours.state[ours_param]["momentum_buffer"],
+                reference.state[torch_param]["momentum_buffer"],
+                atol=0, rtol=0,
+            )
+
     def test_independent_head_is_unaffected_by_other_head_gradient(self):
         torch.manual_seed(141)
         initial = torch.randn(4, 7)
