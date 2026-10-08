@@ -836,7 +836,7 @@ class _V4CompressedContextAttention(nn.Module):
             )
             q = self._rope(q, positions)
             local = self.kv_norm(self.kv_proj(hidden))
-            local = self._rope(local, positions).unsqueeze(1)
+            local = self._rope(local, positions)
             local = cache.update(local, local)
             compressed = self._cache_compress(cache, "compressor", hidden)
             index_kv = (
