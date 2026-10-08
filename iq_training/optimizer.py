@@ -185,7 +185,19 @@ class IQOptimizer:
 
     def step(self, closure=None):
         if closure is not None:
-            raise ValueError("IQOptimizer does not support closures across two optimizers")
+            raise ValueError("IQOptimizer does not support closures across optimizers")
+        # Muon, Per-Head Muon and AdamW mutate different tensors. Detect
+        # nonfinite gradients before ANY optimizer mutates parameters; never
+        # silently skip a failed update or call a fallback optimizer.
+        for group in self.param_groups:
+            for parameter in group["params"]:
+                grad = parameter.grad
+                if grad is None:
+                    continue
+                if grad.is_sparse or not bool(torch.isfinite(grad).all()):
+                    raise FloatingPointError(
+                        "optimizer gradient is sparse or non-finite"
+                    )
         muon_loss = self.muon.step() if self.muon is not None else None
         head_loss = (
             self.per_head_muon.step() if self.per_head_muon is not None else None
