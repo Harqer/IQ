@@ -127,6 +127,8 @@ def train_step(
     optimizer: IQOptimizer,
     microbatches: Iterable[Mapping[str, torch.Tensor]],
     config: TrainStepConfig = TrainStepConfig(),
+    *,
+    quantile_process_group: torch.distributed.ProcessGroup | None = None,
 ) -> TrainStepMetrics:
     batches = list(microbatches)
     if len(batches) != config.gradient_accumulation_steps:
@@ -156,6 +158,7 @@ def train_step(
         model,
         backend=config.quantile_balancing_backend,
         histogram_bins=config.quantile_histogram_bins,
+        process_group=quantile_process_group,
     ) as balancing:
         for batch in batches:
             model_inputs = _validate_batch(batch)
