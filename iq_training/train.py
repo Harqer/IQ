@@ -6,6 +6,7 @@ from typing import Iterable, Mapping
 import torch
 
 from .optimizer import IQOptimizer
+from .quantile import QuantileBalancingWindow
 
 
 class TrainingError(RuntimeError):
@@ -143,42 +144,55 @@ def train_step(
             f"path on {device_type}"
         )
 
-    for batch in batches:
-        model_inputs = _validate_batch(batch)
-        attention_mask = model_inputs.get("attention_mask")
-        token_count += (
-            int(attention_mask.to(dtype=torch.bool).sum())
-            if attention_mask is not None
-            else int(model_inputs["input_ids"].numel())
-        )
-        with torch.autocast(
-            device_type=device_type,
-            dtype=torch.bfloat16,
-            enabled=use_bf16,
-        ):
-            output = model(**model_inputs)
-            if (
-                output.loss is None
-                or not bool(torch.isfinite(output.loss))
-            ):
-                raise TrainingError(
-                    "model produced a missing or non-finite loss"
-                )
-            scaled_loss = (
-                output.loss
-                / config.gradient_accumulation_steps
+    # Kimi K3 Quantile Balancing samples *the full optimizer step*, not each
+    # microbatch separately. Bias remains frozen until the optimizer succeeds.
+    with QuantileBalancingWindow(model) as balancing:
+        for batch in batches:
+            model_inputs = _validate_batch(batch)
+            attention_mask = model_inputs.get("attention_mask")
+            token_count += (
+                int(attention_mask.to(dtype=torch.bool).sum())
+                if attention_mask is not None
+                else int(model_inputs["input_ids"].numel())
             )
-        scaled_loss.backward()
-        loss_sum += float(output.loss.detach())
+            balancing.begin_microbatch(attention_mask)
+            try:
+                with torch.autocast(
+                    device_type=device_type,
+                    dtype=torch.bfloat16,
+                    enabled=use_bf16,
+                ):
+                    output = model(**model_inputs)
+                    if (
+                        output.loss is None
+                        or not bool(torch.isfinite(output.loss))
+                    ):
+                        raise TrainingError(
+                            "model produced a missing or non-finite loss"
+                        )
+                    scaled_loss = (
+                        output.loss
+                        / config.gradient_accumulation_steps
+                    )
+            finally:
+                balancing.end_microbatch()
+            scaled_loss.backward()
+            loss_sum += float(output.loss.detach())
 
-    _assert_finite_gradients(model)
-    grad_norm_tensor = torch.nn.utils.clip_grad_norm_(
-        model.parameters(),
-        config.max_grad_norm,
-    )
-    if not bool(torch.isfinite(grad_norm_tensor)):
-        raise TrainingError("gradient norm is non-finite")
-    optimizer.step()
+        _assert_finite_gradients(model)
+        grad_norm_tensor = torch.nn.utils.clip_grad_norm_(
+            model.parameters(),
+            config.max_grad_norm,
+        )
+        if not bool(torch.isfinite(grad_norm_tensor)):
+            raise TrainingError("gradient norm is non-finite")
+
+        # Compute and validate every layer's proposed bias before the step.
+        # A thrown optimizer/gradient error must leave every routing bias at
+        # the previous value and discard all detached router observations.
+        next_biases = balancing.propose()
+        optimizer.step()
+        balancing.commit(next_biases)
 
     return TrainStepMetrics(
         loss=loss_sum / len(batches),
