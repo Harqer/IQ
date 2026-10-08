@@ -36,22 +36,26 @@ def newton_schulz_zeropower(
     steps: int,
     eps: float = 1e-7,
 ) -> torch.Tensor:
-    """PyTorch Muon quintic Newton-Schulz, computed in FP32 for CPU auditability."""
+    """PyTorch Muon's BF16 quintic Newton-Schulz for each isolated head."""
     if matrix.ndim != 2 or steps <= 0 or steps >= 100 or eps <= 0:
         raise ValueError("invalid Newton-Schulz matrix, iterations, or epsilon")
     if not bool(torch.isfinite(matrix).all()):
         raise FloatingPointError("non-finite per-head Muon momentum")
-    x = matrix.detach().float().clone()
+    # Mirror torch.optim._muon._zeropower_via_newtonschulz rather than
+    # silently substituting FP32. Kimi K3 changes the head *partition*, not
+    # the underlying Muon momentum and orthogonalization semantics.
+    x = matrix.detach().to(torch.bfloat16, copy=True)
     transpose = x.shape[0] > x.shape[1]
     if transpose:
-        x = x.T.contiguous()
-    x = x / x.norm().clamp_min(eps)
+        x = x.T
+    x.div_(x.norm().clamp(min=eps))
     a, b, c = 3.4445, -4.7750, 2.0315
     for _ in range(steps):
         gram = x @ x.T
-        x = a * x + b * (gram @ x) + c * ((gram @ gram) @ x)
+        gram_update = torch.addmm(gram, gram, gram, beta=b, alpha=c)
+        x = torch.addmm(x, gram_update, x, beta=a)
     if transpose:
-        x = x.T.contiguous()
+        x = x.T
     return x
 
 
