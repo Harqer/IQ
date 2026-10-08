@@ -1,0 +1,51 @@
+name: Mamba-3 H200 hybrid parity
+
+# Hardware parity cannot run on the CPU-only model-tests runner. An H200
+# self-hosted runner must be available and manually selected; this workflow
+# cannot silently satisfy its acceptance gate by skipping CUDA tests.
+on:
+  workflow_dispatch:
+    inputs:
+      runner_label:
+        description: 'Label of an authorized H200 self-hosted runner'
+        required: true
+        type: string
+        default: self-hosted
+
+permissions:
+  contents: read
+
+jobs:
+  h200-parity:
+    runs-on: ${{ inputs.runner_label }}
+    timeout-minutes: 180
+    steps:
+      - name: Check out pinned IQ source
+        uses: actions/checkout@v4
+      - name: Confirm H200 hardware
+        shell: bash
+        run: |
+          set -euo pipefail
+          nvidia-smi -L
+          nvidia-smi -L | grep -q "H200"
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install pinned production Mamba-3 MIMO
+        shell: bash
+        run: bash scripts/install_model_runtime.sh
+      - name: Assert actual CuTe decode kernel
+        shell: bash
+        run: |
+          python - <<'PY'
+          from mamba_ssm.modules import mamba3
+          if mamba3.mamba3_step_fn is None:
+              raise SystemExit("Pinned Mamba-3 CuTe step kernel unavailable")
+          PY
+      - name: Validate production MIMO forward and step
+        shell: bash
+        run: python scripts/verify_mamba3_mimo_h200.py
+      - name: Validate heterogeneous IQ prefill/decode parity
+        shell: bash
+        run: python -m unittest tests.test_hybrid_incremental_cuda -v
