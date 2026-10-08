@@ -272,11 +272,26 @@ class Mamba3MIMOState(nn.Module):
             raise Mamba3MIMORuntimeError(
                 "IQ Mamba-3 MIMO forward requires CUDA; no CPU/SISO fallback is allowed"
             )
-        output = self.core(
-            hidden_states,
-            cu_seqlens=cu_seqlens,
-            inference_params=inference_params,
-        )
+        if inference_params is not None and inference_params.seqlen_offset > 0:
+            # Pinned upstream Mamba3.forward hands [B, 1, D] to step(), but
+            # Mamba3.step's documented projection/rearrange operates on [B, D].
+            # Call the upstream decode API with its actual input shape and
+            # preserve its in-place angle/SSM/K/V cache updates.
+            if hidden_states.shape[1] != 1:
+                raise Mamba3MIMORuntimeError(
+                    "Mamba-3 cached decode requires one token per forward call"
+                )
+            states = self.core._get_states_from_cache(
+                inference_params, hidden_states.shape[0]
+            )
+            output, _, _, _, _ = self.core.step(hidden_states[:, 0], *states)
+            output = output.unsqueeze(1)
+        else:
+            output = self.core(
+                hidden_states,
+                cu_seqlens=cu_seqlens,
+                inference_params=inference_params,
+            )
         if output.shape != hidden_states.shape:
             raise Mamba3MIMORuntimeError(
                 f"Mamba-3 output shape changed unexpectedly: {tuple(output.shape)}"
