@@ -56,7 +56,7 @@ class PerHeadMuonTests(unittest.TestCase):
         initial = torch.randn(4, 7)
         g1 = torch.randn(4, 7)
         g2 = g1.clone()
-        g2[2:] *= 1100
+        g2[2:] = -g1[2:]  # change head direction, not just its scale
         outputs = []
         for grad in (g1, g2):
             p = nn.Parameter(initial.clone())
