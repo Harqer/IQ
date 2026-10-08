@@ -149,6 +149,36 @@ class CompressedContextAttentionTests(unittest.TestCase):
                                 torch.full_like(scores.selected_indices[~expected.any(dim=1)], -1))
                 )
 
+    def test_csa_overlap_uses_previous_ca_and_current_cb(self):
+        # DeepseekV4CSACompressor uses previous-window Ca and current-window Cb.
+        torch.manual_seed(36)
+        config = self.config()
+        model = CompressedSparseContextAttention(config).eval()
+        hidden = torch.randn(2 * config.csa_compress_rate, config.hidden_size)
+        positions = torch.arange(hidden.shape[0])
+        rate = config.csa_compress_rate
+        with torch.no_grad():
+            kv = model.compressor_kv_proj(hidden).view(2, rate, 2 * config.head_dim)
+            gate = (
+                model.compressor_gate_proj(hidden).view(2, rate, 2 * config.head_dim)
+                + model.compressor_position_bias
+            )
+            combined_kv = torch.cat(
+                [kv[0, :, :config.head_dim], kv[1, :, config.head_dim:]], dim=0
+            )
+            combined_gate = torch.cat(
+                [gate[0, :, :config.head_dim], gate[1, :, config.head_dim:]], dim=0
+            )
+            weights = combined_gate.softmax(dim=0, dtype=torch.float32).to(kv.dtype)
+            expected = model.compressor_kv_norm(
+                (combined_kv * weights).sum(dim=0)
+            )
+            expected = model._rope(
+                expected.view(1, 1, -1), positions[rate:rate + 1]
+            ).squeeze(0).squeeze(0)
+            actual = model._compress_main(hidden, positions)[1]
+        torch.testing.assert_close(actual, expected, rtol=1e-5, atol=1e-6)
+
     def test_interleaved_partial_rope_inverse_round_trip(self):
         torch.manual_seed(34)
         rope = InterleavedRotaryEmbedding(4, 32, 10000.0)
