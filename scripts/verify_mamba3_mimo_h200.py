@@ -141,6 +141,26 @@ def main() -> None:
             mixed_out.float(), full_ref.float(), rtol=RTOL, atol=ATOL
         )
 
+        # Verify the public IQ wrapper's cached decode path, not just core.step.
+        cached = Mamba3MIMOState(
+            _config(chunk_size=16),
+            layer_idx=0,
+            dtype=torch.bfloat16,
+            device=device,
+        ).eval()
+        cached.load_state_dict(prod.state_dict(), strict=True)
+        cached_params = InferenceParams(max_seqlen=SEQLEN, max_batch_size=BATCH)
+        cached_prefix = cached(x[:, :split], inference_params=cached_params)
+        cached_params.seqlen_offset = split
+        cached_suffix = [
+            cached(x[:, t:t + 1], inference_params=cached_params)
+            for t in range(split, SEQLEN)
+        ]
+        cached_output = torch.cat([cached_prefix, *cached_suffix], dim=1)
+        torch.testing.assert_close(
+            cached_output.float(), full_ref.float(), rtol=RTOL, atol=ATOL
+        )
+
     print(
         "Mamba-3 rank-4 MIMO H200 gate passed:",
         {
