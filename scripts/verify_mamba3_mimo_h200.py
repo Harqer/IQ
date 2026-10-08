@@ -77,7 +77,7 @@ def main() -> None:
     ).eval()
     ref.load_state_dict(
         {name: tensor.detach().float() for name, tensor in prod.state_dict().items()},
-        strict=False,
+        strict=True,
     )
 
     x = torch.randn(BATCH, SEQLEN, 4096, device=device, dtype=torch.bfloat16)
