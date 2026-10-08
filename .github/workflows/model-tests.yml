@@ -35,7 +35,7 @@ jobs:
 
       - name: Compile Python packages
         run: |
-          python -m compileall -q iq_model iq_training iq_transfer iq_harness
+          python -m compileall -q iq_model iq_training iq_transfer iq_harness scripts
 
       - name: Run unit suite
         run: |
