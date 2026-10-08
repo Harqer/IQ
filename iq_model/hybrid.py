@@ -954,6 +954,12 @@ class IQHybridForCausalLM(nn.Module):
                 > inference_cache.mamba.max_seqlen
             ):
                 raise HybridModelError("inference cache maximum sequence length exceeded")
+            if inference_cache.mamba.seqlen_offset > 0 and input_ids.shape[1] != 1:
+                # Pinned Mamba3.step only consumes one token. Reject the
+                # unsupported chunk BEFORE CSA/HCA/dense caches mutate.
+                raise HybridModelError(
+                    "cached generation after prefill requires exactly one token per call"
+                )
             if labels is not None or document_ids is not None:
                 raise HybridModelError("cached generation does not accept labels or packed documents")
             if attention_mask is not None and not bool(attention_mask.to(torch.bool).all()):
