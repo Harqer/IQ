@@ -44,7 +44,7 @@ class PerHeadMuonTests(unittest.TestCase):
         for head in range(3):
             block = raw[head * 2:(head + 1) * 2]
             updates.append(
-                newton_schulz_zeropower(block, steps=5)
+                newton_schulz_zeropower(block, steps=5).float()
                 * (0.02 * 0.2 * max(2, 5)**0.5)
             )
         expected -= torch.cat(updates)
