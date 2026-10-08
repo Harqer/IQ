@@ -18,7 +18,7 @@ class QuantileBalancingError(RuntimeError):
 
 
 class QuantileBalancingWindow:
-    """Exact single-process Kimi-K3 QB statistics for one optimizer update.
+    """Kimi-K3 exact or globally reduced histogram QB for one optimizer update.
 
     Hooks only observe genuine StableLatentMoE outputs while train_step runs.
     The old routing biases remain fixed throughout all gradient-accumulation
@@ -75,6 +75,20 @@ class QuantileBalancingWindow:
                 "with a global per-expert all-reduce; local quantiles are invalid"
             )
         for name, module in self.layers.items():
+            if self.backend == "histogram":
+                current = module.routing_bias.detach().float()
+                self._ranges[name] = (
+                    float(current.min()) - 1.0,
+                    float(current.max()) + 1.0,
+                )
+                self._histograms[name] = torch.zeros(
+                    module.config.num_experts,
+                    self.histogram_bins,
+                    device=current.device,
+                    dtype=torch.int64,
+                )
+                # Even a rank with no valid tokens must enter the collective
+                # once; an absent local histogram would deadlock other ranks.
             self._handles.append(
                 module.register_forward_hook(self._capture(name))
             )
@@ -158,10 +172,7 @@ class QuantileBalancingWindow:
             flattened_indices,
             minlength=scores.shape[1] * bins,
         ).reshape(scores.shape[1], bins).to(torch.int64)
-        if name in self._histograms:
-            self._histograms[name].add_(counts)
-        else:
-            self._histograms[name] = counts
+        self._histograms[name].add_(counts)
         self._counts[name] += scores.shape[0]
 
     def begin_microbatch(self, mask: torch.Tensor | None) -> None:
