@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from math import ceil
 from collections.abc import Mapping
 
 import torch
@@ -28,7 +29,19 @@ class QuantileBalancingWindow:
     quantile is not a valid silent replacement for a distributed global batch.
     """
 
-    def __init__(self, model: nn.Module) -> None:
+    def __init__(
+        self,
+        model: nn.Module,
+        *,
+        backend: str = "exact",
+        histogram_bins: int = 1000,
+    ) -> None:
+        if backend not in {"exact", "histogram"}:
+            raise ValueError("QB backend must be exact or histogram")
+        if histogram_bins <= 1:
+            raise ValueError("QB histogram_bins must exceed 1")
+        self.backend = backend
+        self.histogram_bins = histogram_bins
         self.layers = {
             name: module
             for name, module in model.named_modules()
@@ -37,6 +50,9 @@ class QuantileBalancingWindow:
         self._scores: dict[str, list[torch.Tensor]] = {
             name: [] for name in self.layers
         }
+        self._histograms: dict[str, torch.Tensor] = {}
+        self._ranges: dict[str, tuple[float, float]] = {}
+        self._counts: dict[str, int] = {name: 0 for name in self.layers}
         self._handles: list[torch.utils.hooks.RemovableHandle] = []
         self._mask: torch.Tensor | None = None
         self._in_microbatch = False
@@ -47,12 +63,17 @@ class QuantileBalancingWindow:
         return self._tokens
 
     def __enter__(self) -> QuantileBalancingWindow:
-        if self.layers and torch.distributed.is_available() and torch.distributed.is_initialized():
-            if torch.distributed.get_world_size() > 1:
-                raise QuantileBalancingError(
-                    "distributed Stable LatentMoE needs global all-reduced "
-                    "K3 histogram quantiles; local exact quantiles are not valid"
-                )
+        if (
+            self.backend == "exact"
+            and self.layers
+            and torch.distributed.is_available()
+            and torch.distributed.is_initialized()
+            and torch.distributed.get_world_size() > 1
+        ):
+            raise QuantileBalancingError(
+                "distributed Stable LatentMoE requires the histogram backend "
+                "with a global per-expert all-reduce; local quantiles are invalid"
+            )
         for name, module in self.layers.items():
             self._handles.append(
                 module.register_forward_hook(self._capture(name))
@@ -90,12 +111,58 @@ class QuantileBalancingWindow:
             if scores.numel():
                 if not bool(torch.isfinite(scores).all()):
                     raise QuantileBalancingError("router scores are not finite")
-                self._scores[name].append(scores.float())
+                scores = scores.float()
+                if self.backend == "exact":
+                    self._scores[name].append(scores)
+                else:
+                    self._accumulate_histogram(name, module, scores)
                 # All stable layers see the same logical tokens, so count once.
                 if name == next(iter(self.layers)):
                     self._tokens += scores.shape[0]
 
         return record
+
+    @torch.no_grad()
+    def _accumulate_histogram(
+        self, name: str, module: StableLatentMoE, scores: torch.Tensor
+    ) -> None:
+        # Kimi K3 Appendix D: required bias r = alpha - raw_score lies in
+        # [old_bias.min() - 1, old_bias.max() + 1], since scores are sigmoid.
+        current = module.routing_bias.detach().float()
+        lower = float(current.min()) - 1.0
+        upper = float(current.max()) + 1.0
+        if name not in self._ranges:
+            self._ranges[name] = (lower, upper)
+        elif self._ranges[name] != (lower, upper):
+            raise QuantileBalancingError(
+                "routing bias changed within the logical QB batch"
+            )
+        cutoff = (
+            scores + current.unsqueeze(0)
+        ).topk(module.config.top_k + 1, dim=-1).values[:, -1]
+        required = cutoff.unsqueeze(-1) - scores
+        if bool(((required < lower - 1e-5) | (required > upper + 1e-5)).any()):
+            raise QuantileBalancingError("QB margin exceeded the published histogram range")
+        bins = self.histogram_bins
+        indices = (
+            ((required - lower) / (upper - lower) * bins)
+            .floor()
+            .long()
+            .clamp_(0, bins - 1)
+        )
+        expert_ids = torch.arange(
+            scores.shape[1], device=scores.device
+        ).expand(scores.shape[0], -1)
+        flattened_indices = (expert_ids * bins + indices).reshape(-1)
+        counts = torch.bincount(
+            flattened_indices,
+            minlength=scores.shape[1] * bins,
+        ).reshape(scores.shape[1], bins).to(torch.int64)
+        if name in self._histograms:
+            self._histograms[name].add_(counts)
+        else:
+            self._histograms[name] = counts
+        self._counts[name] += scores.shape[0]
 
     def begin_microbatch(self, mask: torch.Tensor | None) -> None:
         if self._in_microbatch:
@@ -113,12 +180,15 @@ class QuantileBalancingWindow:
             raise QuantileBalancingError("cannot propose during an active forward")
         next_bias: dict[str, torch.Tensor] = {}
         for name, module in self.layers.items():
-            if not self._scores[name]:
-                raise QuantileBalancingError(
-                    f"no valid routing observations for layer {name}"
-                )
-            scores = torch.cat(self._scores[name], dim=0)
-            candidate = module.compute_next_routing_bias(scores)
+            if self.backend == "exact":
+                if not self._scores[name]:
+                    raise QuantileBalancingError(
+                        f"no valid routing observations for layer {name}"
+                    )
+                scores = torch.cat(self._scores[name], dim=0)
+                candidate = module.compute_next_routing_bias(scores)
+            else:
+                candidate = self._histogram_proposal(name, module)
             if candidate.shape != module.routing_bias.shape or not bool(
                 torch.isfinite(candidate).all()
             ):
@@ -127,6 +197,46 @@ class QuantileBalancingWindow:
                 )
             next_bias[name] = candidate
         return next_bias
+
+    @torch.no_grad()
+    def _histogram_proposal(
+        self, name: str, module: StableLatentMoE
+    ) -> torch.Tensor:
+        if name not in self._histograms:
+            raise QuantileBalancingError(
+                f"no routing histogram available for layer {name}"
+            )
+        counts = self._histograms[name].clone()
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            if torch.distributed.get_world_size() > 1:
+                # The single count all-reduce implements Kimi K3 Appendix D.
+                # All ranks must start with synchronized routing biases.
+                torch.distributed.all_reduce(
+                    counts, op=torch.distributed.ReduceOp.SUM
+                )
+        totals = counts.sum(dim=1)
+        if bool((totals == 0).any()) or not bool(torch.equal(totals, totals[0].expand_as(totals))):
+            raise QuantileBalancingError(
+                "QB histogram experts have inconsistent global token counts"
+            )
+        total = int(totals[0])
+        target = total * module.config.top_k / module.config.num_experts
+        cumulative = counts.cumsum(dim=1)
+        selected = (cumulative >= ceil(target)).to(torch.int64).argmax(dim=1)
+        selected_count = counts.gather(1, selected.unsqueeze(-1)).squeeze(-1)
+        prefix_count = cumulative.gather(
+            1, (selected - 1).clamp_min(0).unsqueeze(-1)
+        ).squeeze(-1)
+        prefix_count = torch.where(selected > 0, prefix_count, torch.zeros_like(prefix_count))
+        if bool((selected_count == 0).any()):
+            raise QuantileBalancingError("QB quantile bin is empty")
+        fraction = (
+            (target - prefix_count.float()) / selected_count.float()
+        ).clamp(0.0, 1.0)
+        lower, upper = self._ranges[name]
+        width = (upper - lower) / self.histogram_bins
+        estimated = lower + (selected.float() + fraction) * width
+        return estimated - estimated.mean()
 
     @torch.no_grad()
     def commit(self, proposals: Mapping[str, torch.Tensor]) -> None:
@@ -147,6 +257,7 @@ class QuantileBalancingWindow:
                     "event": "quantile_balancing_committed",
                     "moe_layers": len(self.layers),
                     "valid_tokens": self._tokens,
+                    "backend": self.backend,
                 },
             )
 
@@ -158,6 +269,9 @@ class QuantileBalancingWindow:
         self._mask = None
         for entries in self._scores.values():
             entries.clear()
+        self._histograms.clear()
+        self._ranges.clear()
+        self._counts.clear()
         if exc_type is not None and self.layers:
             logger.warning(
                 "quantile_balancing_discarded",
