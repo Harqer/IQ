@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tempfile
+import runpy
 import unittest
 from pathlib import Path
 
@@ -55,6 +56,15 @@ class Mamba3MIMOContractTests(unittest.TestCase):
                 mimo_rank=3,
                 dtype=torch.bfloat16,
             )
+
+    def test_h200_verification_uses_pinned_production_mimo_configuration(self):
+        # This imports the actual verification script without executing main()
+        # or requiring a CUDA device; a wrong float32 chunk size previously
+        # made the real H200 verification fail at construction.
+        source = Path(__file__).resolve().parents[1] / "scripts" / "verify_mamba3_mimo_h200.py"
+        verifier = runpy.run_path(str(source))
+        self.assertEqual(verifier["_config"](), Mamba3MIMOConfig.production_4096x32())
+        self.assertEqual(verifier["_config"]().chunk_size, 16)
 
     def test_cpu_target_fails_instead_of_falling_back(self):
         with self.assertRaises(Mamba3MIMORuntimeError):
