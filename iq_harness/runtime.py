@@ -207,7 +207,15 @@ class AgentRuntime:
             depth=parent.depth + 1,
         )
         self._trace(parent, "delegate.start", {"target": target, "child_run_id": child.run_id})
-        result = self._drive(child, persist=None)
+        try:
+            result = self._drive(child, persist=None)
+        except Exception as exc:
+            self._trace(parent, "delegate.error", {
+                "target": target,
+                "child_run_id": child.run_id,
+                "error_code": type(exc).__name__,
+            })
+            raise
         self._trace(parent, "delegate.end", {"target": target, "child_run_id": child.run_id})
         return result.output
 
@@ -237,7 +245,16 @@ class AgentRuntime:
                 tools=self._descriptors(agent),
             )
             self._trace(state, "model.request", {"turn": state.turns + 1, "tool_count": len(request.tools)})
-            turn = self.model.generate(request)
+            try:
+                turn = self.model.generate(request)
+            except Exception as exc:
+                # The model backend can already have mutated KV/SSM state.
+                # Do not automatically replay a request or change model.
+                self._trace(state, "model.error", {
+                    "turn": state.turns + 1,
+                    "error_code": type(exc).__name__,
+                })
+                raise
             state.turns += 1
             self._trace(state, "model.response", {"tool_calls": [call.name for call in turn.tool_calls]})
 
@@ -308,13 +325,17 @@ class AgentRuntime:
                         )
                 except (SkillError, ToolError, AgentRuntimeError) as exc:
                     result = f"ERROR: {exc}"
-                    self._trace(state, "tool.error", {"name": call.name, "error": str(exc)})
+                    self._trace(state, "tool.error", {
+                        "name": call.name, "error_code": type(exc).__name__
+                    })
 
                 try:
                     self._enforce_guardrails("tool_result", agent.name, result, call=call)
                 except AgentRuntimeError as exc:
                     result = f"ERROR: tool result blocked: {exc}"
-                    self._trace(state, "tool_result.blocked", {"name": call.name, "error": str(exc)})
+                    self._trace(state, "tool_result.blocked", {
+                        "name": call.name, "error_code": type(exc).__name__
+                    })
 
                 tool_message = Message("tool", result, name=call.name, tool_call_id=call.id)
                 state.messages.append(tool_message)
@@ -330,9 +351,6 @@ class AgentRuntime:
         history = session.load() if session else []
         user_message = Message("user", user_input)
         history.append(user_message)
-        self._enforce_guardrails("input", agent_name, tuple(history))
-        if session:
-            session.append(user_message)
         state = _RunState(
             run_id=str(uuid4()),
             parent_run_id=None,
@@ -340,7 +358,20 @@ class AgentRuntime:
             current_agent=agent_name,
             depth=0,
         )
-        self._trace(state, "run.start", {"input": user_input})
-        result = self._drive(state, persist=session)
-        self._trace(state, "run.end", {"last_agent": result.last_agent, "turns": result.turns})
+        # Never put raw prompts, tool results, tokens, or secrets into traces.
+        self._trace(state, "run.start", {"input_chars": len(user_input)})
+        try:
+            self._enforce_guardrails("input", agent_name, tuple(history))
+            if session:
+                session.append(user_message)
+            result = self._drive(state, persist=session)
+        except Exception as exc:
+            self._trace(state, "run.error", {
+                "error_code": type(exc).__name__, "turns": state.turns
+            })
+            raise
+        self._trace(state, "run.end", {
+            "last_agent": result.last_agent,
+            "turns": result.turns,
+        })
         return result
