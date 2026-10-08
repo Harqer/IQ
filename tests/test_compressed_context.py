@@ -9,6 +9,7 @@ from iq_model import (
     CompressedSparseContextAttention,
     HeavilyCompressedContextAttention,
 )
+from iq_model.attention.compressed import DeepseekV4CSACache, DeepseekV4HCACache
 from iq_model.position import (
     InterleavedRotaryEmbedding,
     apply_inverse_partial_rotary_at_end,
@@ -178,6 +179,75 @@ class CompressedContextAttentionTests(unittest.TestCase):
             ).squeeze(0).squeeze(0)
             actual = model._compress_main(hidden, positions)[1]
         torch.testing.assert_close(actual, expected, rtol=1e-5, atol=1e-6)
+
+    def test_incremental_cache_matches_full_forward_with_unaligned_boundaries(self):
+        # DeepSeek-V4's buffer, overlap and indexer state must survive
+        # prefill -> decode -> prefill without recompressing open windows.
+        torch.manual_seed(37)
+        x = torch.randn(2, 13, self.config().hidden_size)
+        for attention_cls, cache_cls in (
+            (CompressedSparseContextAttention, DeepseekV4CSACache),
+            (HeavilyCompressedContextAttention, DeepseekV4HCACache),
+        ):
+            attention = attention_cls(self.config()).eval()
+            with torch.no_grad():
+                expected = attention(x)
+                for sizes in ((13,), (1,) * 13, (3, 1, 5, 4), (5, 8)):
+                    cache = cache_cls(self.config())
+                    outputs = []
+                    start = 0
+                    for size in sizes:
+                        outputs.append(
+                            attention(
+                                x[:, start : start + size],
+                                past_key_values=cache,
+                            )
+                        )
+                        start += size
+                    actual = torch.cat(outputs, dim=1)
+                    torch.testing.assert_close(actual, expected, atol=2e-5, rtol=2e-5)
+                    self.assertEqual(cache.cumulative_length, x.shape[1])
+                    self.assertEqual(
+                        cache.entry_count["compressor"],
+                        x.shape[1] // cache.compress_rate,
+                    )
+                    self.assertEqual(
+                        cache.buffer_kv["compressor"].shape[1],
+                        x.shape[1] % cache.compress_rate,
+                    )
+                    if isinstance(cache, DeepseekV4CSACache):
+                        self.assertEqual(
+                            cache.entry_count["indexer"],
+                            cache.entry_count["compressor"],
+                        )
+                        self.assertIsNotNone(cache.overlap_kv["compressor"])
+                        self.assertIsNotNone(cache.overlap_kv["indexer"])
+                    cache.reset()
+                    self.assertEqual(cache.cumulative_length, 0)
+                    self.assertEqual(cache.entry_count["compressor"], 0)
+                    torch.testing.assert_close(
+                        attention(x, past_key_values=cache),
+                        expected,
+                        atol=2e-5,
+                        rtol=2e-5,
+                    )
+
+    def test_cache_rejects_cross_sequence_or_packed_state_reuse(self):
+        attention = CompressedSparseContextAttention(self.config()).eval()
+        cache = DeepseekV4CSACache(self.config())
+        x = torch.randn(1, 3, self.config().hidden_size)
+        with torch.no_grad():
+            attention(x, past_key_values=cache)
+        with self.assertRaisesRegex(ValueError, "position_ids"):
+            attention(
+                x[:, :1],
+                position_ids=torch.tensor([[0]]),
+                past_key_values=cache,
+            )
+        with self.assertRaisesRegex(ValueError, "packed"):
+            attention(x[:, :1], document_ids=torch.zeros(1, 1, dtype=torch.long), past_key_values=cache)
+        with self.assertRaisesRegex(ValueError, "batch size"):
+            attention(torch.randn(2, 1, self.config().hidden_size), past_key_values=cache)
 
     def test_interleaved_partial_rope_inverse_round_trip(self):
         torch.manual_seed(34)
