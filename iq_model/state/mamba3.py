@@ -273,14 +273,19 @@ class Mamba3MIMOState(nn.Module):
             raise Mamba3MIMORuntimeError(
                 "IQ Mamba-3 MIMO forward requires CUDA; no CPU/SISO fallback is allowed"
             )
-        if inference_params is not None and inference_params.seqlen_offset > 0:
-            # Pinned upstream Mamba3.forward hands [B, 1, D] to step(), but
-            # Mamba3.step's documented projection/rearrange operates on [B, D].
-            # Call the upstream decode API with its actual input shape and
-            # preserve its in-place angle/SSM/K/V cache updates.
-            if hidden_states.shape[1] != 1:
+        if inference_params is not None and (
+            inference_params.seqlen_offset > 0
+            or (hidden_states.shape[1] == 1 and cu_seqlens is None)
+        ):
+            # Pinned upstream Mamba3.step expects [B, D], not the [B, 1, D]
+            # supplied by Mamba3.forward. The MIMO fused prefill kernel also
+            # fails for sequence length 1 (state-spaces/mamba#985).
+            # For a single-token initial prefill or subsequent decode, use
+            # the upstream step kernel with its four zero-initialized/cached
+            # recurrent states instead of an unsupported fused MIMO prefill.
+            if hidden_states.shape[1] != 1 or cu_seqlens is not None:
                 raise Mamba3MIMORuntimeError(
-                    "Mamba-3 cached decode requires one token per forward call"
+                    "Mamba-3 cached decode requires one unpacked token per call"
                 )
             states = self.core._get_states_from_cache(
                 inference_params, hidden_states.shape[0]
