@@ -116,6 +116,7 @@ class IQGLM53MohawkStage2(nn.Module):
         input_ids: Tensor,
         *,
         teacher_aligned_hidden: Tensor,
+        teacher_alignment_mask: Tensor,
         labels: Tensor | None = None,
         attention_mask: Tensor | None = None,
         position_ids: Tensor | None = None,
@@ -138,8 +139,15 @@ class IQGLM53MohawkStage2(nn.Module):
             mask = attention_mask.to(dtype=torch.bool)
         else:
             mask = torch.ones_like(input_ids, dtype=torch.bool)
+        if (
+            not isinstance(teacher_alignment_mask, Tensor)
+            or teacher_alignment_mask.dtype != torch.bool
+            or teacher_alignment_mask.shape != input_ids.shape
+        ):
+            raise MohawkTrainingError("explicit causal teacher_alignment_mask is required")
+        mask = mask & teacher_alignment_mask
         if not bool(mask.any()):
-            raise MohawkTrainingError("no valid tokens for hidden-state alignment")
+            raise MohawkTrainingError("no valid causally aligned tokens for hidden-state alignment")
         if labels is not None and labels.shape != input_ids.shape:
             raise MohawkTrainingError("labels must match input_ids shape")
 
