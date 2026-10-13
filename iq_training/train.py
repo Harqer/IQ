@@ -103,7 +103,19 @@ def _validate_batch(
             )
         if not bool(torch.isfinite(teacher_hidden).all()):
             raise TrainingError("teacher_aligned_hidden contains non-finite values")
+        alignment_mask = batch.get("teacher_alignment_mask")
+        if (
+            not isinstance(alignment_mask, torch.Tensor)
+            or alignment_mask.dtype != torch.bool
+            or alignment_mask.shape != input_ids.shape
+        ):
+            raise TrainingError(
+                "teacher_alignment_mask must be an explicit boolean [batch, IQ-token] mask"
+            )
         result["teacher_aligned_hidden"] = teacher_hidden
+        result["teacher_alignment_mask"] = alignment_mask
+    elif "teacher_alignment_mask" in batch:
+        raise TrainingError("teacher_alignment_mask requires teacher_aligned_hidden")
 
     reasoning_context_lengths = batch.get("reasoning_context_lengths")
     if reasoning_context_lengths is not None:
