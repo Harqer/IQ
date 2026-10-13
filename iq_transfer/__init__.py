@@ -8,9 +8,10 @@ from .gqa_transport import GQAProjection, GQATransportError, fit_gqa_group_proje
 from .phi_pipeline import PhiDensePlanSpec, PhiLayerMapIds, PhiPipelineError, build_phi_dense_plan_spec, build_phi_dense_transport_plan
 from .executor import DonorRuntime, ExecutionError, TransportExecutionReport, execute_transport_plan
 from .apply import ApplyError, ParameterUpdate, apply_parameter_updates
-from .alignment import AlignmentError, ByteSpan, PairedSpanActivations, TokenByteSpan, align_token_activations_by_bytes, pool_activations_by_byte_spans
+from .alignment import CausalTokenAlignment, align_glm_states_to_mamba_tokens, AlignmentError, ByteSpan, PairedSpanActivations, TokenByteSpan, align_token_activations_by_bytes, pool_activations_by_byte_spans
 from .mamba3_init import Mamba3BootstrapReport, Mamba3BootstrapWeights, Mamba3InitError, Mamba3Layout, TRANSFORMER_TO_MAMBA3, apply_mamba3_bootstrap
 from .mamba3_direct import MAMBA3_MIMO_15B_REPO, MAMBA3_MIMO_15B_REVISION, MAMBA3_MIMO_15B_BIN_SHA256, Mamba3DirectTransferError, Mamba3DirectTransferResult, Mamba3OverlayApplyReport, Mamba3DonorConfig, Mamba3LayerPlacement, apply_mamba3_transplant_overlay, compile_official_mamba3_mimo_15b_transplant, evenly_spaced_layer_placements, expand_mamba3_layer, validate_official_mamba3_mimo_15b_config, validate_official_mamba3_mimo_state
+from .mohawk import MohawkConfig, MohawkStage, hidden_alignment_loss, logits_distillation_loss, matrix_orientation_loss, mohawk_loss
 from .plan import PlanError, TransportPlan
 from .provenance import ParameterProvenance, ProvenanceError, ProvenanceLedger
 from .capture import ActivationTap, CaptureError, TorchActivationCapture, load_capture_records, save_capture_records
@@ -50,6 +51,14 @@ __all__ = [
     "compile_complete_iq_checkpoint",
     "donor_layer_positions",
     "load_complete_iq_checkpoint",
+    "CausalTokenAlignment",
+    "align_glm_states_to_mamba_tokens",
+    "MohawkConfig",
+    "MohawkStage",
+    "hidden_alignment_loss",
+    "logits_distillation_loss",
+    "matrix_orientation_loss",
+    "mohawk_loss",
     "ActivationPair",
     "ActivationTap",
     "ApplyError",

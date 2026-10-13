@@ -122,3 +122,95 @@ def align_token_activations_by_bytes(
         target_activations, target_token_spans, spans, require_full_coverage=require_full_coverage
     )
     return PairedSpanActivations(spans=spans, source=source, target=target)
+
+
+@dataclass(frozen=True)
+class CausalTokenAlignment:
+    """GLM source hidden projected into IQ's vocabulary-position and hidden frame."""
+    teacher_aligned_hidden: np.ndarray
+    valid_token_mask: np.ndarray
+
+
+def align_glm_states_to_mamba_tokens(
+    source_hidden: Any,
+    source_token_spans: Iterable[TokenByteSpan],
+    target_token_spans: Iterable[TokenByteSpan],
+    *,
+    source_document_sha256: str,
+    target_document_sha256: str,
+    coordinate_map: "CoordinateMap",
+) -> CausalTokenAlignment:
+    """Align one real, unpacked document without observing future GLM tokens.
+
+    A Mamba token ending at byte b may only use the most recent *complete*
+    GLM token ending at or before b. If none exists, the target position is
+    masked rather than filled with an invented or future source state.
+
+    Source and target offsets must cover exactly the same UTF-8 document bytes.
+    The caller must capture post-MLP GLM residual states at causal token prefixes
+    and fit the source-to-IQ output map on independent calibration records.
+    """
+    from .transport import CoordinateMap
+
+    if not isinstance(coordinate_map, CoordinateMap):
+        raise AlignmentError("a fitted GLM-to-IQ CoordinateMap is required")
+    if (
+        len(source_document_sha256) != 64
+        or len(target_document_sha256) != 64
+        or source_document_sha256.lower() != target_document_sha256.lower()
+        or any(c not in "0123456789abcdef" for c in source_document_sha256.lower())
+    ):
+        raise AlignmentError("source and target must identify the same SHA-256 UTF-8 document")
+    if (
+        coordinate_map.diagnostics is None
+        or coordinate_map.diagnostics.validation_rmse is None
+        or not np.isfinite(coordinate_map.diagnostics.validation_rmse)
+    ):
+        raise AlignmentError("the output coordinate map must have held-out validation metrics")
+    if (
+        "residual_out" not in coordinate_map.source_space
+        or "residual_out" not in coordinate_map.target_space
+    ):
+        raise AlignmentError("Stage 2 requires an explicit residual_out-to-residual_out map")
+
+    source = _numpy(source_hidden)
+    if source.ndim != 2 or source.shape[0] == 0 or not np.isfinite(source).all():
+        raise AlignmentError("source_hidden must be finite [GLM-token, GLM-hidden]")
+    source_spans = _validate_token_spans(source_token_spans, source.shape[0])
+    target_spans_unsorted = tuple(target_token_spans)
+    if not target_spans_unsorted:
+        raise AlignmentError("target tokens cannot be empty")
+    target_spans = _validate_token_spans(target_spans_unsorted, len(target_spans_unsorted))
+
+    def full_coverage(spans: tuple[TokenByteSpan, ...]) -> int:
+        previous = 0
+        for span in spans:
+            if span.start != previous:
+                raise AlignmentError("source/target spans must continuously cover UTF-8 bytes")
+            previous = span.end
+        return previous
+
+    if full_coverage(source_spans) != full_coverage(target_spans):
+        raise AlignmentError("source and target tokenizations cover different byte lengths")
+    matrix = np.asarray(coordinate_map.matrix, dtype=np.float64)
+    if matrix.shape[0] != source.shape[1]:
+        raise AlignmentError("source hidden width does not match GLM-to-IQ map")
+    if not np.isfinite(matrix).all():
+        raise AlignmentError("coordinate map must be finite")
+
+    # Sorted, non-overlapping token spans have monotonically increasing ends.
+    source_ends = np.asarray([s.end for s in source_spans], dtype=np.int64)
+    result = np.zeros((len(target_spans), matrix.shape[1]), dtype=np.float32)
+    valid = np.zeros(len(target_spans), dtype=np.bool_)
+    projected = source @ matrix
+    for target in target_spans:
+        source_position = int(np.searchsorted(source_ends, target.end, side="right") - 1)
+        if source_position < 0:
+            continue
+        result[target.token_index] = projected[source_spans[source_position].token_index]
+        valid[target.token_index] = True
+    if not bool(valid.any()):
+        raise AlignmentError("no causal GLM token prefixes are available for IQ tokens")
+    if not np.isfinite(result).all():
+        raise AlignmentError("aligned GLM hidden states are non-finite")
+    return CausalTokenAlignment(result, valid)
