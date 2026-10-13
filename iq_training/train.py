@@ -90,6 +90,21 @@ def _validate_batch(
             )
         result[name] = value
 
+    teacher_hidden = batch.get("teacher_aligned_hidden")
+    if teacher_hidden is not None:
+        if (
+            not isinstance(teacher_hidden, torch.Tensor)
+            or teacher_hidden.ndim != 3
+            or teacher_hidden.shape[:2] != input_ids.shape
+            or not teacher_hidden.is_floating_point()
+        ):
+            raise TrainingError(
+                "teacher_aligned_hidden must be floating-point [batch, IQ-token, IQ-hidden]"
+            )
+        if not bool(torch.isfinite(teacher_hidden).all()):
+            raise TrainingError("teacher_aligned_hidden contains non-finite values")
+        result["teacher_aligned_hidden"] = teacher_hidden
+
     reasoning_context_lengths = batch.get("reasoning_context_lengths")
     if reasoning_context_lengths is not None:
         if (
