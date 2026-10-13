@@ -8,6 +8,13 @@ from torch import nn
 
 from iq_model import HybridLayerType
 from iq_training import IQGLM53MohawkStage2, MohawkTrainingError, TrainStepConfig, train_step
+from iq_transfer.alignment import (
+    AlignmentError,
+    TokenByteSpan,
+    align_glm_states_to_mamba_tokens,
+)
+from iq_transfer.transport import CoordinateMap, MapDiagnostics
+
 from iq_transfer.mohawk import (
     MohawkConfig,
     MohawkStage,
@@ -160,6 +167,69 @@ class MohawkIQStage2TrainingTest(unittest.TestCase):
                 alignment_manifest_sha256="a" * 64,
             )
 
+
+
+class CausalGLMMambaByteAlignmentTest(unittest.TestCase):
+    @staticmethod
+    def _map(*, held_out: bool = True, source_space: str = "glm53.layer.20.residual_out"):
+        import numpy as np
+        return CoordinateMap(
+            matrix=np.eye(2),
+            ridge=1e-3,
+            source_space=source_space,
+            target_space="iq.layer.2.residual_out",
+            diagnostics=MapDiagnostics(
+                sample_count=6,
+                source_features=2,
+                target_features=2,
+                effective_rank=2,
+                condition_number=1.0,
+                fit_rmse=0.0,
+                validation_rmse=0.0 if held_out else None,
+            ),
+        )
+
+    def test_latest_complete_source_prefix_never_reads_future(self):
+        source = torch.tensor([[10.0, 1.0], [20.0, 2.0]])
+        source_spans = [TokenByteSpan(0, 0, 2), TokenByteSpan(1, 2, 4)]
+        target_spans = [
+            TokenByteSpan(0, 0, 1),
+            TokenByteSpan(1, 1, 3),
+            TokenByteSpan(2, 3, 4),
+        ]
+        result = align_glm_states_to_mamba_tokens(
+            source, source_spans, target_spans,
+            source_document_sha256="b" * 64,
+            target_document_sha256="b" * 64,
+            coordinate_map=self._map(),
+        )
+        self.assertEqual(result.valid_token_mask.tolist(), [False, True, True])
+        self.assertEqual(result.teacher_aligned_hidden[0].tolist(), [0.0, 0.0])
+        self.assertEqual(result.teacher_aligned_hidden[1].tolist(), [10.0, 1.0])
+        self.assertEqual(result.teacher_aligned_hidden[2].tolist(), [20.0, 2.0])
+
+    def test_rejects_mismatched_document_hash(self):
+        with self.assertRaisesRegex(AlignmentError, "same SHA-256"):
+            align_glm_states_to_mamba_tokens(
+                torch.ones(1, 2),
+                [TokenByteSpan(0, 0, 2)],
+                [TokenByteSpan(0, 0, 2)],
+                source_document_sha256="a" * 64,
+                target_document_sha256="b" * 64,
+                coordinate_map=self._map(),
+            )
+
+    def test_rejects_unvalidated_or_input_only_coordinate_map(self):
+        for mapping in (self._map(held_out=False), self._map(source_space="glm53.residual_in")):
+            with self.assertRaises(AlignmentError):
+                align_glm_states_to_mamba_tokens(
+                    torch.ones(1, 2),
+                    [TokenByteSpan(0, 0, 2)],
+                    [TokenByteSpan(0, 0, 2)],
+                    source_document_sha256="a" * 64,
+                    target_document_sha256="a" * 64,
+                    coordinate_map=mapping,
+                )
 
 if __name__ == "__main__":
     unittest.main()
