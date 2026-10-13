@@ -135,7 +135,7 @@ class MohawkIQStage2TrainingTest(unittest.TestCase):
         old = wrapper.student.layers[1].weight.detach().clone()
         metrics = train_step(
             wrapper, optimizer,
-            [{"input_ids": ids, "teacher_aligned_hidden": teacher}],
+            [{"input_ids": ids, "teacher_aligned_hidden": teacher, "teacher_alignment_mask": torch.ones_like(ids, dtype=torch.bool)}],
             TrainStepConfig(precision="fp32"),
         )
         self.assertGreater(metrics.loss, 0)
@@ -148,6 +148,7 @@ class MohawkIQStage2TrainingTest(unittest.TestCase):
             wrapper(
                 torch.tensor([[1, 2, 3]], dtype=torch.long),
                 teacher_aligned_hidden=torch.zeros(1, 2, 8),
+                teacher_alignment_mask=torch.ones(1, 3, dtype=torch.bool),
             )
 
     def test_cannot_select_non_moe_anchor(self):
