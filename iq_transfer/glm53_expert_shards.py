@@ -139,6 +139,13 @@ def compile_glm53_expert_shard(
         "artifact_type": "iq_glm53_full_expert_ep_shard",
         "donor_repo": "zai-org/GLM-5.3",
         "donor_revision": donor_revision,
+        "donor_config_sha256": _sha(donor_root / "config.json"),
+        "donor_index_sha256": (
+            _sha(donor_root / "model.safetensors.index.json")
+            if (donor_root / "model.safetensors.index.json").is_file()
+            else None
+        ),
+        "donor_revision_verified_against_hub": False,
         "target_fingerprint_ep": iq.fingerprint,
         "calibration_fingerprint": calibration.target_config_fingerprint,
         "ep_rank": ep_rank, "ep_size": ep_size,
@@ -432,13 +439,17 @@ def verify_complete_expert_parallel_set(
     revision = manifests[0]["donor_revision"]
     target = manifests[0]["target_fingerprint_ep"]
     calibration = manifests[0]["calibration_fingerprint"]
+    config_sha256 = manifests[0].get("donor_config_sha256")
+    index_sha256 = manifests[0].get("donor_index_sha256")
     all_ids: list[int] = []
     ranks: list[int] = []
     for manifest in manifests:
         if (manifest["ep_size"] != ep_size
             or manifest["donor_revision"] != revision
             or manifest["target_fingerprint_ep"] != target
-            or manifest["calibration_fingerprint"] != calibration):
+            or manifest["calibration_fingerprint"] != calibration
+            or manifest.get("donor_config_sha256") != config_sha256
+            or manifest.get("donor_index_sha256") != index_sha256):
             raise GLM53ExpertShardError("EP shards disagree on source or target provenance")
         rank = manifest["ep_rank"]
         ranks.append(rank)
