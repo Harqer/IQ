@@ -27,6 +27,7 @@ class StableLatentMoEConfig:
     rms_norm_eps: float = 1e-6
     expert_bias: bool = False
     router_bias: bool = False
+    expert_activation: str = "situ"
 
     def __post_init__(self) -> None:
         ints = {
@@ -44,6 +45,8 @@ class StableLatentMoEConfig:
             )
         if self.top_k >= self.num_experts:
             raise ValueError("top_k must be smaller than num_experts")
+        if self.expert_activation not in ("situ", "silu"):
+            raise ValueError("expert_activation must be 'situ' or 'silu'")
         if self.situ_beta <= 0 or self.situ_linear_beta <= 0:
             raise ValueError("SiTU beta values must be positive")
         if self.routed_scaling_factor <= 0 or self.rms_norm_eps <= 0:
@@ -69,8 +72,12 @@ class SiTUExpert(nn.Module):
         beta: float,
         linear_beta: float,
         bias: bool = False,
+        expert_activation: str = "situ",
     ) -> None:
         super().__init__()
+        if expert_activation not in ("situ", "silu"):
+            raise ValueError("invalid expert activation")
+        self.expert_activation = expert_activation
         self.gate_proj = nn.Linear(hidden_size, intermediate_size, bias=bias)
         self.up_proj = nn.Linear(hidden_size, intermediate_size, bias=bias)
         self.down_proj = nn.Linear(intermediate_size, hidden_size, bias=bias)
@@ -80,12 +87,14 @@ class SiTUExpert(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.down_proj(
-            self.activation(
-                self.gate_proj(x),
-                self.up_proj(x),
-            )
-        )
+        gate = self.gate_proj(x)
+        up = self.up_proj(x)
+        if self.expert_activation == "silu":
+            # Official GLM-5.x `hidden_act="silu"` SwiGLU gate.
+            gated = torch.nn.functional.silu(gate) * up
+        else:
+            gated = self.activation(gate, up)
+        return self.down_proj(gated)
 
 
 class StableLatentMoE(nn.Module):
@@ -133,6 +142,7 @@ class StableLatentMoE(nn.Module):
                 beta=config.situ_beta,
                 linear_beta=config.situ_linear_beta,
                 bias=config.expert_bias,
+                expert_activation=config.expert_activation,
             )
             for _ in range(config.num_experts)
         )
@@ -143,6 +153,7 @@ class StableLatentMoE(nn.Module):
                 beta=config.situ_beta,
                 linear_beta=config.situ_linear_beta,
                 bias=config.expert_bias,
+                expert_activation=config.expert_activation,
             )
             for _ in range(config.num_shared_experts)
         )
