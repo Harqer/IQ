@@ -263,7 +263,8 @@ def nvidia_parallel_78_config() -> IQHybridConfig:
         raise CompleteTransplantError("NVIDIA parallel config requires Block AttnRes")
     schedule = HybridSchedule(
         tuple(
-            HybridLayerType.PARALLEL_CSA
+            (HybridLayerType.PARALLEL_DENSE_CSA if stage < 3
+             else HybridLayerType.PARALLEL_CSA)
             for stage in range(78)
         )
     )
