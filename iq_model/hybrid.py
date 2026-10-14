@@ -31,6 +31,7 @@ from .reasoning import (
 )
 from .state import Mamba3MIMOConfig, Mamba3MIMOState
 from .parallel import ParallelBranchFusion, ExpertResidualGate
+from .mlp import SwiGLU
 from .attention.compressed import DeepseekV4CSACache, DeepseekV4HCACache
 from .attention.context_dense import DenseContextCache
 
@@ -74,6 +75,7 @@ class IQHybridConfig:
     energy_critic: ReasoningEnergyCriticConfig | None = None
     multimodal: IQMultimodalConfig | None = None
     require_verifier_stability: bool = False
+    parallel_dense_layers: tuple[int, ...] = ()
 
     def __post_init__(self) -> None:
         hidden = self.model.hidden_size
@@ -108,7 +110,16 @@ class IQHybridConfig:
                 "Mamba-3 num_layers must equal the number of Mamba layers in the schedule: "
                 f"config={self.mamba3.num_layers}, schedule={mamba_layers}"
             )
-        if not self.schedule.moe_positions:
+        dense_layers = self.parallel_dense_layers
+        if (
+            len(dense_layers) != len(set(dense_layers))
+            or tuple(sorted(dense_layers)) != dense_layers
+            or not set(dense_layers).issubset(self.schedule.parallel_positions)
+        ):
+            raise HybridModelError(
+                "parallel_dense_layers must be sorted, unique parallel schedule positions"
+            )
+        if not (set(self.schedule.moe_positions) - set(dense_layers)):
             raise HybridModelError("hybrid schedule requires at least one MoE layer")
         compressed_layers = sum(
             layer in {
@@ -215,6 +226,7 @@ class IQHybridConfig:
                 else None
             ),
             "require_verifier_stability": self.require_verifier_stability,
+            "parallel_dense_layers": list(self.parallel_dense_layers),
         }
 
     @classmethod
@@ -237,6 +249,11 @@ class IQHybridConfig:
         require_verifier_stability = bool(
             data.get("require_verifier_stability", False)
         )
+        parallel_dense_layers = data.get("parallel_dense_layers", [])
+        if not isinstance(parallel_dense_layers, list) or any(
+            type(index) is not int for index in parallel_dense_layers
+        ):
+            raise HybridModelError("parallel_dense_layers must be a list of integers")
         if not isinstance(model, dict):
             raise HybridModelError("hybrid config model must be an object")
         if not isinstance(schedule, dict):
@@ -307,6 +324,7 @@ class IQHybridConfig:
                     else None
                 ),
                 require_verifier_stability=require_verifier_stability,
+                parallel_dense_layers=tuple(parallel_dense_layers),
             )
         except (TypeError, ValueError) as exc:
             raise HybridModelError(
@@ -788,6 +806,7 @@ class ParallelMambaContextMoEBlock(nn.Module):
         stable_moe_config: StableLatentMoEConfig | None,
         *,
         mode: HybridLayerType,
+        dense_ffn: bool = False,
         mamba_layer_idx: int,
         dtype: torch.dtype,
         device: torch.device | str,
@@ -811,18 +830,26 @@ class ParallelMambaContextMoEBlock(nn.Module):
         )
         self.expert_gate = ExpertResidualGate(device=device, dtype=dtype)
         self.residual_dropout = nn.Dropout(model_config.residual_dropout)
-        if stable_moe_config is not None:
-            self.moe = StableLatentMoELayer(
-                stable_moe_config,
-                norm_eps=model_config.rms_norm_eps,
-                residual_dropout=model_config.residual_dropout,
+        if dense_ffn:
+            self.dense_ffn = nn.Sequential(
+                RMSNorm(model_config.hidden_size, model_config.rms_norm_eps),
+                SwiGLU(model_config),
             ).to(device=device, dtype=dtype)
+            self.moe = None
         else:
-            self.moe = RoutedSwiGLUMoELayer(
-                moe_config,
-                norm_eps=model_config.rms_norm_eps,
-                residual_dropout=model_config.residual_dropout,
-            ).to(device=device, dtype=dtype)
+            self.dense_ffn = None
+            if stable_moe_config is not None:
+                self.moe = StableLatentMoELayer(
+                    stable_moe_config,
+                    norm_eps=model_config.rms_norm_eps,
+                    residual_dropout=model_config.residual_dropout,
+                ).to(device=device, dtype=dtype)
+            else:
+                self.moe = RoutedSwiGLUMoELayer(
+                    moe_config,
+                    norm_eps=model_config.rms_norm_eps,
+                    residual_dropout=model_config.residual_dropout,
+                ).to(device=device, dtype=dtype)
 
     def forward(
         self,
@@ -833,7 +860,7 @@ class ParallelMambaContextMoEBlock(nn.Module):
         document_ids: torch.Tensor | None,
         inference_params: Any | None = None,
         past_key_values: DeepseekV4CSACache | DeepseekV4HCACache | None = None,
-    ) -> tuple[torch.Tensor, MoEOutput | StableLatentMoEOutput]:
+    ) -> tuple[torch.Tensor, MoEOutput | StableLatentMoEOutput | None]:
         hidden = self.norm(x)
         if inference_params is None:
             packed = pack_mamba_varlen(
@@ -856,6 +883,11 @@ class ParallelMambaContextMoEBlock(nn.Module):
         mixed = x + self.residual_dropout(
             self.fusion(mamba_delta, attention_delta)
         )
+        if self.dense_ffn is not None:
+            # GLM first three stages are dense SwiGLU, not MoE.
+            delta = self.dense_ffn(mixed)
+            return self.expert_gate(mixed, mixed + delta), None
+        assert self.moe is not None
         expert = self.moe(mixed)
         return self.expert_gate(mixed, expert.hidden_states), expert
 
@@ -914,6 +946,7 @@ class IQHybridForCausalLM(nn.Module):
                     config.moe,
                     config.stable_moe if config.moe_variant == "stable_latent" else None,
                     mode=layer_type,
+                    dense_ffn=len(self.layers) in config.parallel_dense_layers,
                     mamba_layer_idx=mamba_layer_idx,
                     dtype=dtype,
                     device=device_obj,
@@ -1245,7 +1278,8 @@ class IQHybridForCausalLM(nn.Module):
                         if inference_cache is not None else None
                     ),
                 )
-                moe_outputs.append(moe_output)
+                if moe_output is not None:
+                    moe_outputs.append(moe_output)
             elif layer_type is HybridLayerType.MOE:
                 moe_output = layer(layer_input)
                 layer_output = moe_output.hidden_states
