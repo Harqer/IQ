@@ -748,6 +748,19 @@ def apply_mamba3_transplant_overlay(
             "Mamba transplant does not partition all target slots exactly once"
         )
 
+    if manifest.get("artifact_type") == "iq_mamba3_foundation":
+        expected_positions = evenly_spaced_layer_placements(
+            24, expected_target.num_layers
+        )
+        if tuple(pretrained_ordinals) != expected_positions:
+            raise Mamba3DirectTransferError(
+                "foundation placements differ from the pinned 24-layer donor schedule"
+            )
+        if set(identities) != set(range(expected_target.num_layers)) - set(expected_positions):
+            raise Mamba3DirectTransferError(
+                "foundation identity slots do not match missing pretrained placements"
+            )
+
     parameters = dict(model.named_parameters())
     copied: list[str] = []
     with torch.no_grad():
