@@ -284,3 +284,109 @@ def compile_glm53_expert_shard(
     path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n",
                     encoding="utf-8")
     return manifest
+
+
+def _read_complete_manifest(root: Path) -> dict[str, Any]:
+    try:
+        manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise GLM53ExpertShardError("missing or invalid complete EP shard manifest") from exc
+    if manifest.get("artifact_type") != "iq_glm53_full_expert_ep_shard":
+        raise GLM53ExpertShardError("not a completed IQ GLM expert shard conversion")
+    if manifest.get("attention_converted") is not False or manifest.get("mamba_converted") is not False:
+        raise GLM53ExpertShardError("incorrect donor converter claims")
+    return manifest
+
+
+def load_glm53_expert_shards(
+    model: torch.nn.Module, *,
+    local_dir: str | Path,
+    shared_dir: str | Path,
+    ep_rank: int,
+) -> tuple[str, ...]:
+    """Validate every shard name/hash/shape before writing ANY model tensor.
+
+    Each rank loads its own routed expert files plus the rank-zero replicated
+    router/codec/shared expert/dense FFN files. This is a partial GLM donor
+    overlay, NOT a complete IQ checkpoint.
+    """
+    local = Path(local_dir)
+    shared = Path(shared_dir)
+    owned = _read_complete_manifest(local)
+    replicated = _read_complete_manifest(shared)
+    if owned["ep_rank"] != ep_rank or replicated["ep_rank"] != 0:
+        raise GLM53ExpertShardError("EP shard rank mismatch")
+    if owned["ep_size"] != replicated["ep_size"]:
+        raise GLM53ExpertShardError("EP shard world sizes disagree")
+    if owned["donor_revision"] != replicated["donor_revision"]:
+        raise GLM53ExpertShardError("replicated parameters came from another donor revision")
+    config = getattr(model, "config", None)
+    if (
+        config is None or config.expert_parallel_size != owned["ep_size"]
+        or config.fingerprint != owned["target_fingerprint_ep"]
+        or config.fingerprint != replicated["target_fingerprint_ep"]
+    ):
+        raise GLM53ExpertShardError("destination IQ model config/EP does not match shards")
+    expected_global = list(expert_range(ep_rank, owned["ep_size"]))
+    if owned["global_expert_ids"] != expected_global:
+        raise GLM53ExpertShardError("EP shard has missing/duplicated global expert IDs")
+    if owned["local_expert_shards"] != len(expected_global) * 75:
+        raise GLM53ExpertShardError("incomplete routed expert shard manifest")
+    parameters = dict(model.named_parameters())
+    buffers = dict(model.named_buffers())
+    objects = {**parameters, **buffers}
+    all_files: list[tuple[Path, dict[str, Any]]] = []
+    for directory, manifest, kind in (
+        (local, owned, "ep"),
+        (shared, replicated, "shared"),
+    ):
+        files = manifest["files"]
+        if not isinstance(files, dict):
+            raise GLM53ExpertShardError("shard inventory must be a mapping")
+        prefix = f"ep-{ep_rank:03d}/" if kind == "ep" else "shared/"
+        filtered = sorted(
+            (name, record) for name, record in files.items()
+            if name.startswith(prefix)
+        )
+        for relative, record in filtered:
+            path = (directory / relative).resolve()
+            if not path.is_relative_to(directory.resolve()):
+                raise GLM53ExpertShardError("shard path escapes output directory")
+            if not path.is_file() or _sha(path) != record["sha256"]:
+                raise GLM53ExpertShardError(f"missing or tampered GLM expert shard: {relative}")
+            for name, shape in record["tensor_shapes"].items():
+                target = objects.get(name)
+                if target is None or list(target.shape) != shape:
+                    raise GLM53ExpertShardError(
+                        f"destination parameter missing or wrong shape: {name}"
+                    )
+            all_files.append((path, record))
+    loaded_names = set()
+    for _, record in all_files:
+        for name in record["tensor_shapes"]:
+            if name in loaded_names:
+                raise GLM53ExpertShardError(f"duplicated destination tensor: {name}")
+            loaded_names.add(name)
+    needed_local = {
+        f"layers.{layer}.moe.moe.routed_experts.{local_index}.{projection}.weight"
+        for layer in range(3, 78)
+        for local_index in range(len(expected_global))
+        for projection in ("gate_proj", "up_proj", "down_proj")
+    }
+    if not needed_local.issubset(loaded_names):
+        raise GLM53ExpertShardError("missing routed expert projection in EP manifest")
+    try:
+        from safetensors.torch import load_file
+    except ImportError as exc:
+        raise GLM53ExpertShardError("safetensors is required") from exc
+    with torch.no_grad():
+        for path, record in all_files:
+            tensors = load_file(str(path), device="cpu")
+            if set(tensors) != set(record["tensor_shapes"]):
+                raise GLM53ExpertShardError("safetensors contents differ from verified manifest")
+            for name, source in tensors.items():
+                target = objects[name]
+                if source.dtype != torch.bfloat16 and not name.endswith("routing_bias"):
+                    raise GLM53ExpertShardError(f"unexpected dtype for {name}")
+                target.copy_(source.to(device=target.device, dtype=target.dtype))
+    return tuple(sorted(loaded_names))
