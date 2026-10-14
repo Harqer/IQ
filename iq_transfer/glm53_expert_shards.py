@@ -411,3 +411,61 @@ def load_glm53_expert_shards(
                     raise GLM53ExpertShardError(f"unexpected dtype for {name}")
                 target.copy_(source.to(device=target.device, dtype=target.dtype))
     return tuple(sorted(loaded_names))
+
+
+def verify_complete_expert_parallel_set(
+    directories: list[str | Path],
+) -> dict[str, Any]:
+    """Prove rank manifests jointly cover all 256 experts, without duplicates.
+
+    This is a cheap metadata gate; per-shard hashes are independently checked
+    by load_glm53_expert_shards on each participating EP rank.
+    """
+    if not directories:
+        raise GLM53ExpertShardError("no EP output directories supplied")
+    manifests = [_read_complete_manifest(Path(folder)) for folder in directories]
+    ep_size = manifests[0]["ep_size"]
+    if len(manifests) != ep_size:
+        raise GLM53ExpertShardError(
+            "one completed expert-shard directory is required per EP rank"
+        )
+    revision = manifests[0]["donor_revision"]
+    target = manifests[0]["target_fingerprint_ep"]
+    calibration = manifests[0]["calibration_fingerprint"]
+    all_ids: list[int] = []
+    ranks: list[int] = []
+    for manifest in manifests:
+        if (manifest["ep_size"] != ep_size
+            or manifest["donor_revision"] != revision
+            or manifest["target_fingerprint_ep"] != target
+            or manifest["calibration_fingerprint"] != calibration):
+            raise GLM53ExpertShardError("EP shards disagree on source or target provenance")
+        rank = manifest["ep_rank"]
+        ranks.append(rank)
+        owned = list(expert_range(rank, ep_size))
+        if manifest["global_expert_ids"] != owned:
+            raise GLM53ExpertShardError("EP manifest contains misplaced routed experts")
+        expected = 75 * len(owned)
+        if manifest.get("local_expert_shards") != expected:
+            raise GLM53ExpertShardError("EP manifest has incomplete expert tensor count")
+        files = manifest.get("files", {})
+        if len([key for key in files if key.startswith(f"ep-{rank:03d}/")]) != expected:
+            raise GLM53ExpertShardError("EP manifest routed file inventory is incomplete")
+        all_ids.extend(owned)
+    if sorted(ranks) != list(range(ep_size)):
+        raise GLM53ExpertShardError("duplicate or absent EP ranks")
+    if sorted(all_ids) != list(range(256)):
+        raise GLM53ExpertShardError("full 256 expert IDs are not covered")
+    rank_zero = next(m for m in manifests if m["ep_rank"] == 0)
+    if len([key for key in rank_zero["files"] if key.startswith("shared/")]) != 78:
+        raise GLM53ExpertShardError("rank zero must publish all 78 shared/dense FFN shards")
+    return {
+        "ep_size": ep_size,
+        "all_256_experts_covered": True,
+        "routed_expert_layer_shards": 75 * 256,
+        "shared_and_dense_layer_shards": 78,
+        "donor_revision": revision,
+        "target_config_fingerprint": target,
+        "calibration_fingerprint": calibration,
+        "status": "metadata_complete_numerical_parity_pending",
+    }
