@@ -650,10 +650,6 @@ class _V4CompressedContextAttention(nn.Module):
             raise ValueError(
                 f"indexer input must have shape [batch, sequence, {self.config.hidden_size}]"
             )
-        if past_key_values is not None:
-            return self._forward_cached(
-                x, past_key_values, position_ids, attention_mask, document_ids
-            )
         batch, sequence, _ = x.shape
         prepared = prepare_causal_attention(
             batch_size=batch,
@@ -996,6 +992,10 @@ class _V4CompressedContextAttention(nn.Module):
         if x.ndim != 3 or x.shape[-1] != self.config.hidden_size:
             raise ValueError(
                 f"compressed attention input must have shape [batch, sequence, {self.config.hidden_size}]"
+            )
+        if past_key_values is not None:
+            return self._forward_cached(
+                x, past_key_values, position_ids, attention_mask, document_ids
             )
         batch, sequence, _ = x.shape
         prepared = prepare_causal_attention(
