@@ -22,6 +22,7 @@ from iq_transfer.mamba3_direct import (
     MAMBA3_MIMO_15B_REVISION,
     Mamba3DirectTransferError,
     apply_mamba3_transplant_overlay,
+    compile_official_mamba3_mimo_15b_transplant,
     evenly_spaced_layer_placements,
 )
 from iq_transfer.complete_transplant import nvidia_parallel_78_config
@@ -175,6 +176,16 @@ class Mamba78ParallelTransplantTests(unittest.TestCase):
             with self.assertRaisesRegex(Mamba3DirectTransferError, "checksum mismatch"):
                 apply_mamba3_transplant_overlay(model, root)
         self.assertTrue(torch.equal(previous, model.layers[0].norm.weight))
+
+    def test_78_slot_compile_cannot_emit_mamba_lexical_weights(self):
+        with self.assertRaisesRegex(
+            Mamba3DirectTransferError, "include_foundation_globals=False"
+        ):
+            compile_official_mamba3_mimo_15b_transplant(
+                checkpoint="/does-not-exist",
+                output_dir="/does-not-exist-output",
+                target_mamba_layers=78,
+            )
 
     def test_original_32_ordinal_mapping_is_still_supported(self):
         original = evenly_spaced_layer_placements(24, 32)
