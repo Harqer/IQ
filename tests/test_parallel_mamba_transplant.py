@@ -6,6 +6,7 @@ production weights are fetched/converted only by the pinned donor CLI.
 from __future__ import annotations
 
 from dataclasses import asdict
+from hashlib import sha256
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -77,6 +78,10 @@ def _write_fixture(root: Path, model: nn.Module, *, corrupt: bool = False) -> tu
             )
         }, str(filename))
     identity = sorted(set(range(78)) - set(placements))
+    checksums = {}
+    for ordinal in placements:
+        shard = f"mamba/layer-{ordinal:03d}.safetensors"
+        checksums[shard] = sha256((root / shard).read_bytes()).hexdigest()
     manifest = {
         "artifact_type": "iq_mamba3_foundation",
         "target": {
@@ -96,6 +101,7 @@ def _write_fixture(root: Path, model: nn.Module, *, corrupt: bool = False) -> tu
             for i, ordinal in enumerate(placements)
         ],
         "identity_mamba_ordinals": identity if not corrupt else identity[:-1],
+        "file_sha256": checksums,
     }
     (root / "mamba3_transplant.json").write_text(
         json.dumps(manifest), encoding="utf-8"
@@ -152,6 +158,22 @@ class Mamba78ParallelTransplantTests(unittest.TestCase):
             _write_fixture(Path(tmp), model, corrupt=True)
             with self.assertRaisesRegex(Mamba3DirectTransferError, "partition"):
                 apply_mamba3_transplant_overlay(model, Path(tmp))
+        self.assertTrue(torch.equal(previous, model.layers[0].norm.weight))
+
+    def test_modified_shard_is_rejected_before_parameter_mutation(self):
+        try:
+            import safetensors
+        except ImportError:
+            self.skipTest("safetensors is required")
+        model = _TinyParallelRecipient()
+        previous = model.layers[0].norm.weight.detach().clone()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            placements = _write_fixture(root, model)
+            shard = root / f"mamba/layer-{placements[0]:03d}.safetensors"
+            shard.write_bytes(shard.read_bytes() + b"modified")
+            with self.assertRaisesRegex(Mamba3DirectTransferError, "checksum mismatch"):
+                apply_mamba3_transplant_overlay(model, root)
         self.assertTrue(torch.equal(previous, model.layers[0].norm.weight))
 
     def test_original_32_ordinal_mapping_is_still_supported(self):
