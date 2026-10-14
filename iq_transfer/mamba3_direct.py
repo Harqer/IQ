@@ -973,7 +973,7 @@ def compile_official_mamba3_mimo_15b_transplant(
     manifest["file_sha256"] = checksum_index
     (output / "SHA256SUMS").write_text(
         "".join(
-            f"{checksum_index[name]}  {name}\\n".replace("\\\\n", "\\n")
+            f"{checksum_index[name]}  {name}\n"
             for name in sorted(checksum_index)
         ),
         encoding="utf-8",
