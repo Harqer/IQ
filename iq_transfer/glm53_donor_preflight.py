@@ -126,6 +126,54 @@ def _validate_shard(root: Path, name: str) -> Path:
     return path
 
 
+def expected_glm53_tensor_shape(
+    key: str, *, vocab_size: int
+) -> tuple[int, ...] | None:
+    """Publisher GLM5Bridge dense/expert tensor geometry, no tensor loading."""
+    if key in ("model.embed_tokens.weight", "lm_head.weight"):
+        return (vocab_size, 6144)
+    if key == "model.norm.weight":
+        return (6144,)
+    if key.endswith(".input_layernorm.weight") or key.endswith(".post_attention_layernorm.weight"):
+        return (6144,)
+    parts = key.split(".")
+    if len(parts) < 5 or parts[:2] != ["model", "layers"]:
+        return None
+    try:
+        layer = int(parts[2])
+    except ValueError:
+        return None
+    if not 0 <= layer < 78 or parts[3] != "mlp":
+        return None
+    tail = ".".join(parts[4:])
+    if layer < 3:
+        if tail in ("gate_proj.weight", "up_proj.weight"):
+            return (12288, 6144)
+        if tail == "down_proj.weight":
+            return (6144, 12288)
+        return None
+    if tail == "gate.weight":
+        return (256, 6144)
+    if tail == "gate.e_score_correction_bias":
+        return (256,)
+    if tail.startswith("shared_experts."):
+        projection = tail.removeprefix("shared_experts.")
+    elif tail.startswith("experts."):
+        expert_parts = tail.split(".")
+        if len(expert_parts) != 3:
+            return None
+        if not expert_parts[1].isdigit() or int(expert_parts[1]) >= 256:
+            return None
+        projection = expert_parts[2]
+    else:
+        return None
+    if projection in ("gate_proj.weight", "up_proj.weight"):
+        return (2048, 6144)
+    if projection == "down_proj.weight":
+        return (6144, 2048)
+    return None
+
+
 def audit_glm53_donor(
     checkpoint_dir: str | Path, *,
     require_bf16: bool,
@@ -153,7 +201,11 @@ def audit_glm53_donor(
             "model.safetensors.index.json"
         )
     with config_path.open(encoding="utf-8") as handle:
-        topology = GLM53Topology.from_hf_config(json.load(handle))
+        config = json.load(handle)
+    topology = GLM53Topology.from_hf_config(config)
+    vocab_size = config.get("vocab_size")
+    if type(vocab_size) is not int or vocab_size <= 0:
+        raise GLM53DonorPreflightError("checkpoint vocabulary size must be explicit")
     with index_path.open(encoding="utf-8") as handle:
         document = json.load(handle)
     weight_map = document.get("weight_map")
@@ -215,6 +267,14 @@ def audit_glm53_donor(
                     dtype = view.get_dtype()
                     if any(d <= 0 for d in shape):
                         raise GLM53DonorPreflightError(f"invalid tensor geometry: {key}")
+                    expected = expected_glm53_tensor_shape(
+                        key, vocab_size=vocab_size
+                    )
+                    if expected is not None and tuple(shape) != expected:
+                        raise GLM53DonorPreflightError(
+                            f"GLM5Bridge geometry mismatch {key}: "
+                            f"actual {shape} expected {expected}"
+                        )
                     if key.endswith("e_score_correction_bias"):
                         if shape != (256,) or dtype not in ("F32", "BF16"):
                             raise GLM53DonorPreflightError(
