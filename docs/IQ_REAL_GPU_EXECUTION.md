@@ -55,12 +55,34 @@ python -m pip install "megatron-core==0.19.0"
 python -m unittest discover -s tests -p "test_iq_mcore_checkpoint.py" -v
 ```
 
-The **real** 2-process CPU/Gloo test writes Megatron Core `torch_dist`
-shards, reloads model/AdamW moments/scheduler/rank-local RNG/dataloader
-cursor, then executes another training step and rejects overwriting a
-checkpoint iteration. CI has a dedicated `native-checkpoint` job.
-A passing test proves only this miniature real EP-world layout, not the
-full IQ 78-block GPU model.
+**Correction from executing NVIDIA's actual 0.19.0 wheel in CI:**
+`megatron.core.dist_checkpointing`'s `torch_dist` filesystem writer
+calls `torch.cuda.synchronize()` even when checkpoint tensors are CPU,
+so an ordinary GitHub-hosted Ubuntu CPU runner **cannot execute** the
+native checkpoint acceptance test. Do not infer passing integration
+from the ordinary CPU unit suite.
+
+For the true two-rank test, use a **GPU-equipped worker** where
+`nvidia-smi` succeeds and the NVIDIA driver matches PyTorch:
+
+```bash
+python -m pip install -r requirements-model.txt "megatron-core==0.19.0"
+python -m unittest discover -s tests -p "test_iq_mcore_checkpoint.py" -v
+```
+
+The optional explicit workflow
+`.github/workflows/native-nvidia-checkpoint-gpu.yml` requires an
+authorized **self-hosted GitHub runner** labeled `nvidia-gpu`, and
+must be registered on the workflow-enabled default branch before it
+appears in GitHub's manual Run workflow menu. You may instead run
+the same command directly over SSH on your rented GPU host. This test
+exercises actual two-rank MCore `torch_dist` save/reload and continuation
+with tiny weights, not a fake checkpoint. It must pass before claims
+of validated resumable IQ checkpoints.
+
+The ordinary GitHub CPU model test job still checks import/compilation,
+geometry and expert-parallel Gloo behavior; the native MCore checkpoint
+test is gated separately on a real NVIDIA GPU.
 
 ## Stage B — Authenticate and inspect real donor data (no mutation)
 
