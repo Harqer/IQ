@@ -24,7 +24,6 @@ _ALLOWED_TYPES = frozenset({
     "s3", "gcs", "gcs_s3", "azure", "oci", "ais", "ais_s3", "s8k",
 })
 _PROFILE_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9_-]{0,63}\Z")
-_ENV_REF_RE = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*\}\Z")
 
 
 class MegatronStorageError(ValueError):
@@ -102,7 +101,7 @@ class StorageProfile:
         return entry
 
 
-def mojo_profile() -> StorageProfile:
+def mocha_profile() -> StorageProfile:
     """HF bucket's verified S3-compatible endpoint; requires generated HF S3 keys."""
     return StorageProfile(
         name="mocha", provider="s3", bucket="mocha",
