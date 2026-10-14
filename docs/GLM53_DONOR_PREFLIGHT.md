@@ -45,16 +45,12 @@ donor checkpoint mounted. The BF16 donor root must contain `config.json`,
 paths are assumed.
 
 ```bash
-python - <<'PY'
-from iq_transfer.glm53_donor_preflight import audit_glm53_donor
-import os
-root = os.environ["GLM_BF16_DIR"]
-report = audit_glm53_donor(
-    root, require_bf16=True, verify_headers=True,
-    checkpoint_identity="zai-org/GLM-5.3-BF16",
-)
-print(report.to_dict())
-PY
+python -m scripts.preflight_glm53_donor \\
+  --checkpoint "$GLM_BF16_DIR" \\
+  --identity zai-org/GLM-5.3-BF16 \\
+  --ep-size 8 \\
+  --require-bf16 \\
+  --output /scratch/iq/glm53-donor-audit.json
 ```
 
 **Important:** This is a **read-only** file/header scan, not a no-I/O
