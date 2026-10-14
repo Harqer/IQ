@@ -30,6 +30,7 @@ from .reasoning import (
     ReasoningVerifierProtocol,
 )
 from .state import Mamba3MIMOConfig, Mamba3MIMOState
+from .parallel import ParallelBranchFusion
 
 
 class HybridModelError(RuntimeError):
@@ -78,17 +79,20 @@ class IQHybridConfig:
             raise HybridModelError(
                 "stable_moe config is present but moe_variant is not stable_latent"
             )
-        mamba_layers = self.schedule.count(HybridLayerType.MAMBA3)
+        mamba_layers = len(self.schedule.mamba_positions)
         if self.mamba3.num_layers != mamba_layers:
             raise HybridModelError(
                 "Mamba-3 num_layers must equal the number of Mamba layers in the schedule: "
                 f"config={self.mamba3.num_layers}, schedule={mamba_layers}"
             )
-        if self.schedule.count(HybridLayerType.MOE) == 0:
+        if not self.schedule.moe_positions:
             raise HybridModelError("hybrid schedule requires at least one MoE layer")
-        compressed_layers = (
-            self.schedule.count(HybridLayerType.CSA)
-            + self.schedule.count(HybridLayerType.HCA)
+        compressed_layers = sum(
+            layer in {
+                HybridLayerType.CSA, HybridLayerType.HCA,
+                HybridLayerType.PARALLEL_CSA, HybridLayerType.PARALLEL_HCA,
+            }
+            for layer in self.schedule.layers
         )
         if compressed_layers:
             if self.compressed_context is None:
@@ -332,9 +336,12 @@ def validate_canonical_hybrid_backbone(
         raise HybridModelError(
             "canonical IQ backbone requires Block AttnRes"
         )
-    compressed_layers = (
-        config.schedule.count(HybridLayerType.CSA)
-        + config.schedule.count(HybridLayerType.HCA)
+    compressed_layers = sum(
+        layer in {
+            HybridLayerType.CSA, HybridLayerType.HCA,
+            HybridLayerType.PARALLEL_CSA, HybridLayerType.PARALLEL_HCA,
+        }
+        for layer in config.schedule.layers
     )
     if compressed_layers == 0 or config.compressed_context is None:
         raise HybridModelError(
@@ -730,6 +737,92 @@ class CompressedContextResidualLayer(nn.Module):
         )
 
 
+class ParallelMambaContextMoEBlock(nn.Module):
+    """Falcon-H1-inspired block: Mamba-3 MIMO and attention in parallel.
+
+    The recurrent and context mixers consume exactly the same RMS-normalized
+    input. Their deltas are concatenated and fused before a sequential expert
+    FFN, as in NVIDIA's Falcon-H1 design. This adapts the pattern to IQ's
+    native Mamba-3 MIMO and CSA/HCA operators; it is NOT the original
+    Falcon-H1 Mamba-2 checkpoint operator.
+    """
+
+    def __init__(
+        self,
+        model_config: IQModelConfig,
+        mamba_config: Mamba3MIMOConfig,
+        compressed_config: CompressedContextConfig,
+        moe_config: RoutedMoEConfig,
+        stable_moe_config: StableLatentMoEConfig | None,
+        *,
+        mode: HybridLayerType,
+        mamba_layer_idx: int,
+        dtype: torch.dtype,
+        device: torch.device | str,
+    ) -> None:
+        super().__init__()
+        if mode not in {HybridLayerType.PARALLEL_CSA, HybridLayerType.PARALLEL_HCA}:
+            raise HybridModelError("parallel block requires PARALLEL_CSA or PARALLEL_HCA")
+        self.norm = RMSNorm(
+            model_config.hidden_size, model_config.rms_norm_eps
+        ).to(device=device, dtype=dtype)
+        self.mamba = Mamba3MIMOState(
+            mamba_config, layer_idx=mamba_layer_idx, dtype=dtype, device=device
+        )
+        self.attention = (
+            CompressedSparseContextAttention(compressed_config)
+            if mode is HybridLayerType.PARALLEL_CSA
+            else HeavilyCompressedContextAttention(compressed_config)
+        ).to(device=device, dtype=dtype)
+        self.fusion = ParallelBranchFusion(
+            model_config.hidden_size, device=device, dtype=dtype
+        )
+        self.residual_dropout = nn.Dropout(model_config.residual_dropout)
+        if stable_moe_config is not None:
+            self.moe = StableLatentMoELayer(
+                stable_moe_config,
+                norm_eps=model_config.rms_norm_eps,
+                residual_dropout=model_config.residual_dropout,
+            ).to(device=device, dtype=dtype)
+        else:
+            self.moe = RoutedSwiGLUMoELayer(
+                moe_config,
+                norm_eps=model_config.rms_norm_eps,
+                residual_dropout=model_config.residual_dropout,
+            ).to(device=device, dtype=dtype)
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        *,
+        position_ids: torch.Tensor | None,
+        attention_mask: torch.Tensor | None,
+        document_ids: torch.Tensor | None,
+    ) -> tuple[torch.Tensor, MoEOutput | StableLatentMoEOutput]:
+        hidden = self.norm(x)
+        packed = pack_mamba_varlen(
+            hidden, attention_mask=attention_mask, document_ids=document_ids
+        )
+        mamba_delta = unpack_mamba_varlen(
+            self.mamba(
+                packed.packed_hidden_states,
+                cu_seqlens=packed.cu_seqlens,
+            ),
+            packed,
+        )
+        attention_delta = self.attention(
+            hidden,
+            position_ids=position_ids,
+            attention_mask=attention_mask,
+            document_ids=document_ids,
+        )
+        mixed = x + self.residual_dropout(
+            self.fusion(mamba_delta, attention_delta)
+        )
+        expert = self.moe(mixed)
+        return expert.hidden_states, expert
+
+
 class IQHybridForCausalLM(nn.Module):
     """Executable heterogeneous Mamba-3 / MoE / CSA / HCA / dense-attention backbone.
 
@@ -767,6 +860,23 @@ class IQHybridForCausalLM(nn.Module):
                 layer = Mamba3ResidualLayer(
                     config.model,
                     config.mamba3,
+                    mamba_layer_idx=mamba_layer_idx,
+                    dtype=dtype,
+                    device=device_obj,
+                )
+                mamba_layer_idx += 1
+            elif layer_type in {
+                HybridLayerType.PARALLEL_CSA,
+                HybridLayerType.PARALLEL_HCA,
+            }:
+                assert config.compressed_context is not None
+                layer = ParallelMambaContextMoEBlock(
+                    config.model,
+                    config.mamba3,
+                    config.compressed_context,
+                    config.moe,
+                    config.stable_moe if config.moe_variant == "stable_latent" else None,
+                    mode=layer_type,
                     mamba_layer_idx=mamba_layer_idx,
                     dtype=dtype,
                     device=device_obj,
@@ -1019,6 +1129,17 @@ class IQHybridForCausalLM(nn.Module):
                     attention_mask=attention_mask,
                     document_ids=document_ids,
                 )
+            elif layer_type in {
+                HybridLayerType.PARALLEL_CSA,
+                HybridLayerType.PARALLEL_HCA,
+            }:
+                layer_output, moe_output = layer(
+                    layer_input,
+                    position_ids=position_ids,
+                    attention_mask=attention_mask,
+                    document_ids=document_ids,
+                )
+                moe_outputs.append(moe_output)
             elif layer_type is HybridLayerType.MOE:
                 moe_output = layer(layer_input)
                 layer_output = moe_output.hidden_states
