@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from hashlib import sha256
-from typing import Literal, Mapping
+from typing import Any, Literal, Mapping
 import json
 
 import torch
@@ -31,10 +31,33 @@ from .reasoning import (
 )
 from .state import Mamba3MIMOConfig, Mamba3MIMOState
 from .parallel import ParallelBranchFusion, ExpertResidualGate
+from .attention.compressed import DeepseekV4CSACache, DeepseekV4HCACache
+from .attention.context_dense import DenseContextCache
 
 
 class HybridModelError(RuntimeError):
     pass
+
+
+@dataclass
+class IQHybridInferenceCache:
+    """Production cache: per-layer Mamba recurrence and attention contexts.
+
+    InferenceParams is upstream Mamba-3's single authoritative recurrent cache;
+    attention caches are keyed by IQ physical layer index. Caches cannot be
+    shared across distinct model fingerprints or batch geometries.
+    """
+
+    mamba: Any
+    attention: dict[int, DeepseekV4CSACache | DeepseekV4HCACache | DenseContextCache]
+    batch_size: int
+    schedule_fingerprint: str
+
+    def reset(self) -> None:
+        self.mamba.seqlen_offset = 0
+        self.mamba.key_value_memory_dict.clear()
+        for cache in self.attention.values():
+            cache.reset()
 
 
 @dataclass(frozen=True)
@@ -647,8 +670,13 @@ class Mamba3ResidualLayer(nn.Module):
         *,
         attention_mask: torch.Tensor | None,
         document_ids: torch.Tensor | None,
+        inference_params: Any | None = None,
     ) -> torch.Tensor:
         normalized = self.norm(x)
+        if inference_params is not None:
+            return x + self.residual_dropout(
+                self.mamba(normalized, inference_params=inference_params)
+            )
         layout = pack_mamba_varlen(
             normalized,
             attention_mask=attention_mask,
@@ -684,6 +712,7 @@ class DenseContextResidualLayer(nn.Module):
         position_ids: torch.Tensor | None,
         attention_mask: torch.Tensor | None,
         document_ids: torch.Tensor | None,
+        past_key_values: DeepseekV4HCACache | DeepseekV4CSACache | DenseContextCache | None = None,
     ) -> torch.Tensor:
         return x + self.residual_dropout(
             self.attention(
@@ -691,6 +720,7 @@ class DenseContextResidualLayer(nn.Module):
                 position_ids=position_ids,
                 attention_mask=attention_mask,
                 document_ids=document_ids,
+                past_key_values=past_key_values,
             )
         )
 
@@ -726,6 +756,7 @@ class CompressedContextResidualLayer(nn.Module):
         position_ids: torch.Tensor | None,
         attention_mask: torch.Tensor | None,
         document_ids: torch.Tensor | None,
+        past_key_values: DeepseekV4HCACache | DeepseekV4CSACache | DenseContextCache | None = None,
     ) -> torch.Tensor:
         return x + self.residual_dropout(
             self.attention(
@@ -733,6 +764,7 @@ class CompressedContextResidualLayer(nn.Module):
                 position_ids=position_ids,
                 attention_mask=attention_mask,
                 document_ids=document_ids,
+                past_key_values=past_key_values,
             )
         )
 
@@ -799,23 +831,27 @@ class ParallelMambaContextMoEBlock(nn.Module):
         position_ids: torch.Tensor | None,
         attention_mask: torch.Tensor | None,
         document_ids: torch.Tensor | None,
+        inference_params: Any | None = None,
+        past_key_values: DeepseekV4CSACache | DeepseekV4HCACache | None = None,
     ) -> tuple[torch.Tensor, MoEOutput | StableLatentMoEOutput]:
         hidden = self.norm(x)
-        packed = pack_mamba_varlen(
-            hidden, attention_mask=attention_mask, document_ids=document_ids
-        )
-        mamba_delta = unpack_mamba_varlen(
-            self.mamba(
-                packed.packed_hidden_states,
-                cu_seqlens=packed.cu_seqlens,
-            ),
-            packed,
-        )
+        if inference_params is None:
+            packed = pack_mamba_varlen(
+                hidden, attention_mask=attention_mask, document_ids=document_ids
+            )
+            mamba_delta = unpack_mamba_varlen(
+                self.mamba(
+                    packed.packed_hidden_states, cu_seqlens=packed.cu_seqlens
+                ), packed
+            )
+        else:
+            mamba_delta = self.mamba(hidden, inference_params=inference_params)
         attention_delta = self.attention(
             hidden,
             position_ids=position_ids,
             attention_mask=attention_mask,
             document_ids=document_ids,
+            past_key_values=past_key_values,
         )
         mixed = x + self.residual_dropout(
             self.fusion(mamba_delta, attention_delta)
@@ -974,6 +1010,36 @@ class IQHybridForCausalLM(nn.Module):
         if config.model.tie_word_embeddings:
             self.lm_head.weight = self.embed_tokens.weight
 
+    def allocate_inference_cache(
+        self, batch_size: int, max_seqlen: int
+    ) -> IQHybridInferenceCache:
+        """Allocate a cache using the pinned Mamba-3 CuTe step implementation."""
+        if batch_size <= 0 or max_seqlen <= 0:
+            raise ValueError("batch_size and max_seqlen must be positive")
+        from mamba_ssm.modules import mamba3 as mamba3_module
+        from mamba_ssm.utils.generation import InferenceParams
+
+        if getattr(mamba3_module, "mamba3_step_fn", None) is None:
+            raise HybridModelError(
+                "pinned Mamba-3 CuTe step kernel is unavailable for cached decoding"
+            )
+        params = InferenceParams(max_seqlen=max_seqlen, max_batch_size=batch_size)
+        caches: dict[
+            int, DeepseekV4CSACache | DeepseekV4HCACache | DenseContextCache
+        ] = {}
+        for index, layer_type in enumerate(self.config.schedule.layers):
+            if layer_type in {HybridLayerType.CSA, HybridLayerType.PARALLEL_CSA}:
+                assert self.config.compressed_context is not None
+                caches[index] = DeepseekV4CSACache(self.config.compressed_context)
+            elif layer_type in {HybridLayerType.HCA, HybridLayerType.PARALLEL_HCA}:
+                assert self.config.compressed_context is not None
+                caches[index] = DeepseekV4HCACache(self.config.compressed_context)
+            elif layer_type is HybridLayerType.DENSE_ATTENTION:
+                caches[index] = DenseContextCache()
+        return IQHybridInferenceCache(
+            params, caches, batch_size, self.config.fingerprint
+        )
+
     def set_reasoning_verifier(
         self,
         verifier: ReasoningVerifierProtocol | None,
@@ -1013,9 +1079,38 @@ class IQHybridForCausalLM(nn.Module):
         audio_streaming: bool = False,
         media_document_ids: torch.Tensor | None = None,
         return_hidden_states: bool = False,
+        inference_cache: IQHybridInferenceCache | None = None,
     ) -> HybridCausalLMOutput:
         if input_ids.ndim != 2:
             raise ValueError("input_ids must have shape [batch, sequence]")
+        if inference_cache is not None:
+            if self.training:
+                raise HybridModelError("cached generation requires eval mode")
+            if inference_cache.schedule_fingerprint != self.config.fingerprint:
+                raise HybridModelError("inference cache belongs to another IQ model config")
+            if input_ids.shape[0] != inference_cache.batch_size:
+                raise HybridModelError("inference cache batch size mismatch")
+            offset = inference_cache.mamba.seqlen_offset
+            if offset + input_ids.shape[1] > inference_cache.mamba.max_seqlen:
+                raise HybridModelError("inference cache maximum sequence length exceeded")
+            if offset > 0 and input_ids.shape[1] != 1:
+                raise HybridModelError(
+                    "cached decoding after prefill requires one token per call"
+                )
+            if labels is not None or document_ids is not None:
+                raise HybridModelError("cached generation forbids labels or packed documents")
+            if attention_mask is not None and not bool(attention_mask.to(torch.bool).all()):
+                raise HybridModelError("cached generation requires unpadded new tokens")
+            if self.reasoning is not None or self.multimodal is not None:
+                raise HybridModelError(
+                    "cached generation with reasoning/multimodal is unsupported"
+                )
+            if position_ids is not None:
+                expected = torch.arange(
+                    offset, offset + input_ids.shape[1], device=input_ids.device
+                ).expand(input_ids.shape[0], -1)
+                if not torch.equal(position_ids.to(input_ids.device), expected):
+                    raise HybridModelError("cached position IDs do not match token offset")
         if input_ids.dtype not in (torch.int32, torch.int64):
             raise ValueError("input_ids must be integer token ids")
         if input_ids.numel() and (
@@ -1129,6 +1224,9 @@ class IQHybridForCausalLM(nn.Module):
                     layer_input,
                     attention_mask=attention_mask,
                     document_ids=document_ids,
+                    inference_params=(
+                        inference_cache.mamba if inference_cache is not None else None
+                    ),
                 )
             elif layer_type in {
                 HybridLayerType.PARALLEL_CSA,
@@ -1139,6 +1237,13 @@ class IQHybridForCausalLM(nn.Module):
                     position_ids=position_ids,
                     attention_mask=attention_mask,
                     document_ids=document_ids,
+                    inference_params=(
+                        inference_cache.mamba if inference_cache is not None else None
+                    ),
+                    past_key_values=(
+                        inference_cache.attention[layer_index]
+                        if inference_cache is not None else None
+                    ),
                 )
                 moe_outputs.append(moe_output)
             elif layer_type is HybridLayerType.MOE:
@@ -1155,6 +1260,10 @@ class IQHybridForCausalLM(nn.Module):
                     position_ids=position_ids,
                     attention_mask=attention_mask,
                     document_ids=document_ids,
+                    past_key_values=(
+                        inference_cache.attention[layer_index]
+                        if inference_cache is not None else None
+                    ),
                 )
             else:
                 raise HybridModelError(
@@ -1211,6 +1320,8 @@ class IQHybridForCausalLM(nn.Module):
                 "reasoning_context_lengths was provided but reasoning is disabled"
             )
         logits = self.lm_head(hidden)
+        if inference_cache is not None:
+            inference_cache.mamba.seqlen_offset += input_ids.shape[1]
 
         language_loss: torch.Tensor | None = None
         if labels is not None:
