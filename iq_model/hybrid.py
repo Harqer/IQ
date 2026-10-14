@@ -880,6 +880,8 @@ class ParallelMambaContextMoEBlock(nn.Module):
         document_ids: torch.Tensor | None,
         inference_params: Any | None = None,
         past_key_values: DeepseekV4CSACache | DeepseekV4HCACache | None = None,
+        shared_selection: torch.Tensor | None = None,
+        capture_selection: list[torch.Tensor] | None = None,
     ) -> tuple[torch.Tensor, MoEOutput | StableLatentMoEOutput | None]:
         hidden = self.norm(x)
         if inference_params is None:
@@ -899,6 +901,8 @@ class ParallelMambaContextMoEBlock(nn.Module):
             attention_mask=attention_mask,
             document_ids=document_ids,
             past_key_values=past_key_values,
+            shared_selection=shared_selection,
+            capture_selection=capture_selection,
         )
         mixed = x + self.residual_dropout(
             self.fusion(mamba_delta, attention_delta)
@@ -1255,7 +1259,16 @@ class IQHybridForCausalLM(nn.Module):
         elif media_document_ids is not None:
             raise HybridModelError("media_document_ids requires document_ids and visual input")
 
+        if self.config.parallel_index_sources and (
+            document_ids is not None or (
+                attention_mask is not None and not bool(attention_mask.to(torch.bool).all())
+            )
+        ):
+            raise HybridModelError(
+                "GLM DSA IndexShare currently requires one unpadded document"
+            )
         x = self.embed_tokens(input_ids)
+        indexshare: dict[int, torch.Tensor] = {}
         moe_outputs: list[MoEOutput | StableLatentMoEOutput] = []
         attnres_state = (
             self.attnres.init_state(x)
@@ -1285,6 +1298,17 @@ class IQHybridForCausalLM(nn.Module):
                 HybridLayerType.PARALLEL_CSA,
                 HybridLayerType.PARALLEL_HCA,
             }:
+                source = (
+                    self.config.parallel_index_sources[layer_index]
+                    if self.config.parallel_index_sources else layer_index
+                )
+                source_indices = (
+                    indexshare[source] if source != layer_index else None
+                )
+                selected_here: list[torch.Tensor] | None = (
+                    [] if self.config.parallel_index_sources and source == layer_index
+                    else None
+                )
                 layer_output, moe_output = layer(
                     layer_input,
                     position_ids=position_ids,
@@ -1297,7 +1321,13 @@ class IQHybridForCausalLM(nn.Module):
                         inference_cache.attention[layer_index]
                         if inference_cache is not None else None
                     ),
+                    shared_selection=source_indices,
+                    capture_selection=selected_here,
                 )
+                if selected_here is not None:
+                    if len(selected_here) != 1:
+                        raise HybridModelError("DSA IndexShare provider did not emit indices")
+                    indexshare[layer_index] = selected_here[0]
                 if moe_output is not None:
                     moe_outputs.append(moe_output)
             elif layer_type is HybridLayerType.MOE:
