@@ -106,7 +106,7 @@ class ParallelHybridScheduleTests(unittest.TestCase):
         invalid[4] = 3
         with self.assertRaisesRegex(HybridModelError, "full-indexer"):
             replace(config, parallel_index_sources=tuple(invalid))
-        with self.assertRaisesRegex(HybridModelError, "78"):
+        with self.assertRaisesRegex(HybridModelError, "length must match"):
             replace(config, parallel_index_sources=(0, 1))
 
     def test_config_cannot_miscount_recurrent_slots(self):
