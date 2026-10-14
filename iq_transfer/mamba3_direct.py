@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from hashlib import sha256
 from pathlib import Path
 from typing import Any, Mapping
@@ -354,6 +354,10 @@ def load_official_mamba3_foundation_globals(
 
     GLM-5.3 never owns these lexical tensors in the canonical IQ build.
     """
+    if target_mamba_layers not in (32, 78):
+        raise Mamba3DirectTransferError(
+            "supported direct Mamba target depths are 32 and 78"
+        )
     checkpoint_dir = Path(checkpoint)
     config_path = checkpoint_dir / "config.json"
     weights_path = checkpoint_dir / "pytorch_model.bin"
@@ -660,10 +664,22 @@ def apply_mamba3_transplant_overlay(
         raise Mamba3DirectTransferError(
             f"invalid Mamba-3 transplant manifest in {root}"
         ) from exc
-    if manifest.get("artifact_type") != "iq_mamba3_direct_transplant":
+    if manifest.get("artifact_type") not in {
+        "iq_mamba3_direct_transplant",  # legacy overlay fixtures
+        "iq_mamba3_foundation",         # actual compiler artifact
+    }:
         raise Mamba3DirectTransferError(
-            "overlay artifact_type is not Mamba-3 direct transplant"
+            "overlay artifact_type is not a supported IQ Mamba-3 transplant"
         )
+    if manifest.get("artifact_type") == "iq_mamba3_foundation":
+        donor = manifest.get("donor")
+        if not isinstance(donor, dict) or (
+            donor.get("revision") != MAMBA3_MIMO_15B_REVISION
+            or donor.get("checkpoint_sha256") != MAMBA3_MIMO_15B_BIN_SHA256
+        ):
+            raise Mamba3DirectTransferError(
+                "Mamba foundation donor revision/hash does not match the pinned official checkpoint"
+            )
 
     model_config = getattr(model, "config", None)
     if model_config is None:
@@ -691,7 +707,13 @@ def apply_mamba3_transplant_overlay(
             "recipient RMSNorm epsilon does not match transplant target"
         )
 
-    mamba_positions = tuple(schedule.positions(HybridLayerType.MAMBA3))
+    mamba_positions = tuple(
+        schedule.mamba_positions
+        if hasattr(schedule, "mamba_positions")
+        else schedule.positions(HybridLayerType.MAMBA3)
+    )
+    if len(set(mamba_positions)) != len(mamba_positions):
+        raise Mamba3DirectTransferError("duplicate physical Mamba layer positions")
     if len(mamba_positions) != expected_target.num_layers:
         raise Mamba3DirectTransferError(
             "recipient schedule Mamba count does not match compiled target"
@@ -703,6 +725,28 @@ def apply_mamba3_transplant_overlay(
         raise Mamba3DirectTransferError(
             "safetensors is required to apply transplant artifacts"
         ) from exc
+
+    placements = manifest.get("placements", [])
+    identity_ordinals = manifest.get("identity_mamba_ordinals", [])
+    if not isinstance(placements, list) or not isinstance(identity_ordinals, list):
+        raise Mamba3DirectTransferError("invalid Mamba placement/identity manifest")
+    try:
+        pretrained_ordinals = [
+            int(item["target_mamba_ordinal"]) for item in placements
+        ]
+        identities = [int(item) for item in identity_ordinals]
+    except (TypeError, ValueError, KeyError) as exc:
+        raise Mamba3DirectTransferError("malformed Mamba ordinal entry") from exc
+    if (
+        len(set(pretrained_ordinals)) != len(pretrained_ordinals)
+        or len(set(identities)) != len(identities)
+        or set(pretrained_ordinals) & set(identities)
+        or set(pretrained_ordinals) | set(identities)
+           != set(range(expected_target.num_layers))
+    ):
+        raise Mamba3DirectTransferError(
+            "Mamba transplant does not partition all target slots exactly once"
+        )
 
     parameters = dict(model.named_parameters())
     copied: list[str] = []
@@ -764,12 +808,15 @@ def compile_official_mamba3_mimo_15b_transplant(
     output_dir: str | Path,
     checkpoint_revision: str = MAMBA3_MIMO_15B_REVISION,
     verify_checkpoint_hash: bool = True,
+    target_mamba_layers: int = 32,
+    include_foundation_globals: bool = True,
 ) -> Mamba3DirectTransferResult:
-    """Compile the official 1.5B donor into IQ's frozen 4096x32 Mamba target.
+    """Expand the pinned Mamba-3 donor to 32 serial or 78 parallel MIMO slots.
 
-    This stage intentionally does not depend on the hybrid schedule. It emits
-    Mamba-ordinal shards, so the same compiled artifact can later be applied to
-    any IQ schedule that contains the frozen 32 Mamba-3 MIMO slots.
+    The 78-slot mode records 24 pretrained mixer placements and 54 identity
+    mixer slots. These are Mamba branch identities, NOT whole-block identities.
+    When NVIDIA is the lexical owner, pass include_foundation_globals=False;
+    donor Mamba embeddings/LM head must not replace NVIDIA lexical weights.
     """
     checkpoint_dir = Path(checkpoint)
     config_path = checkpoint_dir / "config.json"
@@ -794,7 +841,10 @@ def compile_official_mamba3_mimo_15b_transplant(
             f"got {donor_sha}, expected {MAMBA3_MIMO_15B_BIN_SHA256}"
         )
 
-    target_config = Mamba3MIMOConfig.production_4096x32()
+    target_config = replace(
+        Mamba3MIMOConfig.production_4096x32(),
+        num_layers=target_mamba_layers,
+    )
     target_layout = _target_layout(target_config)
     _replication_factor(donor.layout, target_layout)
     ordinals = evenly_spaced_layer_placements(
@@ -811,19 +861,20 @@ def compile_official_mamba3_mimo_15b_transplant(
     # Mamba-3 is the lexical foundation, not only a recurrent overlay.
     # Persist the exact function-preserving 2048->4096 lexical widening as part
     # of the same durable foundation artifact.
-    foundation_globals = expand_mamba3_foundation_globals(
-        source_config=donor,
-        state=state,
-        target_hidden_size=target_config.d_model,
-    )
-    _save_safetensors(
-        output / "model-global.safetensors",
-        {
-            key: value.to(torch.bfloat16)
-            for key, value in foundation_globals.items()
-        },
-    )
-    del foundation_globals
+    if include_foundation_globals:
+        foundation_globals = expand_mamba3_foundation_globals(
+            source_config=donor,
+            state=state,
+            target_hidden_size=target_config.d_model,
+        )
+        _save_safetensors(
+            output / "model-global.safetensors",
+            {
+                key: value.to(torch.bfloat16)
+                for key, value in foundation_globals.items()
+            },
+        )
+        del foundation_globals
 
     placements: list[Mamba3LayerPlacement] = []
     populated_ordinals = set(ordinals)
@@ -873,15 +924,18 @@ def compile_official_mamba3_mimo_15b_transplant(
         "placements": [asdict(item) for item in placements],
         "identity_mamba_ordinals": list(identity_ordinals),
         "identity_rule": "zero_mamba_out_proj",
+        "identity_scope": "Mamba mixer output only; fused attention/MoE are separate",
+        "lexical_owner": "mamba3" if include_foundation_globals else "external",
+        "target_mamba_depth": target_mamba_layers,
         "scope": {
-            "transferred": [
-                "embedding",
-                "final_norm",
-                "lm_head",
-                "mamba3_mixer",
-                "mamba_pre_norm"
-            ],
-            "global_shard": "model-global.safetensors",
+            "transferred": (
+                ["embedding", "final_norm", "lm_head"]
+                if include_foundation_globals else []
+            ) + ["mamba3_mixer", "mamba_pre_norm"],
+            "global_shard": (
+                "model-global.safetensors"
+                if include_foundation_globals else None
+            ),
             "not_transferred": [
                 "donor_gated_mlp",
                 "stable_latent_moe",
