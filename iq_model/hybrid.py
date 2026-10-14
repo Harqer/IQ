@@ -76,6 +76,7 @@ class IQHybridConfig:
     multimodal: IQMultimodalConfig | None = None
     require_verifier_stability: bool = False
     parallel_dense_layers: tuple[int, ...] = ()
+    parallel_index_sources: tuple[int, ...] = ()
 
     def __post_init__(self) -> None:
         hidden = self.model.hidden_size
@@ -121,6 +122,18 @@ class IQHybridConfig:
             )
         if not (set(self.schedule.moe_positions) - set(dense_layers)):
             raise HybridModelError("hybrid schedule requires at least one MoE layer")
+        if self.parallel_index_sources:
+            if len(self.parallel_index_sources) != len(self.schedule.layers):
+                raise HybridModelError("parallel_index_sources length must match schedule")
+            if any(kind is not HybridLayerType.PARALLEL_CSA for kind in self.schedule.layers):
+                raise HybridModelError("IndexShare requires all parallel CSA blocks")
+            for i, owner in enumerate(self.parallel_index_sources):
+                if type(owner) is not int or owner < 0 or owner > i:
+                    raise HybridModelError("invalid DSA IndexShare source index")
+                if self.parallel_index_sources[owner] != owner:
+                    raise HybridModelError("IndexShare must reference a full-indexer block")
+            if not self.compressed_context or not self.compressed_context.direct_token_indexer:
+                raise HybridModelError("DSA IndexShare requires direct-token CSA indexing")
         compressed_layers = sum(
             layer in {
                 HybridLayerType.CSA, HybridLayerType.HCA,
@@ -227,6 +240,7 @@ class IQHybridConfig:
             ),
             "require_verifier_stability": self.require_verifier_stability,
             "parallel_dense_layers": list(self.parallel_dense_layers),
+            "parallel_index_sources": list(self.parallel_index_sources),
         }
 
     @classmethod
@@ -250,10 +264,15 @@ class IQHybridConfig:
             data.get("require_verifier_stability", False)
         )
         parallel_dense_layers = data.get("parallel_dense_layers", [])
+        parallel_index_sources = data.get("parallel_index_sources", [])
         if not isinstance(parallel_dense_layers, list) or any(
             type(index) is not int for index in parallel_dense_layers
         ):
             raise HybridModelError("parallel_dense_layers must be a list of integers")
+        if not isinstance(parallel_index_sources, list) or any(
+            type(index) is not int for index in parallel_index_sources
+        ):
+            raise HybridModelError("parallel_index_sources must be a list of integers")
         if not isinstance(model, dict):
             raise HybridModelError("hybrid config model must be an object")
         if not isinstance(schedule, dict):
@@ -325,6 +344,7 @@ class IQHybridConfig:
                 ),
                 require_verifier_stability=require_verifier_stability,
                 parallel_dense_layers=tuple(parallel_dense_layers),
+                parallel_index_sources=tuple(parallel_index_sources),
             )
         except (TypeError, ValueError) as exc:
             raise HybridModelError(
