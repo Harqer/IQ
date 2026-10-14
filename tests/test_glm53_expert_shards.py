@@ -41,11 +41,9 @@ class FullExpertShardingContractTests(unittest.TestCase):
         torch.manual_seed(12)
         source_width, target_width = 6, 4
         original = torch.randn(source_width, target_width)
-        original[:target_width] += torch.eye(
-            source_width, target_width
-        )
+        original += torch.eye(source_width, target_width)
         out = torch.randn(7, 3)
-        out[:3] += torch.eye(7, 3)
+        out += torch.eye(7, 3)
         donor = torch.randn(7, 6)
         p, pinv_transposed = _projection_pair(
             original.numpy(), device=torch.device("cpu"), ridge=1e-8,
