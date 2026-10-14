@@ -128,6 +128,13 @@ def _sharded_state(
         raise IQDistributedCheckpointError("training checkpoint requires a scheduler")
     if not isinstance(dataloader_state, Mapping):
         raise IQDistributedCheckpointError("training checkpoint requires dataloader state")
+    model_config = getattr(model, "config", None)
+    if model_config is not None:
+        actual_fingerprint = getattr(model_config, "fingerprint", None)
+        if actual_fingerprint != progress.config_fingerprint:
+            raise IQDistributedCheckpointError(
+                "checkpoint target fingerprint differs from actual IQ model config"
+            )
     mapped = _canonical_names(model, rank=rank)
     state = model.state_dict()
     pieces: dict[str, Any] = {"model": {}, "optimizer": {}}
