@@ -761,6 +761,48 @@ def apply_mamba3_transplant_overlay(
                 "foundation identity slots do not match missing pretrained placements"
             )
 
+    if manifest.get("artifact_type") == "iq_mamba3_foundation":
+        expected_shards = {
+            f"mamba/layer-{ordinal:03d}.safetensors"
+            for ordinal in pretrained_ordinals
+        }
+        actual_shards = {
+            str(item["shard"]) for item in placements
+        }
+        if expected_shards != actual_shards:
+            raise Mamba3DirectTransferError(
+                "foundation shard names are inconsistent with pretrained Mamba ordinals"
+            )
+        checksum_index = manifest.get("file_sha256")
+        if expected_target.num_layers == 78 and not isinstance(checksum_index, dict):
+            raise Mamba3DirectTransferError(
+                "78-slot foundation requires per-shard SHA-256 verification"
+            )
+        if isinstance(checksum_index, dict):
+            if not expected_shards.issubset(checksum_index):
+                raise Mamba3DirectTransferError(
+                    "Mamba foundation SHA-256 index omits required shards"
+                )
+            for shard in sorted(expected_shards):
+                expected_hash = checksum_index[shard]
+                if (not isinstance(expected_hash, str)
+                        or len(expected_hash) != 64
+                        or any(x not in "0123456789abcdef"
+                               for x in expected_hash.lower())):
+                    raise Mamba3DirectTransferError(
+                        f"invalid expected SHA-256 for {shard}"
+                    )
+                try:
+                    actual_hash = _sha256_file(root / shard)
+                except OSError as exc:
+                    raise Mamba3DirectTransferError(
+                        f"missing Mamba foundation shard: {shard}"
+                    ) from exc
+                if actual_hash != expected_hash:
+                    raise Mamba3DirectTransferError(
+                        f"Mamba foundation shard checksum mismatch: {shard}"
+                    )
+
     parameters = dict(model.named_parameters())
     copied: list[str] = []
     with torch.no_grad():
