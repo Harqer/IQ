@@ -245,7 +245,7 @@ def canonical_glm53_config() -> IQHybridConfig:
 
 
 
-def nvidia_parallel_78_config() -> IQHybridConfig:
+def nvidia_parallel_78_config(*, expert_parallel_size: int = 1) -> IQHybridConfig:
     """IQ's 78-block fused design, not a pretrained NVIDIA checkpoint.
 
     A block is [native Mamba-3 MIMO || DSA context] -> fusion -> dense FFN or MoE.
@@ -277,6 +277,7 @@ def nvidia_parallel_78_config() -> IQHybridConfig:
         model=model,
         schedule=schedule,
         parallel_dense_layers=(0, 1, 2),
+        expert_parallel_size=expert_parallel_size,
         parallel_index_sources=index_source_layers(expected_indexer_types()),
         moe=replace(base.moe, num_experts=256, top_k=8),
         stable_moe=replace(base.stable_moe, num_experts=256, top_k=8, num_shared_experts=1),
