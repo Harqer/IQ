@@ -17,6 +17,7 @@ import torch.multiprocessing as mp
 from torch import nn
 
 from iq_model.mlp import ExpertParallelStableLatentMoE, StableLatentMoEConfig
+from iq_training.ep_gradients import reduce_replicated_ep_gradients
 from iq_training.mcore_checkpoint import (
     IQCheckpointProgress, IQDistributedCheckpointError,
     load_training_checkpoint, save_training_checkpoint,
@@ -51,6 +52,10 @@ def _two_rank_restart(rank: int, world: int, url: str, folder: str) -> None:
         optimizer.zero_grad(set_to_none=True)
         loss = model(x).square().mean()
         loss.backward()
+        shared = reduce_replicated_ep_gradients(
+            model, ep_group=dist.group.WORLD, reduction="sum"
+        )
+        assert "moe.router.weight" in shared
         optimizer.step()
         scheduler.step()
         state_before = {key: val.clone() for key, val in model.state_dict().items()}
@@ -107,6 +112,9 @@ def _two_rank_restart(rank: int, world: int, url: str, folder: str) -> None:
         # A real post-resume optimizer update, not merely tensor comparison.
         optimizer.zero_grad(set_to_none=True)
         model(x).square().mean().backward()
+        reduce_replicated_ep_gradients(
+            model, ep_group=dist.group.WORLD, reduction="sum"
+        )
         optimizer.step()
         assert (sum(p.norm().item() for p in model.parameters())) > 0
 
