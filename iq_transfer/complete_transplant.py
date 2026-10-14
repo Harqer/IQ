@@ -34,6 +34,8 @@ from .gpt_oss20b import (
     GPT_OSS_20B_REPO,
     GptOss20BOriginalCheckpoint,
 )
+from .glm53_parallel_contract import expected_indexer_types, index_source_layers
+
 from .mamba3_direct import (
     MAMBA3_MIMO_15B_REPO,
     Mamba3Layout,
@@ -246,12 +248,12 @@ def canonical_glm53_config() -> IQHybridConfig:
 def nvidia_parallel_78_config() -> IQHybridConfig:
     """IQ's 78-block fused design, not a pretrained NVIDIA checkpoint.
 
-    A block is [native Mamba-3 MIMO || CSA/HCA] -> output fusion -> MoE.
-    Every physical block contributes one recurrent slot, one attention branch,
-    and one expert stage. We keep NVIDIA's 131072 lexical vocabulary size,
+    A block is [native Mamba-3 MIMO || DSA context] -> fusion -> dense FFN or MoE.
+    Each physical block contains one recurrent slot and one DSA attention branch; the first three blocks have dense FFNs and the other 75 have 256-expert MoE. We keep NVIDIA's 131072 lexical vocabulary size,
     but its embeddings/LM head MUST be transferred explicitly in a later
     checkpoint phase; this function initializes only structural geometry.
 
+    GLM IndexShare reuses DSA top-k selections from preceding full indexers.
     Donor alignment note: pretrained Mamba-3 MIMO has 24 original layers.
     The other 54 slots require explicitly residual-neutral initialization
     and later training; they are not magically copied from NVIDIA Mamba-2.
@@ -274,6 +276,7 @@ def nvidia_parallel_78_config() -> IQHybridConfig:
         model=model,
         schedule=schedule,
         parallel_dense_layers=(0, 1, 2),
+        parallel_index_sources=index_source_layers(expected_indexer_types()),
         moe=replace(base.moe, num_experts=256, top_k=8),
         stable_moe=replace(base.stable_moe, num_experts=256, top_k=8, num_shared_experts=1),
         mamba3=replace(base.mamba3, num_layers=78),
