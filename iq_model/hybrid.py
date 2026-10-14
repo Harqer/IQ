@@ -18,7 +18,7 @@ from .attention import (
 )
 from .config import IQModelConfig
 from .energy import ReasoningEnergyCritic, ReasoningEnergyCriticConfig
-from .mlp import MoEOutput, RoutedMoEConfig, RoutedSwiGLUMoELayer, StableLatentMoEConfig, StableLatentMoELayer, StableLatentMoEOutput
+from .mlp import MoEOutput, RoutedMoEConfig, RoutedSwiGLUMoELayer, StableLatentMoEConfig, StableLatentMoELayer, StableLatentMoEOutput, ExpertParallelStableLatentMoELayer
 from .multimodal import IQMultimodalConfig, IQMultimodalPathway
 from .norm import RMSNorm
 from .residual import BlockAttentionResidual, BlockAttnResConfig
@@ -77,6 +77,7 @@ class IQHybridConfig:
     require_verifier_stability: bool = False
     parallel_dense_layers: tuple[int, ...] = ()
     parallel_index_sources: tuple[int, ...] = ()
+    expert_parallel_size: int = 1
 
     def __post_init__(self) -> None:
         hidden = self.model.hidden_size
@@ -122,6 +123,18 @@ class IQHybridConfig:
             )
         if not (set(self.schedule.moe_positions) - set(dense_layers)):
             raise HybridModelError("hybrid schedule requires at least one MoE layer")
+        if type(self.expert_parallel_size) is not int or self.expert_parallel_size < 1:
+            raise HybridModelError("expert_parallel_size must be a positive integer")
+        if self.expert_parallel_size > 1:
+            if self.moe_variant != "stable_latent" or self.stable_moe is None:
+                raise HybridModelError("expert parallelism requires Stable LatentMoE")
+            if self.stable_moe.num_experts % self.expert_parallel_size:
+                raise HybridModelError(
+                    "num_experts must be divisible by expert_parallel_size"
+                )
+            if not self.schedule.parallel_positions:
+                raise HybridModelError("expert parallelism currently requires fused blocks")
+
         if self.parallel_index_sources:
             if len(self.parallel_index_sources) != len(self.schedule.layers):
                 raise HybridModelError("parallel_index_sources length must match schedule")
@@ -241,6 +254,7 @@ class IQHybridConfig:
             "require_verifier_stability": self.require_verifier_stability,
             "parallel_dense_layers": list(self.parallel_dense_layers),
             "parallel_index_sources": list(self.parallel_index_sources),
+            "expert_parallel_size": self.expert_parallel_size,
         }
 
     @classmethod
@@ -345,6 +359,7 @@ class IQHybridConfig:
                 require_verifier_stability=require_verifier_stability,
                 parallel_dense_layers=tuple(parallel_dense_layers),
                 parallel_index_sources=tuple(parallel_index_sources),
+                expert_parallel_size=int(data.get("expert_parallel_size", 1)),
             )
         except (TypeError, ValueError) as exc:
             raise HybridModelError(
@@ -828,6 +843,7 @@ class ParallelMambaContextMoEBlock(nn.Module):
         *,
         mode: HybridLayerType,
         dense_ffn: bool = False,
+        expert_parallel_group: Any | None = None,
         mamba_layer_idx: int,
         dtype: torch.dtype,
         device: torch.device | str,
@@ -862,10 +878,19 @@ class ParallelMambaContextMoEBlock(nn.Module):
         else:
             self.dense_ffn = None
             if stable_moe_config is not None:
-                self.moe = StableLatentMoELayer(
+                moe_cls = (
+                    ExpertParallelStableLatentMoELayer
+                    if expert_parallel_group is not None else StableLatentMoELayer
+                )
+                moe_kwargs = (
+                    {"ep_group": expert_parallel_group}
+                    if expert_parallel_group is not None else {}
+                )
+                self.moe = moe_cls(
                     stable_moe_config,
                     norm_eps=model_config.rms_norm_eps,
                     residual_dropout=model_config.residual_dropout,
+                    **moe_kwargs,
                 ).to(device=device, dtype=dtype)
             else:
                 self.moe = RoutedSwiGLUMoELayer(
@@ -950,6 +975,7 @@ class IQHybridForCausalLM(nn.Module):
         *,
         dtype: torch.dtype = torch.bfloat16,
         device: torch.device | str = "cuda",
+        expert_parallel_group: Any | None = None,
     ) -> None:
         super().__init__()
         self.config = config
@@ -959,16 +985,41 @@ class IQHybridForCausalLM(nn.Module):
             raise HybridModelError(
                 "IQHybridForCausalLM requires the production CUDA Mamba-3 MIMO runtime"
             )
+        if config.expert_parallel_size > 1:
+            import torch.distributed as dist
+            if not dist.is_initialized():
+                raise HybridModelError(
+                    "expert parallelism requires initialized torch.distributed"
+                )
+            if expert_parallel_group is None:
+                try:
+                    from megatron.core import parallel_state
+                    expert_parallel_group = (
+                        parallel_state.get_expert_model_parallel_group()
+                    )
+                except (ImportError, AssertionError, RuntimeError) as exc:
+                    raise HybridModelError(
+                        "Megatron Core EP group is unavailable; initialize "
+                        "Megatron Core model parallel groups before building IQ"
+                    ) from exc
+            if dist.get_world_size(group=expert_parallel_group) != config.expert_parallel_size:
+                raise HybridModelError("Megatron EP group does not match IQ config")
+        elif expert_parallel_group is not None:
+            raise HybridModelError(
+                "expert_parallel_group supplied with expert_parallel_size=1"
+            )
         if config.parallel_dense_layers and config.stable_moe is not None:
             bytes_per_element = torch.tensor([], dtype=dtype).element_size()
-            expert_lower_bound = unsharded_parallel_expert_weight_bytes(
-                config, bytes_per_element=bytes_per_element
+            expert_lower_bound = (
+                unsharded_parallel_expert_weight_bytes(
+                    config, bytes_per_element=bytes_per_element
+                ) // config.expert_parallel_size
             )
             free_bytes, _ = torch.cuda.mem_get_info(device_obj)
             if expert_lower_bound > free_bytes:
                 raise HybridModelError(
                     "Full 256-expert IQ parallel configuration cannot fit in "
-                    "this unsharded CUDA process: routed matrices alone need "
+                    "this CUDA process at the chosen EP shard size: routed matrices need "
                     f"{expert_lower_bound / 2**30:.1f} GiB, "
                     f"available={free_bytes / 2**30:.1f} GiB. "
                     "Implement Megatron Core expert-parallel sharding before loading."
@@ -1006,6 +1057,7 @@ class IQHybridForCausalLM(nn.Module):
                     config.stable_moe if config.moe_variant == "stable_latent" else None,
                     mode=layer_type,
                     dense_ffn=len(self.layers) in config.parallel_dense_layers,
+                    expert_parallel_group=expert_parallel_group,
                     mamba_layer_idx=mamba_layer_idx,
                     dtype=dtype,
                     device=device_obj,
