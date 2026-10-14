@@ -71,6 +71,12 @@ class StorageProfile:
         reserved = {"base_path", "endpoint_url", "region_name", "project_id", "namespace", "s3", "request_checksum_calculation", "response_checksum_validation"}
         if set(self.extra_options) & reserved:
             raise MegatronStorageError("reserved MSC provider options must not be overridden")
+        blocked = ("secret", "password", "access_key", "token", "private_key", "credentials")
+        if any(any(word in key.lower() for word in blocked)
+               for key in self.extra_options):
+            raise MegatronStorageError(
+                "MSC profile secrets must use credentials providers or environment variables"
+            )
 
     def to_msc_entry(self) -> dict[str, Any]:
         options: dict[str, Any] = {"base_path": self.bucket}
