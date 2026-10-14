@@ -916,6 +916,23 @@ class ParallelMambaContextMoEBlock(nn.Module):
         return self.expert_gate(mixed, expert.hidden_states), expert
 
 
+def unsharded_parallel_expert_weight_bytes(
+    config: IQHybridConfig, *, bytes_per_element: int = 2
+) -> int:
+    """Lower-bound for all resident routed expert matrices, ignoring overhead."""
+    if bytes_per_element <= 0:
+        raise ValueError("bytes_per_element must be positive")
+    if config.stable_moe is None:
+        return 0
+    active = len(set(config.schedule.parallel_positions) - set(config.parallel_dense_layers))
+    moe = config.stable_moe
+    return (
+        active * moe.num_experts * 3
+        * moe.latent_size * moe.expert_intermediate_size
+        * bytes_per_element
+    )
+
+
 class IQHybridForCausalLM(nn.Module):
     """Executable heterogeneous Mamba-3 / MoE / CSA / HCA / dense-attention backbone.
 
@@ -939,6 +956,20 @@ class IQHybridForCausalLM(nn.Module):
             raise HybridModelError(
                 "IQHybridForCausalLM requires the production CUDA Mamba-3 MIMO runtime"
             )
+        if config.parallel_dense_layers and config.stable_moe is not None:
+            bytes_per_element = torch.tensor([], dtype=dtype).element_size()
+            expert_lower_bound = unsharded_parallel_expert_weight_bytes(
+                config, bytes_per_element=bytes_per_element
+            )
+            free_bytes, _ = torch.cuda.mem_get_info(device_obj)
+            if expert_lower_bound > free_bytes:
+                raise HybridModelError(
+                    "Full 256-expert IQ parallel configuration cannot fit in "
+                    "this unsharded CUDA process: routed matrices alone need "
+                    f"{expert_lower_bound / 2**30:.1f} GiB, "
+                    f"available={free_bytes / 2**30:.1f} GiB. "
+                    "Implement Megatron Core expert-parallel sharding before loading."
+                )
 
         self.embed_tokens = nn.Embedding(
             config.model.vocab_size,
