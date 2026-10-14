@@ -4,6 +4,23 @@ IQ is an experimental language-model architecture for complex coding, long-conte
 
 The production target is **not** the original Neutrino/Ising mock architecture. IQ v2 uses Mamba-3 MIMO as the dominant token-time sequence/state mixer, DeepSeek V4-family CSA/HCA for long-context addressing, Stable LatentMoE for routed expert computation, and Block AttnRes as the canonical cross-depth residual mechanism. mHC is retained only as an ablation/reference. Reasoning-time recurrence, the EBM critic, and adaptive halting are separate from the physical backbone schedule.
 
+## NVIDIA 78-block parallel-hybrid candidate
+
+The new `nvidia_parallel_78_config()` is a separate, explicit **candidate**
+architecture. Each physical block combines native Mamba-3 MIMO and CSA/HCA
+attention **in parallel** on a shared input, then fuses their outputs before
+Stable LatentMoE. It has 78 physical composite blocks; it is **not** yet a
+fully NVIDIA/GLM-pretrained checkpoint. The original interleaved topology
+remains available and unchanged.
+
+For donor checkpoints and multi-cloud storage, see
+[**NVIDIA Megatron Bridge + MSC integration**](docs/NVIDIA_MEGATRON_MSC.md).
+The entrypoint is `python -m scripts.iq_megatron_bridge`. It supports official
+pinned Nemotron 3 Super and GLM-5.3 **donor** imports and generates Mocha
+Hugging Face S3/Megatron Core Multi-Storage Client profiles for additional
+cloud buckets. IQ-specific fused-operator transfer and CUDA qualification
+remain explicit release gates.
+
 ## Architecture
 
 ```text
