@@ -16,7 +16,9 @@ inject an explicit `expert_parallel_group` initialized by
 
 `ExpertParallelStableLatentMoE` constructs **256/EP local routed experts**
 and retains the original global sigmoid router, top-8 scores, delayed
-routing bias, latent codec, shared experts and SiTU activations. It exchanges
+routing bias, latent codec and shared experts. The GLM-5.3 transfer variant
+now selects **SiLU SwiGLU** for routed and shared expert activations;
+legacy IQ variants continue using their original SiTU default. It exchanges
 token activations through autograd-enabled all-to-all, while integer global
 expert IDs travel separately. Each global expert retains its original index;
 no expert pruning, low-rank merging, or token dropping occurs.
@@ -76,7 +78,7 @@ Every emitted parameter name matches IQ's nested fused block/module layout.
 Coordinate transport is computed from real learned calibration matrices.
 The transport is **not** function-preserving by construction: GLM operates in
 6144-dimensional residual space, IQ uses 4096 residual/2048 latent channels,
-and SiTU is not identical to the GLM feed-forward activation. Donor
+while original GLM's residual and latent spaces still differ. Donor
 teacher/student validation is required before the expert gate is opened.
 
 To load the expert portion only:
@@ -108,7 +110,7 @@ fusion calibration, or Block AttnRes weights.
 - Implement compatible Megatron Core distributed `torch_dist` checkpoint
   partitioning (including PP/TP/EP) for IQ-specific modules, and NCCL/H200
   performance, forward/backward and restart tests.
-- Calibrate `ExpertResidualGate`, validate SiTU vs GLM behavior, and run
+- Calibrate `ExpertResidualGate`, validate learned 6144→4096/2048 projection behavior, and run
   held-out teacher/student language/reasoning evaluation.
 
 Official NVIDIA sources:
