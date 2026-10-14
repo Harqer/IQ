@@ -17,6 +17,8 @@ class HybridLayerType(str, Enum):
     CSA = "csa"
     HCA = "hca"
     DENSE_ATTENTION = "dense_attention"
+    PARALLEL_CSA = "parallel_csa"
+    PARALLEL_HCA = "parallel_hca"
 
     @property
     def is_attention(self) -> bool:
@@ -24,7 +26,24 @@ class HybridLayerType(str, Enum):
             HybridLayerType.CSA,
             HybridLayerType.HCA,
             HybridLayerType.DENSE_ATTENTION,
+            HybridLayerType.PARALLEL_CSA,
+            HybridLayerType.PARALLEL_HCA,
         }
+
+    @property
+    def is_parallel(self) -> bool:
+        return self in {
+            HybridLayerType.PARALLEL_CSA,
+            HybridLayerType.PARALLEL_HCA,
+        }
+
+    @property
+    def has_mamba(self) -> bool:
+        return self is HybridLayerType.MAMBA3 or self.is_parallel
+
+    @property
+    def has_moe(self) -> bool:
+        return self is HybridLayerType.MOE or self.is_parallel
 
 
 @dataclass(frozen=True)
@@ -42,13 +61,15 @@ class HybridSchedule:
     def __post_init__(self) -> None:
         if not self.layers:
             raise ArchitectureError("hybrid schedule must contain at least one layer")
-        mamba = self.count(HybridLayerType.MAMBA3)
-        if mamba == 0:
+        if not self.mamba_positions:
             raise ArchitectureError("hybrid schedule requires Mamba-3 layers")
-        attention = sum(1 for layer in self.layers if layer.is_attention)
-        if mamba <= attention:
+        # Existing serial schedules retain their Mamba-dominance contract.
+        # Fused layers each contain both branches, so no artificial dominance
+        # constraint is imposed on a parallel schedule.
+        attention = len(self.attention_positions)
+        if not self.parallel_positions and len(self.mamba_positions) <= attention:
             raise ArchitectureError(
-                "IQ requires a Mamba-dominant schedule: Mamba-3 layer count must exceed attention layer count"
+                "IQ serial schedule requires more Mamba slots than attention slots"
             )
 
     @classmethod
@@ -67,6 +88,10 @@ class HybridSchedule:
             "a": HybridLayerType.DENSE_ATTENTION,
             "dense": HybridLayerType.DENSE_ATTENTION,
             "dense_attention": HybridLayerType.DENSE_ATTENTION,
+            "parallel_csa": HybridLayerType.PARALLEL_CSA,
+            "parallel_hca": HybridLayerType.PARALLEL_HCA,
+            "pc": HybridLayerType.PARALLEL_CSA,
+            "ph": HybridLayerType.PARALLEL_HCA,
         }
         for token in tokens:
             if isinstance(token, HybridLayerType):
@@ -93,6 +118,18 @@ class HybridSchedule:
 
     def positions(self, layer_type: HybridLayerType) -> tuple[int, ...]:
         return tuple(index for index, layer in enumerate(self.layers) if layer is layer_type)
+
+    @property
+    def mamba_positions(self) -> tuple[int, ...]:
+        return tuple(index for index, layer in enumerate(self.layers) if layer.has_mamba)
+
+    @property
+    def moe_positions(self) -> tuple[int, ...]:
+        return tuple(index for index, layer in enumerate(self.layers) if layer.has_moe)
+
+    @property
+    def parallel_positions(self) -> tuple[int, ...]:
+        return tuple(index for index, layer in enumerate(self.layers) if layer.is_parallel)
 
     @property
     def attention_positions(self) -> tuple[int, ...]:
