@@ -242,6 +242,45 @@ def canonical_glm53_config() -> IQHybridConfig:
     )
 
 
+
+def nvidia_parallel_78_config() -> IQHybridConfig:
+    """IQ's 78-block fused design, not a pretrained NVIDIA checkpoint.
+
+    A block is [native Mamba-3 MIMO || CSA/HCA] -> output fusion -> MoE.
+    Every physical block contributes one recurrent slot, one attention branch,
+    and one expert stage. We keep NVIDIA's 131072 lexical vocabulary size,
+    but its embeddings/LM head MUST be transferred explicitly in a later
+    checkpoint phase; this function initializes only structural geometry.
+
+    Donor alignment note: pretrained Mamba-3 MIMO has 24 original layers.
+    The other 54 slots require explicitly residual-neutral initialization
+    and later training; they are not magically copied from NVIDIA Mamba-2.
+    """
+    base = canonical_glm53_config()
+    if base.attnres is None:
+        raise CompleteTransplantError("NVIDIA parallel config requires Block AttnRes")
+    schedule = HybridSchedule(
+        tuple(
+            HybridLayerType.PARALLEL_CSA
+            if stage % 2 == 0
+            else HybridLayerType.PARALLEL_HCA
+            for stage in range(78)
+        )
+    )
+    model = replace(
+        base.model, vocab_size=131072,
+        num_hidden_layers=len(schedule.layers),
+    )
+    config = replace(
+        base,
+        model=model,
+        schedule=schedule,
+        mamba3=replace(base.mamba3, num_layers=78),
+        attnres=replace(base.attnres, num_layers=78),
+    )
+    return validate_canonical_hybrid_backbone(config)
+
+
 def canonical_glm53_multimodal_config() -> IQHybridConfig:
     base = canonical_glm53_config()
     context_layers = tuple(base.schedule.attention_positions)
