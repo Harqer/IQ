@@ -14,7 +14,6 @@ from hashlib import sha256
 import json
 from typing import Iterator
 
-from .glm53_expert_shards import expert_range
 
 
 @dataclass(frozen=True)
@@ -28,6 +27,7 @@ class GLM53TensorTransferTask:
 
 def iter_glm53_expert_transfer_tasks(ep_size: int) -> Iterator[GLM53TensorTransferTask]:
     """Every source expert is owned exactly once; replicated IQ tensors once."""
+    from .glm53_expert_shards import expert_range
     expert_range(0, ep_size)  # Validate divisibility and EP size.
     for block in range(78):
         source = f"model.layers.{block}.mlp"
