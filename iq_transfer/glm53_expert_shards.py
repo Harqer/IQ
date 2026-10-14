@@ -18,6 +18,7 @@ from .checkpoint import SafetensorsSource
 from .glm53_calibration import GLM53CalibrationSolution
 from .glm53_parallel_contract import GLM53Topology
 from .complete_transplant import nvidia_parallel_78_config
+from .glm53_donor_preflight import audit_glm53_donor, GLM53DonorPreflightError
 
 
 class GLM53ExpertShardError(RuntimeError):
@@ -88,6 +89,7 @@ def compile_glm53_expert_shard(
     *, donor_dir: str | Path, calibration_dir: str | Path,
     output_dir: str | Path, ep_rank: int, ep_size: int,
     donor_revision: str, device: str = "cpu",
+    donor_identity: str = "zai-org/GLM-5.3-BF16",
 ) -> dict[str, Any]:
     """Convert only owned routed experts; rank zero owns replicated FFN/router.
 
@@ -106,6 +108,13 @@ def compile_glm53_expert_shard(
     torch_device = torch.device(device)
     if torch_device.type not in ("cpu", "cuda"):
         raise GLM53ExpertShardError("expert conversion requires CPU or CUDA")
+    # Fail before creating *any* output or loading heavy weights. The
+    # publisher's FP8 checkpoint is NOT a native BF16 source for this
+    # converter; use its official BF16 variant or GLM5Bridge dequantization.
+    inventory = audit_glm53_donor(
+        donor_root, require_bf16=True, verify_headers=True,
+        checkpoint_identity=donor_identity,
+    )
     with (donor_root / "config.json").open(encoding="utf-8") as f:
         donor_config = json.load(f)
     topology = GLM53Topology.from_hf_config(donor_config)
@@ -137,7 +146,8 @@ def compile_glm53_expert_shard(
     destination.mkdir(parents=True, exist_ok=False)
     manifest: dict[str, Any] = {
         "artifact_type": "iq_glm53_full_expert_ep_shard",
-        "donor_repo": "zai-org/GLM-5.3",
+        "donor_repo": donor_identity,
+        "donor_index_preflight": inventory.to_dict(),
         "donor_revision": donor_revision,
         "donor_config_sha256": _sha(donor_root / "config.json"),
         "donor_index_sha256": (
