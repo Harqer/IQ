@@ -160,11 +160,11 @@ def expected_glm53_tensor_shape(
         projection = tail.removeprefix("shared_experts.")
     elif tail.startswith("experts."):
         expert_parts = tail.split(".")
-        if len(expert_parts) != 3:
+        if len(expert_parts) != 4:
             return None
-        if not expert_parts[1].isdigit() or int(expert_parts[1]) >= 256:
+        if not expert_parts[1].isdigit() or not 0 <= int(expert_parts[1]) < 256:
             return None
-        projection = expert_parts[2]
+        projection = ".".join(expert_parts[2:])
     else:
         return None
     if projection in ("gate_proj.weight", "up_proj.weight"):
