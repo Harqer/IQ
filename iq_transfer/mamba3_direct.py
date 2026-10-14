@@ -873,6 +873,10 @@ def compile_official_mamba3_mimo_15b_transplant(
         raise Mamba3DirectTransferError(
             "supported direct Mamba target depths are 32 and 78"
         )
+    if target_mamba_layers == 78 and include_foundation_globals:
+        raise Mamba3DirectTransferError(
+            "78-slot NVIDIA-parallel IQ requires include_foundation_globals=False"
+        )
     checkpoint_dir = Path(checkpoint)
     config_path = checkpoint_dir / "config.json"
     weights_path = checkpoint_dir / "pytorch_model.bin"
