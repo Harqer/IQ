@@ -29,7 +29,8 @@ claim that it reproduces Falcon-H1's original trained output projection.
 - `HybridLayerType.PARALLEL_CSA` and `PARALLEL_HCA` are serializable.
 - Old interleaved schedules are unchanged and continue to load.
 - `nvidia_parallel_78_config()` produces an explicit 78-physical-block
-  geometry with 78 Mamba slots, 78 attention branches and 78 MoE modules,
+  geometry with 78 Mamba slots, 78 DSA/CSA attention branches, 3 dense SwiGLU
+  blocks and 75 routed MoE stages (256 experts each, top-8),
   4096 residual width, 131072 NVIDIA lexical tokens, and Block AttnRes.
 - This is a **candidate architecture, not an initialized model checkpoint**.
   Specifically, source Mamba-3 MIMO provides only 24 pretrained layers and
@@ -162,3 +163,11 @@ contract and NVIDIA's Falcon-H1 principle of independent sequence-operator
 state but one fused hidden representation. The current cache uses mutable
 state, so a failure during the forward pass requires resetting/rebuilding
 the cache before retry; no transaction-style rollback is claimed.
+
+## GLM-5.3 complete expert-geometry update
+
+The separate [full-expert/IndexShare contract](GLM53_FULL_EXPERT_PARALLEL78.md)
+now specifies 3 dense + 75 256-expert top-8 MoE stages, all 78 DSA/CSA
+mixers, and inter-layer top-k sharing. The existing note above documents
+historical work; current full-expert configuration is not executable on a
+single unsharded GPU. See the new preflight and distributed EP requirements.

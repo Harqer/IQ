@@ -743,6 +743,9 @@ class _V4CompressedContextAttention(nn.Module):
         self,
         hidden: torch.Tensor,
         positions: torch.Tensor,
+        *,
+        shared_selection: torch.Tensor | None = None,
+        capture_selection: list[torch.Tensor] | None = None,
     ) -> torch.Tensor:
         length = hidden.shape[0]
         q_residual = self.q_a_norm(self.q_a_proj(hidden))
@@ -765,10 +768,14 @@ class _V4CompressedContextAttention(nn.Module):
         ).squeeze(1)
         compressed = self._compress_main(hidden, positions)
         selected = (
+            shared_selection if shared_selection is not None else
             self._index_selection(hidden, q_residual, positions)
-            if self.mode == "csa"
-            else None
+            if self.mode == "csa" else None
         )
+        if capture_selection is not None:
+            if selected is None:
+                raise CompressedContextError("only CSA supports DSA IndexShare capture")
+            capture_selection.append(selected)
 
         outputs: list[torch.Tensor] = []
         for token in range(length):
@@ -880,6 +887,8 @@ class _V4CompressedContextAttention(nn.Module):
         position_ids: torch.Tensor | None,
         attention_mask: torch.Tensor | None,
         document_ids: torch.Tensor | None,
+        shared_selection: torch.Tensor | None = None,
+        capture_selection: list[torch.Tensor] | None = None,
     ) -> torch.Tensor:
         if self.mode == "csa" and not isinstance(cache, DeepseekV4CSACache):
             raise ValueError("CSA needs a DeepseekV4CSACache")
@@ -902,6 +911,8 @@ class _V4CompressedContextAttention(nn.Module):
         if position_ids is not None and not torch.equal(position_ids.to(x.device), expected):
             raise ValueError("cached position_ids must follow the uninterrupted token offset")
         outputs: list[torch.Tensor] = []
+        captured: list[torch.Tensor] = []
+        final_width = min(self.config.index_topk, cache.cumulative_length + sequence)
         for token in range(sequence):
             hidden = x[:, token : token + 1, :]
             positions = expected[:, token]
@@ -925,7 +936,7 @@ class _V4CompressedContextAttention(nn.Module):
                 )
             compressed = self._cache_compress(cache, "compressor", hidden)
             index_kv = None
-            if self.mode == "csa":
+            if self.mode == "csa" and shared_selection is None:
                 if self.config.direct_token_indexer:
                     assert isinstance(cache, DeepseekV4CSACache)
                     assert self.index_kv_proj is not None
@@ -942,9 +953,17 @@ class _V4CompressedContextAttention(nn.Module):
                 else:
                     index_kv = self._cache_compress(cache, "indexer", hidden)
             attended: list[torch.Tensor] = []
+            selected_rows: list[torch.Tensor] = []
             for row in range(batch):
                 long_range = compressed[row]
-                if index_kv is not None:
+                if shared_selection is not None:
+                    indices = shared_selection[row, token]
+                    indices = indices[indices >= 0]
+                    assert isinstance(cache, DeepseekV4CSACache)
+                    assert cache.all_token_kv is not None
+                    long_range = cache.all_token_kv[row].index_select(0, indices)
+                    selected_rows.append(indices)
+                elif index_kv is not None:
                     assert self.index_q_proj is not None
                     assert self.index_weight_proj is not None
                     index_query = self.index_q_proj(residual[row]).view(
@@ -962,6 +981,7 @@ class _V4CompressedContextAttention(nn.Module):
                     scores = (scores * head_weights.unsqueeze(-1)).sum(dim=0)
                     if scores.numel():
                         indices = scores.topk(min(self.config.index_topk, scores.numel())).indices
+                        selected_rows.append(indices)
                         if self.config.direct_token_indexer:
                             assert isinstance(cache, DeepseekV4CSACache)
                             assert cache.all_token_kv is not None
@@ -969,6 +989,7 @@ class _V4CompressedContextAttention(nn.Module):
                         else:
                             long_range = long_range.index_select(0, indices)
                     else:
+                        selected_rows.append(torch.empty(0, dtype=torch.long, device=x.device))
                         long_range = long_range[:0]
                 candidates = (
                     torch.cat([local[row], long_range], dim=0)
@@ -976,8 +997,17 @@ class _V4CompressedContextAttention(nn.Module):
                     else local[row]
                 )
                 attended.append(self._attend_candidates(q[row], candidates))
+            if capture_selection is not None:
+                if len(selected_rows) != batch:
+                    raise CompressedContextError("missing DSA selections in cached layer")
+                captured.append(torch.stack([
+                    F.pad(ids, (0, final_width - ids.numel()), value=-1)
+                    for ids in selected_rows
+                ], dim=0))
             inverse = self._rope(torch.stack(attended, dim=0), positions, inverse=True)
             outputs.append(self.output(inverse))
+        if capture_selection is not None:
+            capture_selection.append(torch.stack(captured, dim=1))
         return torch.stack(outputs, dim=1) if outputs else x.new_zeros(x.shape)
 
     def forward(
@@ -988,14 +1018,40 @@ class _V4CompressedContextAttention(nn.Module):
         attention_mask: torch.Tensor | None = None,
         document_ids: torch.Tensor | None = None,
         past_key_values: DeepseekV4HCACache | None = None,
+        shared_selection: torch.Tensor | None = None,
+        capture_selection: list[torch.Tensor] | None = None,
     ) -> torch.Tensor:
         if x.ndim != 3 or x.shape[-1] != self.config.hidden_size:
             raise ValueError(
                 f"compressed attention input must have shape [batch, sequence, {self.config.hidden_size}]"
             )
+        if shared_selection is not None or capture_selection is not None:
+            if self.mode != "csa" or not self.config.direct_token_indexer:
+                raise CompressedContextError("IndexShare requires direct-token CSA")
+            if document_ids is not None or (
+                attention_mask is not None and not bool(attention_mask.to(torch.bool).all())
+            ):
+                raise CompressedContextError(
+                    "IndexShare currently requires a single unpadded document"
+                )
+        if shared_selection is not None:
+            if (shared_selection.ndim != 3 or shared_selection.shape[:2] != x.shape[:2]
+                or shared_selection.dtype not in (torch.int32, torch.int64)):
+                raise CompressedContextError("IndexShare indices must be [batch, tokens, topk]")
+            if shared_selection.shape[-1] > self.config.index_topk:
+                raise CompressedContextError("IndexShare selection exceeds topk")
+            previous = past_key_values.cumulative_length if past_key_values is not None else 0
+            max_allowed = (
+                torch.arange(previous, previous + x.shape[1], device=x.device)
+                .view(1, -1, 1)
+            )
+            if bool(((shared_selection < -1) |
+                     (shared_selection > max_allowed)).any()):
+                raise CompressedContextError("IndexShare selection contains future or invalid indices")
         if past_key_values is not None:
             return self._forward_cached(
-                x, past_key_values, position_ids, attention_mask, document_ids
+                x, past_key_values, position_ids, attention_mask, document_ids,
+                shared_selection=shared_selection, capture_selection=capture_selection,
             )
         batch, sequence, _ = x.shape
         prepared = prepare_causal_attention(
@@ -1018,12 +1074,32 @@ class _V4CompressedContextAttention(nn.Module):
                 index = torch.tensor(cols, dtype=torch.long, device=x.device)
                 segment = x[row].index_select(0, index)
                 positions = prepared.position_ids[row].index_select(0, index)
-                segment_output = self._forward_segment(segment, positions)
+                row_capture: list[torch.Tensor] | None = (
+                    [] if capture_selection is not None else None
+                )
+                override = (
+                    shared_selection[row].index_select(0, index)
+                    if shared_selection is not None else None
+                )
+                segment_output = self._forward_segment(
+                    segment, positions,
+                    shared_selection=override,
+                    capture_selection=row_capture,
+                )
+                if capture_selection is not None:
+                    assert row_capture is not None and len(row_capture) == 1
+                    capture_selection.append(row_capture[0])
                 output[row].index_copy_(0, index, segment_output)
         if not bool(torch.isfinite(output).all()):
             raise CompressedContextError(
                 f"{self.mode.upper()} produced non-finite output"
             )
+        if capture_selection is not None:
+            if len(capture_selection) != batch:
+                raise CompressedContextError("IndexShare capture must cover every batch row")
+            captured = torch.stack(capture_selection, dim=0)
+            capture_selection.clear()
+            capture_selection.append(captured)
         return output
 
 

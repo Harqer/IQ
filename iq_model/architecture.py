@@ -18,6 +18,7 @@ class HybridLayerType(str, Enum):
     HCA = "hca"
     DENSE_ATTENTION = "dense_attention"
     PARALLEL_CSA = "parallel_csa"
+    PARALLEL_DENSE_CSA = "parallel_dense_csa"
     PARALLEL_HCA = "parallel_hca"
 
     @property
@@ -27,6 +28,7 @@ class HybridLayerType(str, Enum):
             HybridLayerType.HCA,
             HybridLayerType.DENSE_ATTENTION,
             HybridLayerType.PARALLEL_CSA,
+            HybridLayerType.PARALLEL_DENSE_CSA,
             HybridLayerType.PARALLEL_HCA,
         }
 
@@ -34,6 +36,7 @@ class HybridLayerType(str, Enum):
     def is_parallel(self) -> bool:
         return self in {
             HybridLayerType.PARALLEL_CSA,
+            HybridLayerType.PARALLEL_DENSE_CSA,
             HybridLayerType.PARALLEL_HCA,
         }
 
@@ -43,7 +46,7 @@ class HybridLayerType(str, Enum):
 
     @property
     def has_moe(self) -> bool:
-        return self is HybridLayerType.MOE or self.is_parallel
+        return self is HybridLayerType.MOE or self in {HybridLayerType.PARALLEL_CSA, HybridLayerType.PARALLEL_HCA}
 
 
 @dataclass(frozen=True)
@@ -89,6 +92,8 @@ class HybridSchedule:
             "dense": HybridLayerType.DENSE_ATTENTION,
             "dense_attention": HybridLayerType.DENSE_ATTENTION,
             "parallel_csa": HybridLayerType.PARALLEL_CSA,
+            "parallel_dense_csa": HybridLayerType.PARALLEL_DENSE_CSA,
+            "pdc": HybridLayerType.PARALLEL_DENSE_CSA,
             "parallel_hca": HybridLayerType.PARALLEL_HCA,
             "pc": HybridLayerType.PARALLEL_CSA,
             "ph": HybridLayerType.PARALLEL_HCA,

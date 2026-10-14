@@ -31,6 +31,7 @@ from .reasoning import (
 )
 from .state import Mamba3MIMOConfig, Mamba3MIMOState
 from .parallel import ParallelBranchFusion, ExpertResidualGate
+from .mlp import SwiGLU
 from .attention.compressed import DeepseekV4CSACache, DeepseekV4HCACache
 from .attention.context_dense import DenseContextCache
 
@@ -74,6 +75,8 @@ class IQHybridConfig:
     energy_critic: ReasoningEnergyCriticConfig | None = None
     multimodal: IQMultimodalConfig | None = None
     require_verifier_stability: bool = False
+    parallel_dense_layers: tuple[int, ...] = ()
+    parallel_index_sources: tuple[int, ...] = ()
 
     def __post_init__(self) -> None:
         hidden = self.model.hidden_size
@@ -108,12 +111,33 @@ class IQHybridConfig:
                 "Mamba-3 num_layers must equal the number of Mamba layers in the schedule: "
                 f"config={self.mamba3.num_layers}, schedule={mamba_layers}"
             )
-        if not self.schedule.moe_positions:
+        dense_layers = self.parallel_dense_layers
+        if (
+            len(dense_layers) != len(set(dense_layers))
+            or tuple(sorted(dense_layers)) != dense_layers
+            or tuple(self.schedule.positions(HybridLayerType.PARALLEL_DENSE_CSA)) != dense_layers
+        ):
+            raise HybridModelError(
+                "parallel_dense_layers must be sorted, unique parallel schedule positions"
+            )
+        if not (set(self.schedule.moe_positions) - set(dense_layers)):
             raise HybridModelError("hybrid schedule requires at least one MoE layer")
+        if self.parallel_index_sources:
+            if len(self.parallel_index_sources) != len(self.schedule.layers):
+                raise HybridModelError("parallel_index_sources length must match schedule")
+            if any(kind not in {HybridLayerType.PARALLEL_CSA, HybridLayerType.PARALLEL_DENSE_CSA} for kind in self.schedule.layers):
+                raise HybridModelError("IndexShare requires all parallel CSA blocks")
+            for i, owner in enumerate(self.parallel_index_sources):
+                if type(owner) is not int or owner < 0 or owner > i:
+                    raise HybridModelError("invalid DSA IndexShare source index")
+                if self.parallel_index_sources[owner] != owner:
+                    raise HybridModelError("IndexShare must reference a full-indexer block")
+            if not self.compressed_context or not self.compressed_context.direct_token_indexer:
+                raise HybridModelError("DSA IndexShare requires direct-token CSA indexing")
         compressed_layers = sum(
             layer in {
                 HybridLayerType.CSA, HybridLayerType.HCA,
-                HybridLayerType.PARALLEL_CSA, HybridLayerType.PARALLEL_HCA,
+                HybridLayerType.PARALLEL_CSA, HybridLayerType.PARALLEL_DENSE_CSA, HybridLayerType.PARALLEL_HCA,
             }
             for layer in self.schedule.layers
         )
@@ -215,6 +239,8 @@ class IQHybridConfig:
                 else None
             ),
             "require_verifier_stability": self.require_verifier_stability,
+            "parallel_dense_layers": list(self.parallel_dense_layers),
+            "parallel_index_sources": list(self.parallel_index_sources),
         }
 
     @classmethod
@@ -237,6 +263,16 @@ class IQHybridConfig:
         require_verifier_stability = bool(
             data.get("require_verifier_stability", False)
         )
+        parallel_dense_layers = data.get("parallel_dense_layers", [])
+        parallel_index_sources = data.get("parallel_index_sources", [])
+        if not isinstance(parallel_dense_layers, list) or any(
+            type(index) is not int for index in parallel_dense_layers
+        ):
+            raise HybridModelError("parallel_dense_layers must be a list of integers")
+        if not isinstance(parallel_index_sources, list) or any(
+            type(index) is not int for index in parallel_index_sources
+        ):
+            raise HybridModelError("parallel_index_sources must be a list of integers")
         if not isinstance(model, dict):
             raise HybridModelError("hybrid config model must be an object")
         if not isinstance(schedule, dict):
@@ -307,6 +343,8 @@ class IQHybridConfig:
                     else None
                 ),
                 require_verifier_stability=require_verifier_stability,
+                parallel_dense_layers=tuple(parallel_dense_layers),
+                parallel_index_sources=tuple(parallel_index_sources),
             )
         except (TypeError, ValueError) as exc:
             raise HybridModelError(
@@ -362,7 +400,8 @@ def validate_canonical_hybrid_backbone(
     compressed_layers = sum(
         layer in {
             HybridLayerType.CSA, HybridLayerType.HCA,
-            HybridLayerType.PARALLEL_CSA, HybridLayerType.PARALLEL_HCA,
+            HybridLayerType.PARALLEL_CSA, HybridLayerType.PARALLEL_DENSE_CSA,
+            HybridLayerType.PARALLEL_HCA,
         }
         for layer in config.schedule.layers
     )
@@ -788,13 +827,16 @@ class ParallelMambaContextMoEBlock(nn.Module):
         stable_moe_config: StableLatentMoEConfig | None,
         *,
         mode: HybridLayerType,
+        dense_ffn: bool = False,
         mamba_layer_idx: int,
         dtype: torch.dtype,
         device: torch.device | str,
     ) -> None:
         super().__init__()
-        if mode not in {HybridLayerType.PARALLEL_CSA, HybridLayerType.PARALLEL_HCA}:
+        if mode not in {HybridLayerType.PARALLEL_CSA, HybridLayerType.PARALLEL_DENSE_CSA, HybridLayerType.PARALLEL_HCA}:
             raise HybridModelError("parallel block requires PARALLEL_CSA or PARALLEL_HCA")
+        if dense_ffn != (mode is HybridLayerType.PARALLEL_DENSE_CSA):
+            raise HybridModelError("parallel dense mode and dense_ffn flag disagree")
         self.norm = RMSNorm(
             model_config.hidden_size, model_config.rms_norm_eps
         ).to(device=device, dtype=dtype)
@@ -803,7 +845,7 @@ class ParallelMambaContextMoEBlock(nn.Module):
         )
         self.attention = (
             CompressedSparseContextAttention(compressed_config)
-            if mode is HybridLayerType.PARALLEL_CSA
+            if mode in {HybridLayerType.PARALLEL_CSA, HybridLayerType.PARALLEL_DENSE_CSA}
             else HeavilyCompressedContextAttention(compressed_config)
         ).to(device=device, dtype=dtype)
         self.fusion = ParallelBranchFusion(
@@ -811,18 +853,26 @@ class ParallelMambaContextMoEBlock(nn.Module):
         )
         self.expert_gate = ExpertResidualGate(device=device, dtype=dtype)
         self.residual_dropout = nn.Dropout(model_config.residual_dropout)
-        if stable_moe_config is not None:
-            self.moe = StableLatentMoELayer(
-                stable_moe_config,
-                norm_eps=model_config.rms_norm_eps,
-                residual_dropout=model_config.residual_dropout,
+        if dense_ffn:
+            self.dense_ffn = nn.Sequential(
+                RMSNorm(model_config.hidden_size, model_config.rms_norm_eps),
+                SwiGLU(model_config),
             ).to(device=device, dtype=dtype)
+            self.moe = None
         else:
-            self.moe = RoutedSwiGLUMoELayer(
-                moe_config,
-                norm_eps=model_config.rms_norm_eps,
-                residual_dropout=model_config.residual_dropout,
-            ).to(device=device, dtype=dtype)
+            self.dense_ffn = None
+            if stable_moe_config is not None:
+                self.moe = StableLatentMoELayer(
+                    stable_moe_config,
+                    norm_eps=model_config.rms_norm_eps,
+                    residual_dropout=model_config.residual_dropout,
+                ).to(device=device, dtype=dtype)
+            else:
+                self.moe = RoutedSwiGLUMoELayer(
+                    moe_config,
+                    norm_eps=model_config.rms_norm_eps,
+                    residual_dropout=model_config.residual_dropout,
+                ).to(device=device, dtype=dtype)
 
     def forward(
         self,
@@ -833,7 +883,9 @@ class ParallelMambaContextMoEBlock(nn.Module):
         document_ids: torch.Tensor | None,
         inference_params: Any | None = None,
         past_key_values: DeepseekV4CSACache | DeepseekV4HCACache | None = None,
-    ) -> tuple[torch.Tensor, MoEOutput | StableLatentMoEOutput]:
+        shared_selection: torch.Tensor | None = None,
+        capture_selection: list[torch.Tensor] | None = None,
+    ) -> tuple[torch.Tensor, MoEOutput | StableLatentMoEOutput | None]:
         hidden = self.norm(x)
         if inference_params is None:
             packed = pack_mamba_varlen(
@@ -852,12 +904,36 @@ class ParallelMambaContextMoEBlock(nn.Module):
             attention_mask=attention_mask,
             document_ids=document_ids,
             past_key_values=past_key_values,
+            shared_selection=shared_selection,
+            capture_selection=capture_selection,
         )
         mixed = x + self.residual_dropout(
             self.fusion(mamba_delta, attention_delta)
         )
+        if self.dense_ffn is not None:
+            # GLM first three stages are dense SwiGLU, not MoE.
+            delta = self.dense_ffn(mixed)
+            return self.expert_gate(mixed, mixed + delta), None
+        assert self.moe is not None
         expert = self.moe(mixed)
         return self.expert_gate(mixed, expert.hidden_states), expert
+
+
+def unsharded_parallel_expert_weight_bytes(
+    config: IQHybridConfig, *, bytes_per_element: int = 2
+) -> int:
+    """Lower-bound for all resident routed expert matrices, ignoring overhead."""
+    if bytes_per_element <= 0:
+        raise ValueError("bytes_per_element must be positive")
+    if config.stable_moe is None:
+        return 0
+    active = len(set(config.schedule.parallel_positions) - set(config.parallel_dense_layers))
+    moe = config.stable_moe
+    return (
+        active * moe.num_experts * 3
+        * moe.latent_size * moe.expert_intermediate_size
+        * bytes_per_element
+    )
 
 
 class IQHybridForCausalLM(nn.Module):
@@ -883,6 +959,20 @@ class IQHybridForCausalLM(nn.Module):
             raise HybridModelError(
                 "IQHybridForCausalLM requires the production CUDA Mamba-3 MIMO runtime"
             )
+        if config.parallel_dense_layers and config.stable_moe is not None:
+            bytes_per_element = torch.tensor([], dtype=dtype).element_size()
+            expert_lower_bound = unsharded_parallel_expert_weight_bytes(
+                config, bytes_per_element=bytes_per_element
+            )
+            free_bytes, _ = torch.cuda.mem_get_info(device_obj)
+            if expert_lower_bound > free_bytes:
+                raise HybridModelError(
+                    "Full 256-expert IQ parallel configuration cannot fit in "
+                    "this unsharded CUDA process: routed matrices alone need "
+                    f"{expert_lower_bound / 2**30:.1f} GiB, "
+                    f"available={free_bytes / 2**30:.1f} GiB. "
+                    "Implement Megatron Core expert-parallel sharding before loading."
+                )
 
         self.embed_tokens = nn.Embedding(
             config.model.vocab_size,
@@ -904,6 +994,7 @@ class IQHybridForCausalLM(nn.Module):
                 mamba_layer_idx += 1
             elif layer_type in {
                 HybridLayerType.PARALLEL_CSA,
+                HybridLayerType.PARALLEL_DENSE_CSA,
                 HybridLayerType.PARALLEL_HCA,
             }:
                 assert config.compressed_context is not None
@@ -914,6 +1005,7 @@ class IQHybridForCausalLM(nn.Module):
                     config.moe,
                     config.stable_moe if config.moe_variant == "stable_latent" else None,
                     mode=layer_type,
+                    dense_ffn=len(self.layers) in config.parallel_dense_layers,
                     mamba_layer_idx=mamba_layer_idx,
                     dtype=dtype,
                     device=device_obj,
@@ -1028,7 +1120,7 @@ class IQHybridForCausalLM(nn.Module):
             int, DeepseekV4CSACache | DeepseekV4HCACache | DenseContextCache
         ] = {}
         for index, layer_type in enumerate(self.config.schedule.layers):
-            if layer_type in {HybridLayerType.CSA, HybridLayerType.PARALLEL_CSA}:
+            if layer_type in {HybridLayerType.CSA, HybridLayerType.PARALLEL_CSA, HybridLayerType.PARALLEL_DENSE_CSA}:
                 assert self.config.compressed_context is not None
                 caches[index] = DeepseekV4CSACache(self.config.compressed_context)
             elif layer_type in {HybridLayerType.HCA, HybridLayerType.PARALLEL_HCA}:
@@ -1202,7 +1294,16 @@ class IQHybridForCausalLM(nn.Module):
         elif media_document_ids is not None:
             raise HybridModelError("media_document_ids requires document_ids and visual input")
 
+        if self.config.parallel_index_sources and (
+            document_ids is not None or (
+                attention_mask is not None and not bool(attention_mask.to(torch.bool).all())
+            )
+        ):
+            raise HybridModelError(
+                "GLM DSA IndexShare currently requires one unpadded document"
+            )
         x = self.embed_tokens(input_ids)
+        indexshare: dict[int, torch.Tensor] = {}
         moe_outputs: list[MoEOutput | StableLatentMoEOutput] = []
         attnres_state = (
             self.attnres.init_state(x)
@@ -1230,8 +1331,20 @@ class IQHybridForCausalLM(nn.Module):
                 )
             elif layer_type in {
                 HybridLayerType.PARALLEL_CSA,
+                HybridLayerType.PARALLEL_DENSE_CSA,
                 HybridLayerType.PARALLEL_HCA,
             }:
+                source = (
+                    self.config.parallel_index_sources[layer_index]
+                    if self.config.parallel_index_sources else layer_index
+                )
+                source_indices = (
+                    indexshare[source] if source != layer_index else None
+                )
+                selected_here: list[torch.Tensor] | None = (
+                    [] if self.config.parallel_index_sources and source == layer_index
+                    else None
+                )
                 layer_output, moe_output = layer(
                     layer_input,
                     position_ids=position_ids,
@@ -1244,8 +1357,15 @@ class IQHybridForCausalLM(nn.Module):
                         inference_cache.attention[layer_index]
                         if inference_cache is not None else None
                     ),
+                    shared_selection=source_indices,
+                    capture_selection=selected_here,
                 )
-                moe_outputs.append(moe_output)
+                if selected_here is not None:
+                    if len(selected_here) != 1:
+                        raise HybridModelError("DSA IndexShare provider did not emit indices")
+                    indexshare[layer_index] = selected_here[0]
+                if moe_output is not None:
+                    moe_outputs.append(moe_output)
             elif layer_type is HybridLayerType.MOE:
                 moe_output = layer(layer_input)
                 layer_output = moe_output.hidden_states

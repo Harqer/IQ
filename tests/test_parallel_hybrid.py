@@ -6,6 +6,7 @@ import unittest
 import torch
 
 from iq_model import HybridLayerType, HybridSchedule, IQHybridConfig, HybridModelError
+from iq_model.hybrid import unsharded_parallel_expert_weight_bytes
 from iq_model.parallel import ParallelBranchFusion, ParallelFusionError, ExpertResidualGate
 from iq_transfer.complete_transplant import (
     canonical_glm53_config,
@@ -68,14 +69,30 @@ class ParallelHybridScheduleTests(unittest.TestCase):
         self.assertEqual(len(schedule.parallel_positions), 78)
         self.assertEqual(len(schedule.mamba_positions), 78)
         self.assertEqual(len(schedule.attention_positions), 78)
-        self.assertEqual(len(schedule.moe_positions), 78)
+        self.assertEqual(len(schedule.moe_positions), 75)
+        self.assertEqual(schedule.parallel_positions[:3], (0, 1, 2))
         self.assertEqual(config.mamba3.num_layers, 78)
         self.assertEqual(config.model.num_hidden_layers, 78)
         self.assertEqual(config.model.hidden_size, 4096)
         self.assertEqual(config.model.vocab_size, 131072)
         self.assertEqual(config.attnres.num_layers, 78)
-        self.assertEqual(schedule.layers[0], HybridLayerType.PARALLEL_CSA)
-        self.assertEqual(schedule.layers[1], HybridLayerType.PARALLEL_HCA)
+        self.assertEqual(schedule.layers[0], HybridLayerType.PARALLEL_DENSE_CSA)
+        self.assertEqual(schedule.layers[1], HybridLayerType.PARALLEL_DENSE_CSA)
+        self.assertEqual(schedule.layers[3], HybridLayerType.PARALLEL_CSA)
+        self.assertEqual(config.parallel_dense_layers, (0, 1, 2))
+        self.assertEqual(len(config.parallel_index_sources), 78)
+        self.assertEqual(config.parallel_index_sources[3:7], (2, 2, 2, 6))
+        self.assertEqual(config.moe.num_experts, 256)
+        self.assertEqual(config.stable_moe.num_experts, 256)
+        self.assertEqual(config.stable_moe.top_k, 8)
+        self.assertEqual(config.model.intermediate_size, 12288)
+
+    def test_full_256_expert_capacity_is_not_a_single_gpu_checkpoint(self):
+        config = nvidia_parallel_78_config()
+        size = unsharded_parallel_expert_weight_bytes(config)
+        expected = 75 * 256 * 3 * 2048 * 2048 * 2
+        self.assertEqual(size, expected)
+        self.assertGreater(size, 400 * (2 ** 30))
 
     def test_config_round_trip_is_exact(self):
         config = nvidia_parallel_78_config()
@@ -90,6 +107,17 @@ class ParallelHybridScheduleTests(unittest.TestCase):
         self.assertFalse(config.schedule.parallel_positions)
         self.assertEqual(len(config.schedule.attention_positions), 24)
         self.assertEqual(len(config.schedule.moe_positions), 24)
+
+    def test_cannot_erase_three_dense_ffn_stages_or_create_invalid_indexshare(self):
+        config = nvidia_parallel_78_config()
+        with self.assertRaisesRegex(HybridModelError, "sorted, unique"):
+            replace(config, parallel_dense_layers=(1, 0, 2))
+        invalid = list(config.parallel_index_sources)
+        invalid[4] = 3
+        with self.assertRaisesRegex(HybridModelError, "full-indexer"):
+            replace(config, parallel_index_sources=tuple(invalid))
+        with self.assertRaisesRegex(HybridModelError, "length must match"):
+            replace(config, parallel_index_sources=(0, 1))
 
     def test_config_cannot_miscount_recurrent_slots(self):
         config = nvidia_parallel_78_config()
