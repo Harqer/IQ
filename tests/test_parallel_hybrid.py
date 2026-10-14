@@ -6,7 +6,7 @@ import unittest
 import torch
 
 from iq_model import HybridLayerType, HybridSchedule, IQHybridConfig, HybridModelError
-from iq_model.parallel import ParallelBranchFusion, ParallelFusionError
+from iq_model.parallel import ParallelBranchFusion, ParallelFusionError, ExpertResidualGate
 from iq_transfer.complete_transplant import (
     canonical_glm53_config,
     nvidia_parallel_78_config,
@@ -34,6 +34,23 @@ class ParallelFusionTests(unittest.TestCase):
         self.assertGreater(float(gradient[:, 4:].abs().sum()), 0.0)
         self.assertTrue(torch.equal(mamba.grad, torch.ones_like(mamba)))
         self.assertTrue(torch.equal(attention.grad, torch.zeros_like(attention)))
+
+    def test_uncalibrated_expert_does_not_change_pretrained_output(self):
+        gate = ExpertResidualGate()
+        pretrained = torch.randn(2, 3, 4)
+        random_expert = torch.randn_like(pretrained)
+        self.assertTrue(torch.equal(gate(pretrained, random_expert), pretrained))
+        gate(pretrained, random_expert).sum().backward()
+        self.assertIsNotNone(gate.scale.grad)
+        self.assertTrue(torch.isfinite(gate.scale.grad).all())
+        with torch.no_grad():
+            gate.scale.fill_(1.0)
+        self.assertTrue(torch.equal(gate(pretrained, random_expert), random_expert))
+
+    def test_expert_gate_rejects_incompatible_output(self):
+        gate = ExpertResidualGate()
+        with self.assertRaises(ParallelFusionError):
+            gate(torch.ones(1, 2, 4), torch.ones(1, 3, 4))
 
     def test_invalid_branch_shape_fails_closed(self):
         fusion = ParallelBranchFusion(4)
