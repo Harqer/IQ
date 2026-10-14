@@ -280,7 +280,7 @@ def nvidia_parallel_78_config(*, expert_parallel_size: int = 1) -> IQHybridConfi
         expert_parallel_size=expert_parallel_size,
         parallel_index_sources=index_source_layers(expected_indexer_types()),
         moe=replace(base.moe, num_experts=256, top_k=8),
-        stable_moe=replace(base.stable_moe, num_experts=256, top_k=8, num_shared_experts=1),
+        stable_moe=replace(base.stable_moe, num_experts=256, top_k=8, num_shared_experts=1, expert_activation="silu"),
         mamba3=replace(base.mamba3, num_layers=78),
         attnres=replace(base.attnres, num_layers=78),
     )
