@@ -186,7 +186,7 @@ def compile_glm53_expert_shard(
                     )
                 completed_transfers.add(parameter)
             elif parameter.endswith((
-                ".norm.weight", ".latent_norm.weight",
+                ".norm.weight", ".dense_ffn.0.weight", ".latent_norm.weight",
                 ".latent_down.weight", ".latent_up.weight",
             )):
                 continue
