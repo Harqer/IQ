@@ -115,7 +115,7 @@ class IQHybridConfig:
         if (
             len(dense_layers) != len(set(dense_layers))
             or tuple(sorted(dense_layers)) != dense_layers
-            or not set(dense_layers).issubset(self.schedule.parallel_positions)
+            or tuple(self.schedule.positions(HybridLayerType.PARALLEL_DENSE_CSA)) != dense_layers
         ):
             raise HybridModelError(
                 "parallel_dense_layers must be sorted, unique parallel schedule positions"
@@ -125,7 +125,7 @@ class IQHybridConfig:
         if self.parallel_index_sources:
             if len(self.parallel_index_sources) != len(self.schedule.layers):
                 raise HybridModelError("parallel_index_sources length must match schedule")
-            if any(kind is not HybridLayerType.PARALLEL_CSA for kind in self.schedule.layers):
+            if any(kind not in {HybridLayerType.PARALLEL_CSA, HybridLayerType.PARALLEL_DENSE_CSA} for kind in self.schedule.layers):
                 raise HybridModelError("IndexShare requires all parallel CSA blocks")
             for i, owner in enumerate(self.parallel_index_sources):
                 if type(owner) is not int or owner < 0 or owner > i:
@@ -137,7 +137,7 @@ class IQHybridConfig:
         compressed_layers = sum(
             layer in {
                 HybridLayerType.CSA, HybridLayerType.HCA,
-                HybridLayerType.PARALLEL_CSA, HybridLayerType.PARALLEL_HCA,
+                HybridLayerType.PARALLEL_CSA, HybridLayerType.PARALLEL_DENSE_CSA, HybridLayerType.PARALLEL_HCA,
             }
             for layer in self.schedule.layers
         )
@@ -832,8 +832,10 @@ class ParallelMambaContextMoEBlock(nn.Module):
         device: torch.device | str,
     ) -> None:
         super().__init__()
-        if mode not in {HybridLayerType.PARALLEL_CSA, HybridLayerType.PARALLEL_HCA}:
+        if mode not in {HybridLayerType.PARALLEL_CSA, HybridLayerType.PARALLEL_DENSE_CSA, HybridLayerType.PARALLEL_HCA}:
             raise HybridModelError("parallel block requires PARALLEL_CSA or PARALLEL_HCA")
+        if dense_ffn != (mode is HybridLayerType.PARALLEL_DENSE_CSA):
+            raise HybridModelError("parallel dense mode and dense_ffn flag disagree")
         self.norm = RMSNorm(
             model_config.hidden_size, model_config.rms_norm_eps
         ).to(device=device, dtype=dtype)
@@ -842,7 +844,7 @@ class ParallelMambaContextMoEBlock(nn.Module):
         )
         self.attention = (
             CompressedSparseContextAttention(compressed_config)
-            if mode is HybridLayerType.PARALLEL_CSA
+            if mode in {HybridLayerType.PARALLEL_CSA, HybridLayerType.PARALLEL_DENSE_CSA}
             else HeavilyCompressedContextAttention(compressed_config)
         ).to(device=device, dtype=dtype)
         self.fusion = ParallelBranchFusion(
@@ -991,6 +993,7 @@ class IQHybridForCausalLM(nn.Module):
                 mamba_layer_idx += 1
             elif layer_type in {
                 HybridLayerType.PARALLEL_CSA,
+                HybridLayerType.PARALLEL_DENSE_CSA,
                 HybridLayerType.PARALLEL_HCA,
             }:
                 assert config.compressed_context is not None
@@ -1116,7 +1119,7 @@ class IQHybridForCausalLM(nn.Module):
             int, DeepseekV4CSACache | DeepseekV4HCACache | DenseContextCache
         ] = {}
         for index, layer_type in enumerate(self.config.schedule.layers):
-            if layer_type in {HybridLayerType.CSA, HybridLayerType.PARALLEL_CSA}:
+            if layer_type in {HybridLayerType.CSA, HybridLayerType.PARALLEL_CSA, HybridLayerType.PARALLEL_DENSE_CSA}:
                 assert self.config.compressed_context is not None
                 caches[index] = DeepseekV4CSACache(self.config.compressed_context)
             elif layer_type in {HybridLayerType.HCA, HybridLayerType.PARALLEL_HCA}:
