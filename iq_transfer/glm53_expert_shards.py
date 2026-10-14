@@ -19,6 +19,7 @@ from .glm53_calibration import GLM53CalibrationSolution
 from .glm53_parallel_contract import GLM53Topology
 from .complete_transplant import nvidia_parallel_78_config
 from .glm53_donor_preflight import audit_glm53_donor, GLM53DonorPreflightError
+from .glm53_expert_mapping import iter_glm53_expert_transfer_tasks
 
 
 class GLM53ExpertShardError(RuntimeError):
@@ -143,6 +144,13 @@ def compile_glm53_expert_shard(
     except ImportError as exc:
         raise GLM53ExpertShardError("safetensors is required") from exc
 
+    # Match each source-backed output to the deterministic rank-owned registry.
+    expected_transfer = {
+        task.destination: task.source
+        for task in iter_glm53_expert_transfer_tasks(ep_size)
+        if task.owner == ep_rank
+    }
+    completed_transfers: set[str] = set()
     destination.mkdir(parents=True, exist_ok=False)
     manifest: dict[str, Any] = {
         "artifact_type": "iq_glm53_full_expert_ep_shard",
@@ -168,6 +176,24 @@ def compile_glm53_expert_shard(
     }
 
     def write(name: str, tensors: Mapping[str, torch.Tensor]) -> None:
+        # Learned calibration matrices/normalization are separate IQ-native
+        # tensors; every source-backed tensor must match a registry entry.
+        for parameter in tensors:
+            if parameter in expected_transfer:
+                if parameter in completed_transfers:
+                    raise GLM53ExpertShardError(
+                        f"duplicate transferred parameter: {parameter}"
+                    )
+                completed_transfers.add(parameter)
+            elif parameter.endswith((
+                ".norm.weight", ".latent_norm.weight",
+                ".latent_down.weight", ".latent_up.weight",
+            )):
+                continue
+            else:
+                raise GLM53ExpertShardError(
+                    f"unregistered GLM-to-IQ destination: {parameter}"
+                )
         path = destination / name
         path.parent.mkdir(parents=True, exist_ok=True)
         save_file(dict(sorted(tensors.items())), str(path))
@@ -296,6 +322,13 @@ def compile_glm53_expert_shard(
         raise GLM53ExpertShardError(
             f"missing transferred expert shards: {actual_routed} != {expected_routed}"
         )
+    absent = sorted(set(expected_transfer) - completed_transfers)
+    if absent:
+        raise GLM53ExpertShardError(
+            f"missing {len(absent)} registered GLM-to-IQ tensor transfers: "
+            f"{absent[:3]}"
+        )
+    manifest["registered_transferred_tensors"] = len(completed_transfers)
     manifest["local_expert_shards"] = expected_routed
     path = destination / "manifest.json"
     path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n",
