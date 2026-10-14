@@ -354,10 +354,6 @@ def load_official_mamba3_foundation_globals(
 
     GLM-5.3 never owns these lexical tensors in the canonical IQ build.
     """
-    if target_mamba_layers not in (32, 78):
-        raise Mamba3DirectTransferError(
-            "supported direct Mamba target depths are 32 and 78"
-        )
     checkpoint_dir = Path(checkpoint)
     config_path = checkpoint_dir / "config.json"
     weights_path = checkpoint_dir / "pytorch_model.bin"
@@ -873,6 +869,10 @@ def compile_official_mamba3_mimo_15b_transplant(
     When NVIDIA is the lexical owner, pass include_foundation_globals=False;
     donor Mamba embeddings/LM head must not replace NVIDIA lexical weights.
     """
+    if target_mamba_layers not in (32, 78):
+        raise Mamba3DirectTransferError(
+            "supported direct Mamba target depths are 32 and 78"
+        )
     checkpoint_dir = Path(checkpoint)
     config_path = checkpoint_dir / "config.json"
     weights_path = checkpoint_dir / "pytorch_model.bin"
