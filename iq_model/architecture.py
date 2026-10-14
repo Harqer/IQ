@@ -36,6 +36,7 @@ class HybridLayerType(str, Enum):
     def is_parallel(self) -> bool:
         return self in {
             HybridLayerType.PARALLEL_CSA,
+            HybridLayerType.PARALLEL_DENSE_CSA,
             HybridLayerType.PARALLEL_HCA,
         }
 
