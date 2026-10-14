@@ -48,3 +48,22 @@ class ParallelBranchFusion(nn.Module):
                 "parallel branches must be [batch, tokens, hidden_size]"
             )
         return self.projection(torch.cat((mamba_delta, attention_delta), dim=-1))
+
+
+
+class ExpertResidualGate(nn.Module):
+    """Keep an uncalibrated expert residual neutral until weight alignment.
+
+    Unlike bypassing the expert, its residual update is still computed, so the
+    gate receives a useful gradient. Downstream training must decide when to
+    open the gate; zero does not make random expert weights pretrained.
+    """
+
+    def __init__(self, *, device=None, dtype=None) -> None:
+        super().__init__()
+        self.scale = nn.Parameter(torch.zeros((), device=device, dtype=dtype))
+
+    def forward(self, residual_input: torch.Tensor, expert_output: torch.Tensor) -> torch.Tensor:
+        if residual_input.shape != expert_output.shape:
+            raise ParallelFusionError("expert output and residual input must match")
+        return residual_input + self.scale * (expert_output - residual_input)
