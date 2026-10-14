@@ -107,6 +107,8 @@ def _sharded_state(
     model: nn.Module, optimizer: torch.optim.Optimizer,
     progress: IQCheckpointProgress, *, scheduler: Any,
     dataloader_state: Mapping[str, Any],
+    load_template: bool = False,
+    saved_tensor_keys: set[str] | None = None,
 ) -> dict[str, Any]:
     _, ShardedObject, ShardedTensor = _core()
     rank, world, _ = _ep_world(model)
@@ -147,20 +149,33 @@ def _sharded_state(
                 raise IQDistributedCheckpointError("AdamW has a parameter not owned by IQ model")
             names.append(local_name)
             state_values = optimizer.state.get(parameter)
-            if not state_values or set(state_values) != {"step", "exp_avg", "exp_avg_sq"}:
+            if state_values and set(state_values) != {"step", "exp_avg", "exp_avg_sq"}:
                 raise IQDistributedCheckpointError(
-                    f"AdamW state missing/incompatible for {local_name}; "
-                    "complete at least one training step before saving"
+                    f"unsupported AdamW state structure for {local_name}"
                 )
-            step = state_values["step"]
-            if not isinstance(step, torch.Tensor) or step.numel() != 1:
-                raise IQDistributedCheckpointError("AdamW step must be scalar tensor")
-            steps[local_name] = step.detach().cpu().clone()
-            for moment in ("exp_avg", "exp_avg_sq"):
-                data = state_values[moment]
+            if state_values:
+                step = state_values["step"]
+                if not isinstance(step, torch.Tensor) or step.numel() != 1:
+                    raise IQDistributedCheckpointError("AdamW step must be scalar tensor")
+                steps[local_name] = step.detach().cpu().clone()
+            canonical = mapped[local_name]
+            requested = [
+                moment for moment in ("exp_avg", "exp_avg_sq")
+                if (
+                    (load_template and saved_tensor_keys is not None and
+                     f"iq.optimizer.{canonical}.{moment}" in saved_tensor_keys)
+                    or (not load_template and bool(state_values))
+                )
+            ]
+            if load_template and len(requested) not in (0, 2):
+                raise IQDistributedCheckpointError("checkpoint has incomplete AdamW moments")
+            for moment in requested:
+                data = (
+                    torch.empty_like(parameter, memory_format=torch.preserve_format)
+                    if load_template else state_values[moment]
+                )
                 if not isinstance(data, torch.Tensor) or data.shape != parameter.shape:
                     raise IQDistributedCheckpointError("invalid AdamW moment shape")
-                canonical = mapped[local_name]
                 pieces["optimizer"][f"{local_name}.{moment}"] = (
                     ShardedTensor.from_rank_offsets(
                         f"iq.optimizer.{canonical}.{moment}",
@@ -283,9 +298,11 @@ def load_training_checkpoint(
 
     # Populate guidance using real local model/optimizer memory before loading.
     candidate = IQCheckpointProgress(iteration, 0, expected_run_id, expected_fingerprint)
+    saved_tensor_keys = set(dcp.load_tensors_metadata(str(directory)))
     template = _sharded_state(
         model, optimizer, candidate, scheduler=scheduler,
-        dataloader_state={},
+        dataloader_state={}, load_template=True,
+        saved_tensor_keys=saved_tensor_keys,
     )
     metadata = dcp.load_content_metadata(str(directory))
     if not isinstance(metadata, dict) or (
@@ -335,11 +352,18 @@ def load_training_checkpoint(
     optimizer_states = {}
     for name, parameter in local_params.items():
         step = payload["optimizer_steps"].get(name)
-        if step is None:
-            raise IQDistributedCheckpointError(f"checkpoint optimizer step missing: {name}")
+        moment_keys = [f"{name}.{key}" for key in ("exp_avg", "exp_avg_sq")]
+        present = [key in restored["optimizer"] for key in moment_keys]
+        if present == [False, False] and step is None:
+            # AdamW lazily initializes never-selected expert weights.
+            continue
+        if present != [True, True] or step is None:
+            raise IQDistributedCheckpointError(
+                f"AdamW step/moments incomplete for {name}"
+            )
         state = {"step": step}
-        for moment in ("exp_avg", "exp_avg_sq"):
-            value = restored["optimizer"][f"{name}.{moment}"]
+        for moment, key in zip(("exp_avg", "exp_avg_sq"), moment_keys):
+            value = restored["optimizer"][key]
             tensor = value.data if hasattr(value, "data") else value
             if tuple(tensor.shape) != tuple(parameter.shape):
                 raise IQDistributedCheckpointError("AdamW optimizer shard shape mismatch")
