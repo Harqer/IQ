@@ -115,7 +115,7 @@ def mapping_kind(name: str, config: IQHybridConfig) -> tuple[str, str]:
         if group == "mamba":
             return ("mamba3-mimo-1.5b", "verified_24_to_78_native_overlay")
         if group == "attention":
-            return ("glm53", "MLA_DSA_coordinate_transport_and_indexshare_alignment")
+            return ("glm53", "BLOCKED_until_MLA_DSA_operator_mapping_and_indexshare_parity")
         if group == "dense_ffn":
             if layer not in config.parallel_dense_layers:
                 raise ParallelMappingError("dense tensor appears outside first three stages")
@@ -190,6 +190,10 @@ def plan_global_inventory(records: Iterable[ParameterRecord],
         ).items())),
         "tasks": tasks,
         "status": "preflight_only_not_weight_converted",
+        "unsupported_attention_mapping_count": sum(
+            task["transformation"].startswith("BLOCKED_")
+            for task in tasks
+        ),
     }
     raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     payload["sha256"] = sha256(raw).hexdigest()

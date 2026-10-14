@@ -28,6 +28,7 @@ def _check_two_rank_parity(rank: int, size: int, init_url: str) -> None:
             hidden_size=8, latent_size=6, expert_intermediate_size=12,
             num_experts=4, top_k=2, num_shared_experts=1,
             situ_beta=4.0, situ_linear_beta=25.0,
+            expert_activation="silu",
         )
         torch.manual_seed(2026)
         reference = StableLatentMoE(config)

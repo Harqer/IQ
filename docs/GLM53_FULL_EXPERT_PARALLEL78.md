@@ -45,8 +45,8 @@ is not one of the 78 ordinary decoder blocks.
 
 **Critical:** "256 experts" here preserves the **number and routing
 geometry**, not GLM's full parameter capacity. GLM routed experts act in
-the source 6144-dimensional residual representation; IQ's Stable LatentMoE
-projects from 4096 to a 2048-dimensional latent expert. The weights require
+the source 6144-dimensional residual representation; IQ's GLM variant now uses SiLU SwiGLU within its Stable LatentMoE,
+but still projects from 4096 into a 2048-dimensional latent expert. The weights require
 real coordinate transport, functional alignment, and routing calibration.
 
 The 75×256 latent expert stacks are still enormous: three 2048×2048 matrices
