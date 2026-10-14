@@ -1,3 +1,8 @@
+from .expert_parallel import (
+    ExpertParallelStableLatentMoE,
+    ExpertParallelStableLatentMoELayer,
+    IQExpertParallelError,
+)
 from .latent_moe import (
     SiTUExpert,
     StableLatentMoE,
@@ -18,6 +23,9 @@ from .moe import (
 from .swiglu import SwiGLU
 
 __all__ = [
+    "ExpertParallelStableLatentMoE",
+    "ExpertParallelStableLatentMoELayer",
+    "IQExpertParallelError",
     "MoEConfigError",
     "MoEOutput",
     "RoutedMoEConfig",
