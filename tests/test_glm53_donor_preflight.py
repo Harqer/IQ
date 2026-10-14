@@ -10,6 +10,10 @@ from iq_transfer.glm53_donor_preflight import (
     GLM53DonorPreflightError, audit_glm53_donor,
     expected_glm53_tensor_shape, required_glm53_hf_keys, _validate_shard,
 )
+from iq_transfer.glm53_expert_mapping import (
+    iter_glm53_expert_transfer_tasks,
+    glm53_expert_transfer_manifest,
+)
 from iq_transfer.glm53_parallel_contract import (
     GLM53Topology, expected_indexer_types,
 )
@@ -145,6 +149,32 @@ class OfficialDonorPreflightContractTests(unittest.TestCase):
             expected_glm53_tensor_shape("lm_head.weight", vocab_size=154880),
             (154880, 6144),
         )
+
+    def test_rank_owned_source_to_destination_registry_covers_every_expert(self):
+        tasks = list(iter_glm53_expert_transfer_tasks(8))
+        self.assertEqual(
+            sum(task.action == "routed_expert_latent_transport" for task in tasks),
+            75 * 256 * 3,
+        )
+        self.assertEqual(len(tasks), 3 * 3 + 75 * (5 + 256 * 3))
+        self.assertEqual(len({t.source for t in tasks}), len(tasks))
+        self.assertEqual(
+            len({(t.owner, t.destination) for t in tasks}), len(tasks)
+        )
+        for rank in range(8):
+            owned = [t for t in tasks if t.owner == rank and
+                     t.action == "routed_expert_latent_transport"]
+            self.assertEqual(len(owned), 75 * 32 * 3)
+        first = next(t for t in tasks if t.source ==
+                     "model.layers.3.mlp.experts.32.gate_proj.weight")
+        self.assertEqual(first.destination,
+                         "layers.3.moe.moe.routed_experts.0.gate_proj.weight")
+        self.assertEqual(first.owner, 1)
+        manifest = glm53_expert_transfer_manifest(8)
+        self.assertFalse(manifest["conversion_executed"])
+        self.assertFalse(manifest["attention_mapping_complete"])
+        self.assertEqual(len(manifest["sha256"]), 64)
+        self.assertEqual(manifest, glm53_expert_transfer_manifest(8))
 
     def test_safetensors_index_paths_do_not_escape_source_root(self):
         with TemporaryDirectory() as temp:
