@@ -400,7 +400,8 @@ def validate_canonical_hybrid_backbone(
     compressed_layers = sum(
         layer in {
             HybridLayerType.CSA, HybridLayerType.HCA,
-            HybridLayerType.PARALLEL_CSA, HybridLayerType.PARALLEL_HCA,
+            HybridLayerType.PARALLEL_CSA, HybridLayerType.PARALLEL_DENSE_CSA,
+            HybridLayerType.PARALLEL_HCA,
         }
         for layer in config.schedule.layers
     )
@@ -1330,6 +1331,7 @@ class IQHybridForCausalLM(nn.Module):
                 )
             elif layer_type in {
                 HybridLayerType.PARALLEL_CSA,
+                HybridLayerType.PARALLEL_DENSE_CSA,
                 HybridLayerType.PARALLEL_HCA,
             }:
                 source = (
