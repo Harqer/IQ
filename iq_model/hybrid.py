@@ -30,7 +30,7 @@ from .reasoning import (
     ReasoningVerifierProtocol,
 )
 from .state import Mamba3MIMOConfig, Mamba3MIMOState
-from .parallel import ParallelBranchFusion
+from .parallel import ParallelBranchFusion, ExpertResidualGate
 
 
 class HybridModelError(RuntimeError):
@@ -777,6 +777,7 @@ class ParallelMambaContextMoEBlock(nn.Module):
         self.fusion = ParallelBranchFusion(
             model_config.hidden_size, device=device, dtype=dtype
         )
+        self.expert_gate = ExpertResidualGate(device=device, dtype=dtype)
         self.residual_dropout = nn.Dropout(model_config.residual_dropout)
         if stable_moe_config is not None:
             self.moe = StableLatentMoELayer(
@@ -820,7 +821,7 @@ class ParallelMambaContextMoEBlock(nn.Module):
             self.fusion(mamba_delta, attention_delta)
         )
         expert = self.moe(mixed)
-        return expert.hidden_states, expert
+        return self.expert_gate(mixed, expert.hidden_states), expert
 
 
 class IQHybridForCausalLM(nn.Module):

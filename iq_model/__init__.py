@@ -1,4 +1,4 @@
-from .parallel import ParallelBranchFusion, ParallelFusionError
+from .parallel import ParallelBranchFusion, ParallelFusionError, ExpertResidualGate
 from .reasoning import AdaptiveHaltingHead, ReasoningRecurrence, ReasoningRecurrenceConfig, ReasoningRecurrenceOutput, ReasoningStateInjector, ReasoningStateTransition, SpectralDepthEncoding, ReasoningVerifier, ReasoningVerifierProtocol, ReasoningVerifierSignal
 from .energy import ReasoningEnergyCritic, ReasoningEnergyCriticConfig, energy_margin_ranking_loss
 from .residual import AttentionResidualMixer, AttnResError, BlockAttentionResidual, BlockAttnResConfig, BlockAttnResState, MHCConfig, MHCError, MHCHead, MHCWeights, ManifoldHyperConnection, expand_mhc_streams, sinkhorn_doubly_stochastic
@@ -35,6 +35,7 @@ from .outputs import CausalLMOutput
 __all__ = [
     "ParallelBranchFusion",
     "ParallelFusionError",
+    "ExpertResidualGate",
     "ParallelMambaContextMoEBlock",
     "ArchitectureError",
     "AttentionResidualMixer",

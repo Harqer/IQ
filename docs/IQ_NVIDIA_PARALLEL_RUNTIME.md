@@ -71,3 +71,58 @@ release-blocking before any claimed inference-ready checkpoint.
 This code builds the **NVIDIA-pattern parallel topology** using IQ Mamba-3
 and CSA/HCA operators. It does not copy NVIDIA Megatron Core's Mamba-2 CUDA
 operator or imply unmodified Nemotron checkpoint compatibility.
+
+
+## 78-slot pretrained Mamba-3 transplant — implemented
+
+IQ's existing pinned source checkpoint is **Mamba-3 MIMO 1.5B** with 24 recurrent
+layers, 2048 hidden channels and rank-4 MIMO. The 78-block fused recipient has
+4096 channels; the compiler now applies the existing **exact replication-space
+input/output transformations** at 24 monotonic ordinal positions among 78.
+Remaining **54** recurrent branches are **residual-neutral when the overlay is
+applied**: the applicator zeros only their native Mamba output projections.
+It never copies Mamba-2 weights into the Mamba-3 operator.
+
+Once the bucket owner has made the actual donor bytes available on the worker
+at a local directory containing \`config.json\` and \`pytorch_model.bin\`,
+execute from the IQ checkout:
+
+\`\`\`bash
+python -m iq_transfer.cli mamba3-direct \
+  --checkpoint /kaggle/working/mamba3 \
+  --output /kaggle/working/iq-parallel78-mamba \
+  --target-mamba-layers 78 \
+  --no-foundation-globals
+\`\`\`
+
+The output includes 24 safetensors layer files, \`mamba3_transplant.json\`,
+and \`SHA256SUMS\`; the 54 residual-neutral ordinals are recorded in the
+manifest, not falsely serialized as pretrained tensors. **Use a new, empty
+output directory.** The donor SHA-256 is pinned to
+\`139c09e9728d1f10ac7f4354d2ae29aaca41851a954aedd8f6728c05aeb6c744\`
+and the Hub revision is
+\`bc6b5d0f7994fe4cb3478242e92da8daf9ee29ec\`.
+
+Run \`sha256sum -c SHA256SUMS\` in the output directory to check all shards;
+the model applicator independently rechecks the SHA-256 entries before
+loading the 78-slot foundation. The bytes may be manually uploaded to the
+owner's \`hf://buckets/kofecheckmate/mocha\` under a separate output
+subdirectory; this step does **not** access or modify the bucket.
+
+**Lexical provenance:** \`--no-foundation-globals\` intentionally omits
+Mamba's embeddings and LM head because this 78-block architecture uses NVIDIA
+vocabulary geometry. Exact Mamba operator behavior is guaranteed only on the
+Mamba source-aligned residual subspace; NVIDIA lexical embeddings require
+subsequent coordinate alignment and evaluation. No claim of complete-model
+behavior preservation is made.
+
+**Expert safety:** New fused blocks have an \`ExpertResidualGate\` initialized
+to zero, so uncalibrated random expert residuals do not change the
+Mamba-derived hidden trajectory. Attention fusion is initialized to
+\`[I,0]\`. Both are trainable and should be unlocked through real
+GLM-5.3/NVIDIA transfer calibration, not by inventing pretrained weights.
+
+**Unfinished execution gates:** 78-block actual CUDA inference, recurrent/
+attention cache parity, NVIDIA embedding and MoE conversion, GLM-5.3
+weight transport and held-out capability retention. These are still required
+before any model-complete or deployment claim.

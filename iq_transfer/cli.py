@@ -127,6 +127,14 @@ def _parser() -> argparse.ArgumentParser:
         default="bc6b5d0f7994fe4cb3478242e92da8daf9ee29ec",
     )
     mamba.add_argument(
+        "--target-mamba-layers", type=int, choices=(32, 78), default=32,
+        help="32 legacy serial slots or 78 fused parallel slots",
+    )
+    mamba.add_argument(
+        "--no-foundation-globals", action="store_true",
+        help="omit Mamba embeddings/LM head when NVIDIA owns IQ tokenizer",
+    )
+    mamba.add_argument(
         "--skip-checkpoint-hash",
         action="store_true",
         help="skip the 3 GB donor SHA-256 pass (not recommended for production)",
@@ -341,6 +349,8 @@ def main(argv: list[str] | None = None) -> int:
             output_dir=args.output,
             checkpoint_revision=args.checkpoint_revision,
             verify_checkpoint_hash=not args.skip_checkpoint_hash,
+            target_mamba_layers=args.target_mamba_layers,
+            include_foundation_globals=not args.no_foundation_globals,
         )
         print(
             json.dumps(
