@@ -70,7 +70,7 @@ class MappingPlanTests(unittest.TestCase):
         )
         self.assertEqual(rows[0].global_name, "layers.39.weight")
         self.assertEqual(rows[0].shape, (2, 2))
-        with self.assertRaisesRegex(ParallelMappingError, "global PP index"):
+        with self.assertRaisesRegex(ParallelMappingError, "local_to_global layer indices"):
             collect_local_inventory(real, pp_rank=1)
 
     def test_real_dense_swiglu_has_three_distinct_projections_and_gradient(self):
