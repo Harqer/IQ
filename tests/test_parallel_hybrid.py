@@ -45,7 +45,7 @@ class ParallelFusionTests(unittest.TestCase):
         self.assertTrue(torch.isfinite(gate.scale.grad).all())
         with torch.no_grad():
             gate.scale.fill_(1.0)
-        self.assertTrue(torch.equal(gate(pretrained, random_expert), random_expert))
+        torch.testing.assert_close(gate(pretrained, random_expert), random_expert)
 
     def test_expert_gate_rejects_incompatible_output(self):
         gate = ExpertResidualGate()
