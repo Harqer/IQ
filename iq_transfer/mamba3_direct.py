@@ -869,6 +869,10 @@ def compile_official_mamba3_mimo_15b_transplant(
     validate_official_mamba3_mimo_state(donor, state)
 
     output = Path(output_dir)
+    if output.exists() and any(output.iterdir()):
+        raise Mamba3DirectTransferError(
+            "Mamba output directory must be empty; refuse to mix old and new checkpoints"
+        )
     output.mkdir(parents=True, exist_ok=True)
 
     # Mamba-3 is the lexical foundation, not only a recurrent overlay.
@@ -960,6 +964,20 @@ def compile_official_mamba3_mimo_15b_transplant(
             ],
         },
     }
+    checkpoint_files = [item.shard for item in placements]
+    if include_foundation_globals:
+        checkpoint_files.insert(0, "model-global.safetensors")
+    checksum_index = {
+        name: _sha256_file(output / name) for name in checkpoint_files
+    }
+    manifest["file_sha256"] = checksum_index
+    (output / "SHA256SUMS").write_text(
+        "".join(
+            f"{checksum_index[name]}  {name}\\n".replace("\\\\n", "\\n")
+            for name in sorted(checksum_index)
+        ),
+        encoding="utf-8",
+    )
     (output / "mamba3_transplant.json").write_text(
         json.dumps(manifest, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
