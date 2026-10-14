@@ -361,6 +361,31 @@ def load_glm53_expert_shards(
                         f"destination parameter missing or wrong shape: {name}"
                     )
             all_files.append((path, record))
+    # Validate the REAL safetensors index/shape/dtype of every shard before
+    # copying any weight, not merely the manifest's claimed tensor shapes.
+    try:
+        from safetensors import safe_open
+        from safetensors.torch import load_file
+    except ImportError as exc:
+        raise GLM53ExpertShardError("safetensors is required") from exc
+    for path, record in all_files:
+        with safe_open(path, framework="pt", device="cpu") as handle:
+            if set(handle.keys()) != set(record["tensor_shapes"]):
+                raise GLM53ExpertShardError(
+                    f"tampered tensor key index in {path.name}"
+                )
+            for name, shape in record["tensor_shapes"].items():
+                actual = handle.get_slice(name)
+                if actual.get_shape() != shape:
+                    raise GLM53ExpertShardError(
+                        f"tampered tensor shape in {path.name}: {name}"
+                    )
+                expected_dtype = "F32" if name.endswith("routing_bias") else "BF16"
+                if actual.get_dtype() != expected_dtype:
+                    raise GLM53ExpertShardError(
+                        f"unsupported transferred tensor dtype in {path.name}: {name}"
+                    )
+
     loaded_names = set()
     for _, record in all_files:
         for name in record["tensor_shapes"]:
@@ -375,10 +400,6 @@ def load_glm53_expert_shards(
     }
     if not needed_local.issubset(loaded_names):
         raise GLM53ExpertShardError("missing routed expert projection in EP manifest")
-    try:
-        from safetensors.torch import load_file
-    except ImportError as exc:
-        raise GLM53ExpertShardError("safetensors is required") from exc
     with torch.no_grad():
         for path, record in all_files:
             tensors = load_file(str(path), device="cpu")
