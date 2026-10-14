@@ -262,19 +262,20 @@ def nvidia_parallel_78_config() -> IQHybridConfig:
     schedule = HybridSchedule(
         tuple(
             HybridLayerType.PARALLEL_CSA
-            if stage % 2 == 0
-            else HybridLayerType.PARALLEL_HCA
             for stage in range(78)
         )
     )
     model = replace(
-        base.model, vocab_size=131072,
+        base.model, vocab_size=131072, intermediate_size=12288,
         num_hidden_layers=len(schedule.layers),
     )
     config = replace(
         base,
         model=model,
         schedule=schedule,
+        parallel_dense_layers=(0, 1, 2),
+        moe=replace(base.moe, num_experts=256, top_k=8),
+        stable_moe=replace(base.stable_moe, num_experts=256, top_k=8, num_shared_experts=1),
         mamba3=replace(base.mamba3, num_layers=78),
         attnres=replace(base.attnres, num_layers=78),
     )
