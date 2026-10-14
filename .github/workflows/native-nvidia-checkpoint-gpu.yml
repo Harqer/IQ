@@ -1,0 +1,44 @@
+name: native-nvidia-checkpoint-gpu
+
+# Explicit acceptance gate. GitHub-hosted ubuntu-latest has no NVIDIA driver:
+# NVIDIA Megatron Core's torch_dist serializer calls torch.cuda.synchronize().
+# Configure an authorized self-hosted NVIDIA GPU runner with the label
+# nvidia-gpu; never silently skip this required production validation.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native-checkpoint:
+    runs-on: [self-hosted, linux, x64, nvidia-gpu]
+    timeout-minutes: 45
+    steps:
+      - name: Checkout IQ
+        uses: actions/checkout@v4
+
+      - name: Validate actual NVIDIA driver and GPU
+        run: |
+          set -euo pipefail
+          nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv
+          python - <<'PY'
+          import torch
+          if not torch.cuda.is_available():
+              raise SystemExit("NVIDIA CUDA driver/device required for MCore torch_dist")
+          print("CUDA", torch.version.cuda, "devices", torch.cuda.device_count())
+          PY
+
+      - name: Install source-pinned Megatron Core
+        run: |
+          python -m pip install -r requirements-model.txt
+          python -m pip install "megatron-core==0.19.0"
+
+      - name: Verify installed MCore and real two-rank checkpoint/restart
+        run: |
+          python - <<'PY'
+          from importlib.metadata import version
+          assert version("megatron-core") == "0.19.0"
+          print("Megatron Core:", version("megatron-core"))
+          PY
+          python -m unittest discover -s tests -p "test_iq_mcore_checkpoint.py" -v
