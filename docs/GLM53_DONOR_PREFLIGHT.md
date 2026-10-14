@@ -69,8 +69,9 @@ These cannot be hidden by matching 78 layers:
    are **not NVIDIA's GLM MLA/DSA operators**. Index-sharing top-k does not
    imply MLA/DSA weight or output equivalence. Exact projection mapping,
    kernel behavior, causal packed sequences and teacher correlation remain.
-2. GLM residual width 6144 → IQ 4096 and GLM expert behavior (SwiGLU)
-   → IQ SiTU/latent MoE require learned coordinate/operator alignment.
+2. GLM residual width 6144 → IQ 4096 and GLM's SiLU SwiGLU expert activation is now selectable in IQ (and is set
+   on the GLM transfer config), but the 6144→4096/2048 latent projections,
+   normalization and routing still require learned operator alignment.
    Preserving all 256 expert *IDs* does not preserve trained semantics.
 3. The Mamba-3 24→78 operator overlay is independent of GLM-5.3's weights;
    no Mamba-2 parameter should be misidentified as Mamba-3.
