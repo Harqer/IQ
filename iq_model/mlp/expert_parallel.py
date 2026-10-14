@@ -73,6 +73,7 @@ class ExpertParallelStableLatentMoE(nn.Module):
                 config.latent_size, config.expert_intermediate_size,
                 beta=config.situ_beta, linear_beta=config.situ_linear_beta,
                 bias=config.expert_bias,
+                expert_activation=config.expert_activation,
             )
             for _ in range(self.local_experts)
         )
@@ -81,6 +82,7 @@ class ExpertParallelStableLatentMoE(nn.Module):
                 config.hidden_size, config.expert_intermediate_size,
                 beta=config.situ_beta, linear_beta=config.situ_linear_beta,
                 bias=config.expert_bias,
+                expert_activation=config.expert_activation,
             )
             for _ in range(config.num_shared_experts)
         )
