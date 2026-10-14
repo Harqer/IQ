@@ -49,6 +49,14 @@ class IQCheckpointProgress:
 
 
 def _core():
+    # NVIDIA MCore 0.19's torch_dist writer unconditionally synchronizes CUDA
+    # while preparing checkpoint tensors. CPU-only runners cannot exercise
+    # this native path; do not silently fall back to torch.save().
+    if not torch.cuda.is_available():
+        raise IQDistributedCheckpointError(
+            "NVIDIA Megatron Core 0.19 torch_dist checkpointing requires "
+            "an actual CUDA driver/GPU; run the native GPU acceptance job"
+        )
     try:
         from megatron.core import dist_checkpointing
         from megatron.core.dist_checkpointing.mapping import ShardedObject, ShardedTensor
