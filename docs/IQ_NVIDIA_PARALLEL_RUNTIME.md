@@ -126,3 +126,39 @@ GLM-5.3/NVIDIA transfer calibration, not by inventing pretrained weights.
 attention cache parity, NVIDIA embedding and MoE conversion, GLM-5.3
 weight transport and held-out capability retention. These are still required
 before any model-complete or deployment claim.
+
+
+## Fused-block incremental inference — implementation
+
+The parallel IQ runtime now supports a single authoritative Mamba-3 MIMO
+\`InferenceParams\` container, with each fused block indexed by its original
+Mamba layer ordinal. Its CSA/HCA branch has a separate cache keyed by the
+same physical IQ layer index, never by source GLM layer numbering.
+
+- \`IQHybridForCausalLM.allocate_inference_cache(batch_size, max_seqlen)\`
+  checks that the pinned upstream Mamba-3 CuTe step kernel exists before
+  allocating the cache.
+- \`model(..., inference_cache=cache)\` rejects training mode, mismatched
+  batch/config fingerprints, labels, packed document IDs, padded inputs,
+  unsupported multimodal/reasoning execution, invalid positions, and a
+  multi-token continuation after prefill.
+- \`ParallelMambaContextMoEBlock\` forwards the same normalized input to
+  native Mamba-3 with the shared upstream recurrent cache and CSA/HCA with its
+  own attention-cache object. Its fusion and expert residual gates are
+  unchanged.
+- \`DeepseekV4CSACache\` explicitly owns direct-token index keys and the full
+  token-value history when GLM's \`direct_token_indexer=True\`. The
+  compressed-indexer mode retains the original window buffers and overlap
+  contract. HCA caches compression windows separately.
+- \`cache.reset()\` clears every attention buffer and upstream Mamba states.
+
+**Validation:** CPU tests compare real compressed-attention prefill+token
+decoding with full-sequence reference outputs, including direct-token DSA and
+reset. Actual Mamba-3 CuTe CUDA inference remains a **GPU-required acceptance
+gate**. No CPU substitute for Mamba-3 MIMO is used in production.
+
+This implementation follows the pinned IQ source's validated Mamba step
+contract and NVIDIA's Falcon-H1 principle of independent sequence-operator
+state but one fused hidden representation. The current cache uses mutable
+state, so a failure during the forward pass requires resetting/rebuilding
+the cache before retry; no transaction-style rollback is claimed.
