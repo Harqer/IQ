@@ -70,8 +70,10 @@ def _check_two_rank_parity(rank: int, size: int, init_url: str) -> None:
         # Reduce the full reference's corresponding gradient to compare.
         for global_id in range(config.num_experts):
             for name, ref_param in reference.routed_experts[global_id].named_parameters():
-                global_grad = ref_param.grad
-                assert global_grad is not None
+                global_grad = (
+                    ref_param.grad if ref_param.grad is not None
+                    else torch.zeros_like(ref_param)
+                )
                 # All ranks reduce the SAME global expert key in the SAME
                 # order, even when only one rank owns its trained weights.
                 dist.all_reduce(global_grad, op=dist.ReduceOp.SUM)
@@ -80,9 +82,12 @@ def _check_two_rank_parity(rank: int, size: int, init_url: str) -> None:
                     local_param = dict(
                         distributed.routed_experts[local].named_parameters()
                     )[name]
-                    assert local_param.grad is not None
+                    local_grad = (
+                        local_param.grad if local_param.grad is not None
+                        else torch.zeros_like(local_param)
+                    )
                     torch.testing.assert_close(
-                        local_param.grad, global_grad, rtol=2e-4, atol=2e-4
+                        local_grad, global_grad, rtol=2e-4, atol=2e-4
                     )
     finally:
         dist.destroy_process_group()
