@@ -236,9 +236,18 @@ def save_training_checkpoint(
     )
     base = Path(base_dir).resolve()
     iteration = base / f"iter_{progress.iteration:07d}"
-    if iteration.exists():
-        raise IQDistributedCheckpointError("refusing to overwrite existing checkpoint iteration")
-    base.mkdir(parents=True, exist_ok=True)
+    # NVIDIA MCore serializer expects a *pre-existing empty directory*.
+    # Every rank must agree on existence BEFORE rank zero creates it.
+    exists = torch.tensor(int(iteration.exists()), dtype=torch.int32)
+    dist.all_reduce(exists, op=dist.ReduceOp.MAX)
+    if int(exists.item()):
+        raise IQDistributedCheckpointError(
+            "refusing to overwrite existing checkpoint iteration"
+        )
+    if rank == 0:
+        base.mkdir(parents=True, exist_ok=True)
+        iteration.mkdir(mode=0o700, exist_ok=False)
+    dist.barrier()
     dcp.save(
         payload, str(iteration), verify_integrity=True,
         content_metadata={
