@@ -1,0 +1,73 @@
+# NVIDIA-grounded parallel IQ runtime — implementation milestone
+
+**Reference:** [NVIDIA's Falcon-H1 implementation overview](https://developer.nvidia.com/blog/implementing-falcon-h1-hybrid-architecture-in-nvidia-megatron-core/) and [Megatron Bridge Falcon-H1 documentation](https://docs.nvidia.com/nemo/megatron-bridge/nightly/models/falcon/falcon-h1.html).
+
+**Weights:** NVIDIA Nemotron 3 Super Base BF16, Mamba-3 MIMO original and GLM-5.3 BF16 are assumed staged by the bucket owner at `hf://buckets/kofecheckmate/mocha/`. This milestone does **not** inspect, download, transform or upload donor files.
+
+## Executable block
+
+`iq_model/hybrid.py:ParallelMambaContextMoEBlock` implements:
+
+```text
+                          ┌──────────── native Mamba-3 MIMO ────────┐
+ x ── RMSNorm(x) ──────────┤                                        ├─ concat → W_f → +x ── IQ MoE → output
+                          └──────────── CSA / HCA attention ────────┘
+```
+
+Both mixers receive the same pre-normalized hidden representation. Mamba uses
+the existing packed-document varlen path, while CSA/HCA receives the canonical
+attention mask, position IDs and document boundaries. Each composite block
+contributes **one Mamba recurrent slot, one compressed-attention branch, and
+one expert FFN**, not three serial layers.
+
+`ParallelBranchFusion` starts with `W_f=[I,0]`, so its attention branch
+does not corrupt a previously transplanted Mamba block at initialization.
+The attention slice remains trainable and is enabled through ordinary gradient
+updates. This is an IQ-specific *transfer-safe initialization*, not a
+claim that it reproduces Falcon-H1's original trained output projection.
+
+- `HybridLayerType.PARALLEL_CSA` and `PARALLEL_HCA` are serializable.
+- Old interleaved schedules are unchanged and continue to load.
+- `nvidia_parallel_78_config()` produces an explicit 78-physical-block
+  geometry with 78 Mamba slots, 78 attention branches and 78 MoE modules,
+  4096 residual width, 131072 NVIDIA lexical tokens, and Block AttnRes.
+- This is a **candidate architecture, not an initialized model checkpoint**.
+  Specifically, source Mamba-3 MIMO provides only 24 pretrained layers and
+  NVIDIA's BF16 interleaved donor only eight attention layers and 40 MoE
+  operator layers.
+
+## Test and runtime boundaries
+
+CPU tests run against the real fusion projection, operator accounting,
+configuration serialization and negative validation paths:
+
+```bash
+python -m unittest tests.test_parallel_hybrid tests.test_nvidia_foundation -v
+```
+
+The fully instantiated model uses IQ's real production Mamba-3 CUDA kernels.
+This milestone does **not** certify GPU execution, batch=1 recurrent decoding,
+KV cache updates or prefill/step equivalence on hardware. These must remain
+release-blocking before any claimed inference-ready checkpoint.
+
+## What the next checkpoint milestone must include
+
+1. Exact, pinned NVIDIA Base checkpoint manifest (index+tensor shapes),
+   entitlement/license and tokenizer file hashes.
+2. Real NVIDIA embeddings/LM head transfer (explicit NVIDIA lexical owner),
+   together with the separate Mamba-3 donor 24→78 layer placement.
+   Missing 54 recurrent slots must be explicit residual identities before
+   training; do not duplicate and mislabel as pretrained.
+3. Independent native Mamba-3 states and CSA/HCA KV caches per parallel block,
+   with packed-document resets, decode-step parity and causal masking tests.
+4. NVIDIA's 8 attention and 40 MoE donor mappings followed by GLM-5.3
+   attention and expert capability transfer. Preserve source/provenance mapping
+   per output tensor. The target currently uses 78 MoE blocks; the GLM dense
+   first-three mapping needs a separate exact dense branch, not an invented
+   expert conversion.
+5. Staged MOHAWK alignment followed by real CUDA integration, checkpoint
+   round-trip loading, held-out capability and latency evaluation.
+
+This code builds the **NVIDIA-pattern parallel topology** using IQ Mamba-3
+and CSA/HCA operators. It does not copy NVIDIA Megatron Core's Mamba-2 CUDA
+operator or imply unmodified Nemotron checkpoint compatibility.

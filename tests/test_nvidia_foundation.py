@@ -17,10 +17,7 @@ OFFICIAL_GEOMETRY = {
     "vocab_size": 131072,
     "hidden_size": 4096,
     "num_hidden_layers": 88,
-    "hybrid_override_pattern": (
-        "MEMEMEM*EMEMEMEM*EMEMEMEM*EMEMEMEMEM*EMEMEMEMEM*"
-        "EMEMEMEMEM*EMEMEMEMEM*EMEMEMEM*EMEMEMEME"
-    ),
+    "hybrid_override_pattern": "MEMEMEM*EMEMEMEM*EMEMEMEM*EMEMEMEMEM*EMEMEMEMEM*EMEMEMEMEM*EMEMEMEMEM*EMEMEMEM*EMEMEMEME",
     "moe_latent_size": 1024,
     "n_routed_experts": 512,
     "num_experts_per_tok": 22,
