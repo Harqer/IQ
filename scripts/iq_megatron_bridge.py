@@ -14,7 +14,7 @@ from iq_transfer.megatron_bridge import (
     probe_provider, render_plan,
 )
 from iq_transfer.megatron_storage import (
-    load_profile_spec, mojo_profile, render_msc_config,
+    load_profile_spec, mocha_profile, render_msc_config,
 )
 
 
@@ -60,7 +60,7 @@ def _parser() -> argparse.ArgumentParser:
 def main() -> int:
     args = _parser().parse_args()
     if args.command == "storage-config":
-        profiles = [mojo_profile()]
+        profiles = [mocha_profile()]
         if args.additional_profiles_json:
             profiles.extend(load_profile_spec(args.additional_profiles_json))
         text = render_msc_config(
