@@ -10,6 +10,26 @@ from ..position import RotaryEmbedding, apply_rotary
 from .masking import prepare_causal_attention
 
 
+class DenseContextCache:
+    """Per-layer projected K/V state for causal incremental dense attention."""
+
+    def __init__(self) -> None:
+        self.keys: torch.Tensor | None = None
+        self.values: torch.Tensor | None = None
+        self.cumulative_length = 0
+
+    def update(self, keys: torch.Tensor, values: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        self.keys = keys if self.keys is None else torch.cat([self.keys, keys], dim=2)
+        self.values = values if self.values is None else torch.cat([self.values, values], dim=2)
+        self.cumulative_length += keys.shape[2]
+        return self.keys, self.values
+
+    def reset(self) -> None:
+        self.keys = None
+        self.values = None
+        self.cumulative_length = 0
+
+
 class DenseContextAttention(nn.Module):
     """Dense Transformer context anchor for the hybrid IQ backbone.
 
@@ -48,16 +68,82 @@ class DenseContextAttention(nn.Module):
             b, t, self.config.num_key_value_heads, self.config.head_dim
         ).transpose(1, 2)
 
+    def _forward_cached(
+        self,
+        x: torch.Tensor,
+        cache: DenseContextCache,
+        *,
+        position_ids: torch.Tensor | None,
+        attention_mask: torch.Tensor | None,
+        document_ids: torch.Tensor | None,
+    ) -> torch.Tensor:
+        if self.training:
+            raise ValueError("cached dense attention requires eval mode")
+        if document_ids is not None:
+            raise ValueError("cached dense attention does not support packed documents")
+        if attention_mask is not None and not bool(attention_mask.to(torch.bool).all()):
+            raise ValueError("cached dense attention requires unpadded new tokens")
+        b, t, _ = x.shape
+        if cache.keys is not None and cache.keys.shape[0] != b:
+            raise ValueError("dense cache batch size changed without reset")
+        positions = torch.arange(
+            cache.cumulative_length,
+            cache.cumulative_length + t,
+            device=x.device,
+        ).expand(b, -1)
+        if position_ids is not None and not torch.equal(
+            position_ids.to(x.device), positions
+        ):
+            raise ValueError("cached dense position_ids must follow token offset")
+
+        q = self.q_norm(self._shape_q(self.q_proj(x)))
+        k = self.k_norm(self._shape_kv(self.k_proj(x)))
+        v = self._shape_kv(self.v_proj(x))
+        cos, sin = self.rotary.cos_sin(positions, dtype=q.dtype, device=q.device)
+        q, k = apply_rotary(q, k, cos, sin, self.config.rotary_dim)
+        outputs = []
+        for token in range(t):
+            cached_keys, cached_values = cache.update(
+                k[:, :, token : token + 1], v[:, :, token : token + 1]
+            )
+            if self.config.kv_repeat != 1:
+                attended_keys = cached_keys.repeat_interleave(self.config.kv_repeat, dim=1)
+                attended_values = cached_values.repeat_interleave(self.config.kv_repeat, dim=1)
+            else:
+                attended_keys, attended_values = cached_keys, cached_values
+            outputs.append(
+                F.scaled_dot_product_attention(
+                    q[:, :, token : token + 1],
+                    attended_keys,
+                    attended_values,
+                    dropout_p=0.0,
+                    is_causal=False,
+                )
+            )
+        if not outputs:
+            return x.new_zeros(x.shape)
+        result = torch.cat(outputs, dim=2).transpose(1, 2).contiguous().view(b, t, -1)
+        return self.o_proj(result)
+
     def forward(
         self,
         x: torch.Tensor,
         position_ids: torch.Tensor | None = None,
         attention_mask: torch.Tensor | None = None,
         document_ids: torch.Tensor | None = None,
+        past_key_values: DenseContextCache | None = None,
     ) -> torch.Tensor:
         if x.ndim != 3 or x.shape[-1] != self.config.hidden_size:
             raise ValueError(
                 f"context attention input must have shape [batch, sequence, {self.config.hidden_size}]"
+            )
+        if past_key_values is not None:
+            return self._forward_cached(
+                x,
+                past_key_values,
+                position_ids=position_ids,
+                attention_mask=attention_mask,
+                document_ids=document_ids,
             )
         b, t, _ = x.shape
         prepared = prepare_causal_attention(
