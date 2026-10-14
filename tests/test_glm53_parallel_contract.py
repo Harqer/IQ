@@ -10,7 +10,7 @@ from iq_transfer.glm53_parallel_contract import (
 )
 from iq_model import CompressedSparseContextAttention
 from iq_model.attention.compressed import CompressedContextError, DeepseekV4CSACache
-from tests.test_parallel_cached_context import tiny_context
+from test_parallel_cached_context import tiny_context
 
 
 def published_fields() -> dict:
