@@ -7,11 +7,16 @@ The production target is **not** the original Neutrino/Ising mock architecture. 
 ## NVIDIA 78-block parallel-hybrid candidate
 
 The new `nvidia_parallel_78_config()` is a separate, explicit **candidate**
-architecture. Each physical block combines native Mamba-3 MIMO and CSA/HCA
-attention **in parallel** on a shared input, then fuses their outputs before
-Stable LatentMoE. It has 78 physical composite blocks; it is **not** yet a
-fully NVIDIA/GLM-pretrained checkpoint. The original interleaved topology
+architecture. Each physical block combines native Mamba-3 MIMO and DSA/CSA
+attention **in parallel** on a shared input. The first three blocks use dense
+SwiGLU FFNs, the other 75 use Stable LatentMoE with **256 routed experts and
+top-8 routing**. GLM's full/shared DSA IndexShare cadence is preserved by the
+new metadata/runtime pathway. It has 78 physical composite blocks; it is
+**not** yet a fully NVIDIA/GLM-pretrained checkpoint. The original interleaved topology
 remains available and unchanged.
+
+See the [full 78-block GLM expert contract](docs/GLM53_FULL_EXPERT_PARALLEL78.md)
+for the required distributed expert-parallel execution and conversion gates.
 
 For donor checkpoints and multi-cloud storage, see
 [**NVIDIA Megatron Bridge + MSC integration**](docs/NVIDIA_MEGATRON_MSC.md).
