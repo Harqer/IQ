@@ -17,6 +17,8 @@ def main() -> int:
     parser.add_argument("--calibration", required=True,
                         help="actual 78-stage IQ activation-refined calibration directory")
     parser.add_argument("--output", required=True)
+    parser.add_argument("--donor-identity", default="zai-org/GLM-5.3-BF16",
+                        choices=("zai-org/GLM-5.3-BF16", "zai-org/GLM-5.3"))
     parser.add_argument("--donor-revision", required=True,
                         help="verified full Git commit SHA for staged GLM donor")
     parser.add_argument("--ep-rank", required=True, type=int)
@@ -27,6 +29,7 @@ def main() -> int:
         donor_dir=args.glm_checkpoint, calibration_dir=args.calibration,
         output_dir=args.output, ep_rank=args.ep_rank, ep_size=args.ep_size,
         donor_revision=args.donor_revision, device=args.device,
+        donor_identity=args.donor_identity,
     )
     print(
         f"EP rank {report['ep_rank']}/{report['ep_size']}: "
