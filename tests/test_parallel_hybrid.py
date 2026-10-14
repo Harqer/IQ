@@ -6,6 +6,7 @@ import unittest
 import torch
 
 from iq_model import HybridLayerType, HybridSchedule, IQHybridConfig, HybridModelError
+from iq_model.hybrid import unsharded_parallel_expert_weight_bytes
 from iq_model.parallel import ParallelBranchFusion, ParallelFusionError, ExpertResidualGate
 from iq_transfer.complete_transplant import (
     canonical_glm53_config,
@@ -83,6 +84,13 @@ class ParallelHybridScheduleTests(unittest.TestCase):
         self.assertEqual(config.stable_moe.num_experts, 256)
         self.assertEqual(config.stable_moe.top_k, 8)
         self.assertEqual(config.model.intermediate_size, 12288)
+
+    def test_full_256_expert_capacity_is_not_a_single_gpu_checkpoint(self):
+        config = nvidia_parallel_78_config()
+        size = unsharded_parallel_expert_weight_bytes(config)
+        expected = 75 * 256 * 3 * 2048 * 2048 * 2
+        self.assertEqual(size, expected)
+        self.assertGreater(size, 400 * (2 ** 30))
 
     def test_config_round_trip_is_exact(self):
         config = nvidia_parallel_78_config()
