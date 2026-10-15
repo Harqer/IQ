@@ -52,12 +52,14 @@ def transfer_native_iq_weights(
     iq_config: IQHybridConfig,
     direction: Literal["hf_to_megatron", "megatron_to_hf"],
     full_78_required: bool = True,
+    require_nvidia_bridge: bool = False,
 ) -> IQNativeTransferResult:
-    """Execute actual in-place transfers, verifying each tensor exactly.
+    """Execute exact IQ-native copies, with optional real NVIDIA Bridge validation.
 
-    Performs a complete topology/name/shape/dtype preflight BEFORE any write.
-    No optimizer/RNG/data state is included: this is model-weight transfer
-    only. Does not overwrite any checkpoint file or modify donor buckets.
+    Full topology/name/shape/dtype inventory is checked BEFORE any write.
+    On a CUDA Bridge environment set require_nvidia_bridge=True: genuine
+    NVIDIA lookup/import will be invoked. No stand-in Bridge is constructed.
+    No optimizer/RNG/dataloader state or checkpoint files are modified.
     """
     if direction not in ("hf_to_megatron", "megatron_to_hf"):
         raise IQNativeMappingError("unsupported native IQ transfer direction")
@@ -65,7 +67,14 @@ def transfer_native_iq_weights(
         hf_model, megatron_model, iq_config=iq_config,
         full_78_required=full_78_required,
     )
-    registry = megatron_native_mapping_registry(plan)
+    # This IQ-native identity copy has well-defined exact PyTorch semantics.
+    # NVIDIA's Bridge mapping registry additionally requires Transformer
+    # Engine on current releases; opt into its *actual* registry only on a
+    # properly configured NVIDIA runtime. Never emulate it on CPU.
+    registry = (
+        megatron_native_mapping_registry(plan)
+        if require_nvidia_bridge else None
+    )
     source = _named(hf_model if direction == "hf_to_megatron" else megatron_model)
     destination = _named(megatron_model if direction == "hf_to_megatron" else hf_model)
 
@@ -86,14 +95,18 @@ def transfer_native_iq_weights(
     with torch.no_grad():
         for spec in plan.tensors:
             if direction == "hf_to_megatron":
-                mapping = registry.hf_to_megatron_lookup(spec.hf_name)
-                assert mapping is not None
                 src = source[spec.hf_name][0]
                 dest = destination[spec.megatron_name][0]
-                transformed = mapping.hf_to_megatron(src, megatron_model)
+                if registry is not None:
+                    mapping = registry.hf_to_megatron_lookup(spec.hf_name)
+                    assert mapping is not None
+                    transformed = mapping.hf_to_megatron(src, megatron_model)
+                else:
+                    transformed = src
             else:
-                mapping = registry.megatron_to_hf_lookup(spec.megatron_name)
-                assert mapping is not None
+                if registry is not None:
+                    mapping = registry.megatron_to_hf_lookup(spec.megatron_name)
+                    assert mapping is not None
                 src = source[spec.megatron_name][0]
                 dest = destination[spec.hf_name][0]
                 # DirectMapping is an identity operation at TP=PP=EP=1.
