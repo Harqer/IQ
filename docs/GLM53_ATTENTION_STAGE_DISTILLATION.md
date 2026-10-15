@@ -36,6 +36,46 @@ Do not use `AutoMapping` or tensor reshaping as "pretrained transfer".
   synthetic **test-only** parameterization, which does not claim source
   pretrained quality.
 
+## Essential correction: GLM and IQ have different tokenizers
+
+GLM-5.3 uses a **154,880-token** vocabulary while the current IQ
+Nemotron lexical configuration uses **131,072 tokens**. Requiring equal
+`token_ids` between the two models is **not a valid default** and
+usually cannot work. Hugging Face fast tokenizers provide
+`return_offsets_mapping=True` with `(char_start, char_end)` for each
+token; see [official tokenizer documentation](https://huggingface.co/docs/transformers/main_classes/tokenizer).
+This does not establish semantic equivalence across different token
+segmentation; it enables a **measurable, deliberately lossy supervised
+alignment**.
+
+`iq_transfer/glm53_attention_capture.py` provides
+`fast_tokenizer_text_provenance(tokenizer, texts)` and
+`capture_attention_input(module, ...)`. Use the *actual* official GLM
+and IQ tokenizers and pass precisely their returned token IDs as each
+model's forward input. The capture pre-hook records genuine
+`self_attn`/`attention` input tensors, tokenizer-specific token IDs,
+character spans and the same raw UTF-8 text SHA-256 for both models.
+
+The stage evaluator copies the source's `token_offsets` and
+`text_sha256` to the official teacher output. The distillation CLI
+aligns teacher outputs onto IQ token positions with
+`completed_source_token_char_overlap_v1`: a GLM source token may
+contribute to an IQ token only when it **ends by the IQ token's end**
+and overlaps that IQ token's character span. Tokens with no completed
+source overlap (including special tokens or incompatible segmentation)
+are masked out of MSE and are reported as lower supervision coverage.
+If coverage is below `--min-span-coverage` (default 0.5), training
+fails rather than inventing teacher targets.
+
+Because GLM and IQ token indices differ, **cross-tokenizer DSA top-k
+recall is explicitly undefined**, not zero or 100%. Source/target
+DSA selection parity needs an independently measured span-aware
+evaluation and cannot be certified by matching integer indices.
+
+A `--shared-tokenizer` override exists only for genuinely identical
+lexical tokenization and exact ID sequences. Never enable it merely
+because two models processed the same raw text.
+
 ## Real input format and invocation
 
 No GPU is needed for the small CPU test or to validate existing captures.
@@ -62,10 +102,12 @@ python -m scripts.evaluate_glm53_attention_teacher \\
   --output /scratch/iq/glm-attn-val-layer006
 ```
 
-For the **same exact input token sequences**, independently capture IQ's
-`norm_out` (the actual input to its CSA module) from the target training
-run, writing `iq_attention_input` `[B,S,4096]` plus identical `token_ids`
-to separate safetensors files. Merely projecting GLM inputs and calling
+For the **same original raw input text**, independently capture IQ's
+`norm_out` (the actual input to CSA) from the target training run,
+writing `iq_attention_input` `[B,S_iq,4096]`, **IQ's own** token IDs,
+`token_offsets` and matching `text_sha256` to safetensors files.
+The IQ and GLM token sequences can and typically will differ in length,
+ID values and segment boundaries. Merely projecting GLM inputs and calling
 them IQ activations is **not** a valid pretraining evaluation.
 Capture corresponding source/target residual activation pairs and fit
 a separate `CoordinateMap` using the existing
@@ -93,7 +135,8 @@ attention module; the 200-step count is a CLI example, not an endorsed
 quality threshold or measured converged training run.
 
 The output reports initial/best held-out MSE and cosine, the student
-indexer's **causal teacher top-k recall**, and an actual **future-token
+indexer's **causal teacher top-k recall when the tokenizer is identical**
+(or `null` across tokenizers), and an actual **future-token
 perturbation test** for causal output leakage. This is measured on held-out
 activations with the real student module. It also records initialization,
 provenance/checksums, and a
