@@ -23,6 +23,7 @@ from iq_transfer.glm53_attention_alignment import (
     PairedAttentionBatch, fit_attention_from_paired_activations,
 )
 from iq_transfer.transport import load_coordinate_map
+from iq_transfer.glm53_token_alignment import align_teacher_by_char_spans
 
 
 def checksum(path: Path) -> str:
@@ -35,6 +36,7 @@ def checksum(path: Path) -> str:
 
 def load_paired(
     *, teacher_dir: Path, iq_capture: Path, layer: int,
+    allow_shared_token_ids: bool = False,
 ) -> tuple[PairedAttentionBatch, dict]:
     from safetensors.torch import load_file
     manifest_path = teacher_dir / "manifest.json"
@@ -49,20 +51,57 @@ def load_paired(
         raise ValueError("teacher attention source provenance/hash does not match")
     raw_teacher = load_file(str(source), device="cpu")
     raw_iq = load_file(str(iq_capture), device="cpu")
-    if set(raw_teacher) != {
-        "source_attention_output", "dsa_indices", "token_ids"
-    }:
-        raise ValueError("teacher capture lacks authenticated output/indices/token IDs")
-    if set(raw_iq) != {"iq_attention_input", "token_ids"}:
-        raise ValueError("IQ capture must contain iq_attention_input and token_ids")
-    if not torch.equal(raw_teacher["token_ids"], raw_iq["token_ids"]):
-        raise ValueError("GLM and IQ activations are not from identical token sequences")
-    return PairedAttentionBatch(
-        iq_attention_input=raw_iq["iq_attention_input"],
-        glm_attention_output=raw_teacher["source_attention_output"],
-        token_ids=raw_teacher["token_ids"],
-        dsa_indices=raw_teacher["dsa_indices"],
-    ), {
+    required_teacher = {"source_attention_output", "dsa_indices", "token_ids"}
+    required_iq = {"iq_attention_input", "token_ids"}
+    span_extras = {"token_offsets", "text_sha256"}
+    if set(raw_teacher) not in (required_teacher, required_teacher | span_extras):
+        raise ValueError("teacher capture has missing/extra source attention fields")
+    if set(raw_iq) not in (required_iq, required_iq | span_extras):
+        raise ValueError("IQ capture has missing/extra student attention fields")
+    if span_extras.issubset(raw_teacher) and span_extras.issubset(raw_iq):
+        aligned = align_teacher_by_char_spans(
+            raw_teacher["source_attention_output"],
+            raw_teacher["token_offsets"],
+            raw_iq["token_offsets"],
+            source_text_hashes=raw_teacher["text_sha256"],
+            target_text_hashes=raw_iq["text_sha256"],
+        )
+        data = PairedAttentionBatch(
+            iq_attention_input=raw_iq["iq_attention_input"],
+            glm_attention_output=aligned.mapped_teacher_output,
+            token_ids=raw_iq["token_ids"],
+            dsa_indices=None,
+            supervision_mask=aligned.supervision_mask,
+            sample_text_hashes=raw_iq["text_sha256"],
+            alignment_mode="causal_character_spans",
+        )
+        alignment_metadata = {
+            "mode": aligned.method,
+            "causal_supervision_coverage": aligned.coverage_ratio,
+            "DSA_index_recall_comparable": False,
+        }
+    else:
+        if not allow_shared_token_ids:
+            raise ValueError(
+                "GLM and Nemotron tokenizers are different: supply token_offsets "
+                "and matching text_sha256 from both fast tokenizers, or explicitly "
+                "opt in to --shared-tokenizer for a verified common tokenizer"
+            )
+        if not torch.equal(raw_teacher["token_ids"], raw_iq["token_ids"]):
+            raise ValueError("GLM and IQ activations are not from identical token sequences")
+        data = PairedAttentionBatch(
+            iq_attention_input=raw_iq["iq_attention_input"],
+            glm_attention_output=raw_teacher["source_attention_output"],
+            token_ids=raw_teacher["token_ids"],
+            dsa_indices=raw_teacher["dsa_indices"],
+        )
+        alignment_metadata = {
+            "mode": "user_verified_shared_tokenizer",
+            "causal_supervision_coverage": 1.0,
+            "DSA_index_recall_comparable": True,
+        }
+    return data, {
+        "token_alignment": alignment_metadata,
         "teacher_manifest_sha256": checksum(manifest_path),
         "teacher_reference_sha256": checksum(source),
         "iq_capture_sha256": checksum(iq_capture),
@@ -83,6 +122,10 @@ def main() -> int:
                         help="prefix of real fitted CoordinateMap .json/.safetensors")
     parser.add_argument("--initial-student", type=Path,
                         help="existing IQ CSA safetensors state dict")
+    parser.add_argument("--shared-tokenizer", action="store_true",
+                        help="explicitly assert the two captures use one identical tokenizer")
+    parser.add_argument("--min-span-coverage", type=float, default=0.5,
+                        help="minimum valid fraction of causally completed source spans")
     parser.add_argument("--start-random", action="store_true",
                         help="explicitly initialize a new CSA branch; does NOT transfer weights")
     parser.add_argument("--seed", type=int, default=0)
@@ -100,11 +143,13 @@ def main() -> int:
 
     train, train_provenance = load_paired(
         teacher_dir=args.train_teacher_dir,
-        iq_capture=args.train_iq_capture, layer=args.layer
+        iq_capture=args.train_iq_capture, layer=args.layer,
+        allow_shared_token_ids=args.shared_tokenizer,
     )
     validation, validation_provenance = load_paired(
         teacher_dir=args.validation_teacher_dir,
-        iq_capture=args.validation_iq_capture, layer=args.layer
+        iq_capture=args.validation_iq_capture, layer=args.layer,
+        allow_shared_token_ids=args.shared_tokenizer,
     )
     if (
         train_provenance["donor_config_sha256"]
@@ -113,6 +158,15 @@ def main() -> int:
         or train_provenance["index_source_block"] != validation_provenance["index_source_block"]
     ):
         parser.error("train/validation donor checkpoint or indexer provenance differs")
+    if not 0 < args.min_span_coverage <= 1:
+        parser.error("--min-span-coverage must be in (0,1]")
+    for provenance in (train_provenance, validation_provenance):
+        if provenance["token_alignment"]["causal_supervision_coverage"] < args.min_span_coverage:
+            parser.error(
+                "cross-tokenizer causal span coverage below required threshold"
+            )
+    if train.alignment_mode != validation.alignment_mode:
+        parser.error("train and validation cannot mix tokenizer alignment modes")
     config = nvidia_parallel_78_config()
     assert config.compressed_context is not None
     torch.manual_seed(args.seed)
