@@ -143,6 +143,106 @@ def evaluate_alignment(
         student.train(previous)
 
 
+def evaluate_dsa_index_recall(
+    student: nn.Module,
+    data: PairedAttentionBatch,
+) -> float:
+    """Fraction of causal teacher top-k keys recovered by IQ's real indexer.
+
+    Unlike plain output MSE, this exposes DSA selection disagreement. IQ and
+    GLM may use different top-k counts; no exact-index parity is assumed.
+    """
+    if not hasattr(student, "indexer_scores"):
+        raise GLM53AttentionAlignmentError(
+            "IQ stage lacks an indexer_scores implementation"
+        )
+    device = next(student.parameters()).device
+    x = data.iq_attention_input.to(device)
+    previous = student.training
+    student.eval()
+    try:
+        with torch.no_grad():
+            segments = student.indexer_scores(x)
+        if len(segments) != x.shape[0]:
+            raise GLM53AttentionAlignmentError(
+                "source/target index comparison supports only one unpadded segment per batch item"
+            )
+        recall_sum = 0.0
+        count = 0
+        for seg in segments:
+            batch_index = seg.batch_index
+            seq_positions = seg.token_indices
+            if not torch.equal(
+                seq_positions.cpu(),
+                torch.arange(x.shape[1]),
+            ):
+                raise GLM53AttentionAlignmentError(
+                    "packed/partial segments are not supported in GLM index comparison"
+                )
+            for q in range(x.shape[1]):
+                teacher = {
+                    int(v) for v in data.dsa_indices[batch_index, q].tolist()
+                    if 0 <= int(v) <= q
+                }
+                student_keys = {
+                    int(v) for v in seg.selected_indices[q].tolist()
+                    if 0 <= int(v) <= q
+                }
+                if teacher:
+                    recall_sum += len(teacher & student_keys) / len(teacher)
+                    count += 1
+        if not count:
+            raise GLM53AttentionAlignmentError(
+                "no causal GLM indexer selections to evaluate"
+            )
+        return recall_sum / count
+    finally:
+        student.train(previous)
+
+
+def evaluate_causal_invariance(
+    student: nn.Module,
+    data: PairedAttentionBatch,
+    *,
+    tolerance: float = 1e-4,
+) -> dict[str, float | bool]:
+    """Measure whether changing future IQ tokens affects earlier attention.
+
+    This does not establish packed-context/cache equivalence; it checks
+    unpadded causal prefill under deliberately perturbed future activations.
+    """
+    if data.iq_attention_input.shape[1] < 2:
+        raise GLM53AttentionAlignmentError("causal gate needs at least two tokens")
+    if tolerance <= 0:
+        raise GLM53AttentionAlignmentError("causal tolerance must be positive")
+    parameter = next(student.parameters())
+    input_data = data.iq_attention_input.to(
+        device=parameter.device, dtype=parameter.dtype
+    )
+    previous = student.training
+    student.eval()
+    try:
+        with torch.no_grad():
+            original = student(input_data)
+            discrepancy = 0.0
+            for q in sorted({0, (input_data.shape[1] - 1) // 2}):
+                modified = input_data.clone()
+                modified[:, q + 1:] = modified[:, q + 1:] * -3.0 + 20.0
+                after = student(modified)
+                drift = (
+                    original[:, :q + 1] - after[:, :q + 1]
+                ).abs().max().item()
+                discrepancy = max(discrepancy, drift)
+        if not math.isfinite(discrepancy):
+            raise GLM53AttentionAlignmentError("nonfinite causal leakage")
+        return {
+            "max_abs_future_leakage": discrepancy,
+            "causal_pass": discrepancy <= tolerance,
+        }
+    finally:
+        student.train(previous)
+
+
 def fit_attention_from_paired_activations(
     student: nn.Module,
     train: PairedAttentionBatch,
@@ -203,7 +303,11 @@ def fit_attention_from_paired_activations(
     # Revert a worse student rather than declaring an overfit as progress.
     student.load_state_dict(best_state, strict=True)
     student.eval()
+    causal = evaluate_causal_invariance(student, validation)
+    recall = evaluate_dsa_index_recall(student, validation)
     return {
+        "heldout_dsa_topk_recall": recall,
+        "heldout_student_causal": causal,
         "stage_training_steps": steps,
         "initial_holdout": before,
         "best_holdout": best,
