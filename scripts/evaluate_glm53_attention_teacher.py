@@ -55,9 +55,16 @@ def main() -> int:
         parser.error("a shared layer needs saved source top-k indices; a full layer does not")
     from safetensors.torch import load_file, save_file
     activations = load_file(str(args.source_activations), device="cpu")
-    if set(activations) != {"source_layer_input"}:
-        parser.error("activations must contain exactly source_layer_input")
+    if set(activations) != {"source_layer_input", "token_ids"}:
+        parser.error("captured source must contain source_layer_input and token_ids")
     input_tensor = activations["source_layer_input"]
+    token_ids = activations["token_ids"]
+    if token_ids.shape != input_tensor.shape[:2] or token_ids.dtype not in (
+        torch.int32, torch.int64
+    ):
+        parser.error("token_ids must match source-layer [batch,sequence] positions")
+    if (token_ids < 0).any():
+        parser.error("source token_ids cannot be negative")
     if input_tensor.ndim != 3 or input_tensor.shape[-1] != 6144:
         parser.error("source activations must have shape [batch, seq, 6144]")
     if not torch.isfinite(input_tensor).all():
@@ -91,6 +98,7 @@ def main() -> int:
     save_file({
         "source_attention_output": output.cpu().contiguous(),
         "dsa_indices": selected.cpu().to(torch.int32).contiguous(),
+        "token_ids": token_ids.to(torch.int64).cpu().contiguous(),
     }, str(result_path))
     metadata = {
         "format": "iq_source_native_glm53_attention_reference_v1",
@@ -100,6 +108,7 @@ def main() -> int:
         "index_source_block": topology.index_source_blocks[args.layer],
         "donor_config_sha256": digest(args.donor / "config.json"),
         "source_activation_sha256": digest(args.source_activations),
+        "token_alignment_provenance": "captured_source_token_ids",
         "source_indices_sha256": (
             digest(args.shared_indices) if args.shared_indices else None
         ),
