@@ -55,8 +55,13 @@ def main() -> int:
         parser.error("a shared layer needs saved source top-k indices; a full layer does not")
     from safetensors.torch import load_file, save_file
     activations = load_file(str(args.source_activations), device="cpu")
-    if set(activations) != {"source_layer_input", "token_ids"}:
-        parser.error("captured source must contain source_layer_input and token_ids")
+    required = {"source_layer_input", "token_ids"}
+    aligned = {"source_layer_input", "token_ids", "token_offsets", "text_sha256"}
+    if set(activations) not in (required, aligned):
+        parser.error(
+            "source captures require source_layer_input, token_ids and "
+            "optionally token_offsets + text_sha256 together"
+        )
     input_tensor = activations["source_layer_input"]
     token_ids = activations["token_ids"]
     if token_ids.shape != input_tensor.shape[:2] or token_ids.dtype not in (
@@ -65,6 +70,18 @@ def main() -> int:
         parser.error("token_ids must match source-layer [batch,sequence] positions")
     if (token_ids < 0).any():
         parser.error("source token_ids cannot be negative")
+    optional_alignment = {}
+    if set(activations) == aligned:
+        offsets = activations["token_offsets"]
+        hashes = activations["text_sha256"]
+        if (offsets.shape != (*token_ids.shape, 2) or offsets.dtype not in (
+            torch.int32, torch.int64
+        ) or hashes.dtype != torch.uint8 or hashes.shape != (token_ids.shape[0], 32)):
+            parser.error("cross-tokenizer span offsets/text hashes are invalid")
+        optional_alignment = {
+            "token_offsets": offsets.to(torch.int64).cpu().contiguous(),
+            "text_sha256": hashes.cpu().contiguous(),
+        }
     if input_tensor.ndim != 3 or input_tensor.shape[-1] != 6144:
         parser.error("source activations must have shape [batch, seq, 6144]")
     if not torch.isfinite(input_tensor).all():
@@ -99,6 +116,7 @@ def main() -> int:
         "source_attention_output": output.cpu().contiguous(),
         "dsa_indices": selected.cpu().to(torch.int32).contiguous(),
         "token_ids": token_ids.to(torch.int64).cpu().contiguous(),
+        **optional_alignment,
     }, str(result_path))
     metadata = {
         "format": "iq_source_native_glm53_attention_reference_v1",
@@ -108,7 +126,10 @@ def main() -> int:
         "index_source_block": topology.index_source_blocks[args.layer],
         "donor_config_sha256": digest(args.donor / "config.json"),
         "source_activation_sha256": digest(args.source_activations),
-        "token_alignment_provenance": "captured_source_token_ids",
+        "token_alignment_provenance": (
+            "source_text_hash_and_character_spans"
+            if optional_alignment else "captured_source_token_ids"
+        ),
         "source_indices_sha256": (
             digest(args.shared_indices) if args.shared_indices else None
         ),
