@@ -31,12 +31,34 @@ copies using the verified mapping plan, validates the source and target
 tensors are materialized, and checks bitwise value equality after each copy.
 It accepts a direction `hf_to_megatron` or `megatron_to_hf`.
 
+## Real Hugging Face IQ causal language model
+
+`iq_training/hf_causal_lm.py` defines a concrete
+`IQHFForCausalLM(PreTrainedModel, GenerationMixin)` whose
+`self.model` is exactly the existing
+`IQHybridForCausalLM`, with unchanged native Mamba-3 MIMO, CSA,
+Block AttnRes and MoE operators. `register_iq_hf_causal_lm()`
+registers the true model class for `AutoModelForCausalLM`.
+
+It provides the real IQ embedding/head getters and a strict
+Transformers `CausalLMOutputWithPast` forward surface. It rejects
+CPU fallback, sharded EP reconstruction, unsupported generation
+cache conversions and unimplemented HF attention output flags.
+It does not invent weights.
+
+**Critical qualification:** the complete 78-block model is CUDA-only.
+HF's `from_pretrained()` huge-checkpoint meta construction, streaming
+load, `save_pretrained()` output and numerical CUDA forward/backward
+are NOT qualified by CPU CI. This class is an implemented genuine
+architecture wrapper, not proof of those features.
+
 **This is IQ-native weight transfer only**, which is reversible at
 **TP=PP=EP=1**. It does NOT merge GLM-5.3, Nemotron, Mamba-3 donors
-or translate source vocabularies. It also does NOT yet serialize a complete
-new Hugging Face IQ model checkpoint, support optimizer states, or register
-a full `MegatronModelBridge` for AutoBridge discovery. A source IQ HF
-model class is a separately required integration milestone.
+or translate source vocabularies. It also does NOT yet validate serialization of a full pretrained
+IQ checkpoint or its optimizer state, nor does it register a
+full `MegatronModelBridge` for AutoBridge discovery.
+The HF model class exists, but its real massive CUDA state load/save
+remains an acceptance gate.
 
 ## CPU acceptance
 
@@ -58,9 +80,9 @@ the dedicated `native-bridge-weight-registry` job does.
 
 ## Remaining hard blockers
 
-1. A complete HF `PreTrainedModel` wrapper for IQ's 78-block CUDA
-   architecture and a source-native checkpoint format with strict
-   load/save semantics.
+1. Qualify the newly implemented HF `PreTrainedModel` wrapper's
+   **real CUDA forward, save_pretrained and from_pretrained** across
+   source-native safetensors shards and strict state restoration.
 2. Register a fully functioning `MegatronModelBridge` source→target
    mapping and test supported `AutoBridge` import/export. Registry
    lookup tests alone are **not** end-to-end Bridge conversion.
