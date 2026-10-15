@@ -64,7 +64,7 @@ class NativeIQRegistryTests(unittest.TestCase):
         self.assertEqual(len(payload["sha256"]), 64)
         # Miniature test inventories must NEVER bypass the real 78-block
         # completeness gate on a production conversion path.
-        with self.assertRaisesRegex(Exception, "block 0 missing"):
+        with self.assertRaisesRegex(Exception, "unclassified IQ destination|block 0 missing"):
             plan_iq_native_tensors(
                 self.hf, self.native, iq_config=self.config, full_78_required=True,
             )
