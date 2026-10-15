@@ -11,6 +11,14 @@ import unittest
 
 import torch
 
+from iq_model import CompressedSparseContextAttention
+from iq_transfer.glm53_attention_alignment import (
+    PairedAttentionBatch, fit_attention_from_paired_activations,
+)
+from iq_transfer.transport import CoordinateMap, MapDiagnostics
+from test_parallel_cached_context import tiny_context
+import numpy as np
+
 from iq_transfer.glm53_official_attention import (
     _hf_attention_classes,
     GLM53OfficialAttentionError,
@@ -86,6 +94,56 @@ class OfficialGLMAttentionTests(unittest.TestCase):
         # mask must remove their contribution from output, not the indexer.
         self.assertTrue(torch.any(indices[:, 0] == 0, dim=-1).all())
         self.assertTrue(torch.isfinite(output).all())
+
+    def test_real_hf_attention_to_iq_csa_gradient_alignment(self):
+        # End-to-end small numerical acceptance with the actual official
+        # HF GlmMoeDsaAttention teacher, not a hand-written surrogate.
+        torch.manual_seed(147)
+        teacher = self.make_attention(0)
+        student = CompressedSparseContextAttention(
+            tiny_context(direct=True)
+        )
+        with torch.no_grad():
+            source_fit = torch.randn(1, 5, 16)
+            source_val = torch.randn(1, 5, 16)
+            target_fit, fit_indices = official_attention_prefill(
+                teacher, source_fit,
+            )
+            target_val, val_indices = official_attention_prefill(
+                teacher, source_val,
+            )
+        fit = PairedAttentionBatch(
+            iq_attention_input=source_fit,
+            glm_attention_output=target_fit,
+            token_ids=torch.tensor([[11, 12, 13, 14, 15]], dtype=torch.int64),
+            dsa_indices=fit_indices,
+        )
+        holdout = PairedAttentionBatch(
+            iq_attention_input=source_val,
+            glm_attention_output=target_val,
+            token_ids=torch.tensor([[21, 22, 23, 24, 25]], dtype=torch.int64),
+            dsa_indices=val_indices,
+        )
+        coord = CoordinateMap(
+            matrix=np.eye(16, dtype=np.float64), ridge=1e-3,
+            source_space="official_hf_glm_small_test",
+            target_space="iq_csa_small_test",
+            diagnostics=MapDiagnostics(
+                sample_count=100, source_features=16, target_features=16,
+                effective_rank=16, condition_number=1.0,
+                fit_rmse=0.0, validation_rmse=0.0,
+            ),
+        )
+        report = fit_attention_from_paired_activations(
+            student, fit, holdout, coord,
+            steps=2, learning_rate=0.002,
+        )
+        self.assertLessEqual(
+            report["best_holdout"]["mse"],
+            report["initial_holdout"]["mse"],
+        )
+        self.assertFalse(report["source_operator_equivalence"])
+        self.assertFalse(report["full_model_pretrained"])
 
     def test_actual_official_shared_indexer_uses_previous_indices(self):
         torch.manual_seed(1012)
