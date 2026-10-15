@@ -92,7 +92,10 @@ when using an existing IQ student. This command **only** distills one
 attention module; the 200-step count is a CLI example, not an endorsed
 quality threshold or measured converged training run.
 
-The output reports initial/best holdout MSE and cosine, chosen initialization,
+The output reports initial/best held-out MSE and cosine, the student
+indexer's **causal teacher top-k recall**, and an actual **future-token
+perturbation test** for causal output leakage. This is measured on held-out
+activations with the real student module. It also records initialization,
 provenance/checksums, and a
 `trained_CSA_stage_requires_causal_and_quality_acceptance` status.
 It does not claim source operator equivalence, pretrained weight
