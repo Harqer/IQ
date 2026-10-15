@@ -33,7 +33,10 @@ class PairedAttentionBatch:
     iq_attention_input: torch.Tensor
     glm_attention_output: torch.Tensor
     token_ids: torch.Tensor
-    dsa_indices: torch.Tensor
+    dsa_indices: torch.Tensor | None
+    supervision_mask: torch.Tensor | None = None
+    sample_text_hashes: torch.Tensor | None = None
+    alignment_mode: str = "exact_token_ids"
 
     def __post_init__(self) -> None:
         student = self.iq_attention_input
@@ -50,10 +53,33 @@ class PairedAttentionBatch:
             raise GLM53AttentionAlignmentError("invalid hidden size")
         if ids.shape != student.shape[:2] or ids.dtype not in (torch.int32, torch.int64):
             raise GLM53AttentionAlignmentError("token_ids must be [B,S] int32/int64")
-        if indices.ndim != 3 or indices.shape[:2] != ids.shape or indices.dtype not in (torch.int32, torch.int64):
-            raise GLM53AttentionAlignmentError("DSA indices must be [B,S,K] integers")
-        if indices.shape[-1] <= 0 or ((indices < 0) | (indices >= ids.shape[1])).any():
-            raise GLM53AttentionAlignmentError("DSA index out of sequence bounds")
+        if self.alignment_mode not in ("exact_token_ids", "causal_character_spans"):
+            raise GLM53AttentionAlignmentError("unknown tokenizer alignment mode")
+        if indices is None:
+            if self.alignment_mode != "causal_character_spans":
+                raise GLM53AttentionAlignmentError(
+                    "exact-token alignment requires source DSA indices"
+                )
+        else:
+            if indices.ndim != 3 or indices.shape[:2] != ids.shape or indices.dtype not in (
+                torch.int32, torch.int64
+            ):
+                raise GLM53AttentionAlignmentError("DSA indices must be [B,S,K] integers")
+            if indices.shape[-1] <= 0 or ((indices < 0) | (indices >= ids.shape[1])).any():
+                raise GLM53AttentionAlignmentError("DSA index out of sequence bounds")
+        if self.supervision_mask is not None:
+            if (self.supervision_mask.shape != ids.shape
+                or self.supervision_mask.dtype != torch.bool
+                or not bool(self.supervision_mask.any())):
+                raise GLM53AttentionAlignmentError("invalid supervision mask")
+        if self.sample_text_hashes is not None:
+            if (self.sample_text_hashes.dtype != torch.uint8
+                or self.sample_text_hashes.shape != (ids.shape[0], 32)):
+                raise GLM53AttentionAlignmentError("invalid source-text SHA-256 identities")
+        elif self.alignment_mode == "causal_character_spans":
+            raise GLM53AttentionAlignmentError(
+                "cross-tokenizer alignment requires raw-text SHA-256 identities"
+            )
         if not student.is_floating_point() or not teacher.is_floating_point():
             raise GLM53AttentionAlignmentError("paired activations must be floating tensors")
         if not bool(torch.isfinite(student).all()) or not bool(torch.isfinite(teacher).all()):
@@ -87,8 +113,16 @@ def validate_pairing(
         raise GLM53AttentionAlignmentError("no train/validation token sequences")
     # A held-out file containing the same token IDs as training is not
     # independent evidence. Use exact token sequence identity, not file name.
-    train_rows = {tuple(row.tolist()) for row in train.token_ids.cpu()}
-    val_rows = {tuple(row.tolist()) for row in validation.token_ids.cpu()}
+    if (train.sample_text_hashes is None) != (validation.sample_text_hashes is None):
+        raise GLM53AttentionAlignmentError(
+            "train/validation text-identity provenance formats differ"
+        )
+    if train.sample_text_hashes is not None:
+        train_rows = {tuple(row.tolist()) for row in train.sample_text_hashes.cpu()}
+        val_rows = {tuple(row.tolist()) for row in validation.sample_text_hashes.cpu()}
+    else:
+        train_rows = {tuple(row.tolist()) for row in train.token_ids.cpu()}
+        val_rows = {tuple(row.tolist()) for row in validation.token_ids.cpu()}
     if train_rows.intersection(val_rows):
         raise GLM53AttentionAlignmentError(
             "training/held-out data share token sequences; leakage invalidates validation"
@@ -123,13 +157,19 @@ def evaluate_alignment(
             desired = _teacher_target(data, basis)
             if actual.shape != desired.shape:
                 raise GLM53AttentionAlignmentError("IQ/GLM mapped output shapes differ")
-            error = (actual - desired)
+            mask = (
+                data.supervision_mask.to(actual.device)
+                if data.supervision_mask is not None
+                else torch.ones(actual.shape[:2], device=actual.device, dtype=torch.bool)
+            )
+            error = (actual - desired)[mask]
+            reference = desired[mask]
             mse = error.square().mean().item()
-            baseline = desired.square().mean().item()
+            baseline = reference.square().mean().item()
             relative = mse / max(baseline, 1e-12)
             cosine = torch.nn.functional.cosine_similarity(
-                actual.reshape(-1, actual.shape[-1]),
-                desired.reshape(-1, desired.shape[-1]), dim=-1,
+                actual[mask],
+                reference, dim=-1,
                 eps=1e-8,
             ).mean().item()
             if any(not math.isfinite(v) for v in (mse, relative, cosine)):
@@ -158,6 +198,10 @@ def evaluate_dsa_index_recall(
         )
     device = next(student.parameters()).device
     x = data.iq_attention_input.to(device)
+    if data.dsa_indices is None:
+        raise GLM53AttentionAlignmentError(
+            "DSA token index recall is undefined across different tokenizers"
+        )
     previous = student.training
     student.eval()
     try:
@@ -285,7 +329,12 @@ def fit_attention_from_paired_activations(
         output = student(train_input).float()
         if output.shape != train_target.shape:
             raise GLM53AttentionAlignmentError("IQ attention output width mismatch")
-        loss = torch.nn.functional.mse_loss(output, train_target)
+        mask = (
+            train.supervision_mask.to(device=device)
+            if train.supervision_mask is not None else
+            torch.ones(train_target.shape[:2], device=device, dtype=torch.bool)
+        )
+        loss = torch.nn.functional.mse_loss(output.float()[mask], train_target[mask])
         if not bool(torch.isfinite(loss)):
             raise GLM53AttentionAlignmentError("nonfinite distillation loss")
         loss.backward()
@@ -304,8 +353,20 @@ def fit_attention_from_paired_activations(
     student.load_state_dict(best_state, strict=True)
     student.eval()
     causal = evaluate_causal_invariance(student, validation)
-    recall = evaluate_dsa_index_recall(student, validation)
+    recall = (
+        evaluate_dsa_index_recall(student, validation)
+        if validation.dsa_indices is not None else None
+    )
     return {
+        "train_supervision_coverage": (
+            float(train.supervision_mask.float().mean().item())
+            if train.supervision_mask is not None else 1.0
+        ),
+        "validation_supervision_coverage": (
+            float(validation.supervision_mask.float().mean().item())
+            if validation.supervision_mask is not None else 1.0
+        ),
+        "tokenizer_alignment_mode": train.alignment_mode,
         "heldout_dsa_topk_recall": recall,
         "heldout_student_causal": causal,
         "stage_training_steps": steps,
