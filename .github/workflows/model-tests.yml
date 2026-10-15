@@ -107,7 +107,13 @@ jobs:
       - name: Install documented NVIDIA Bridge and MCore releases
         run: |
           python -m pip install -r requirements-model.txt
-          python -m pip install "megatron-core==0.19.0" "megatron-bridge==0.6.2"
+          python -m pip install "megatron-core==0.19.0"
+          # NVIDIA's full 0.6.2 dependency chain includes CUDA-compiled
+          # flash/fast-hadamard modules, which cannot build on a CPU runner.
+          # Only import and test NVIDIA's *real* released Python registry
+          # here; do not claim this qualifies full GPU Bridge conversion.
+          python -m pip install --no-deps "megatron-bridge==0.6.2"
+          python -m pip install "transformers==5.12.1" einops omegaconf hydra-core
 
       - name: Validate actual NVIDIA DirectMapping registry and native tensor round trips
         run: |
@@ -116,4 +122,4 @@ jobs:
           assert version("megatron-core") == "0.19.0"
           assert version("megatron-bridge") == "0.6.2"
           PY
-          python -m unittest discover -s tests -p "test_iq_native_weight_registry.py" -v
+          IQ_REQUIRE_NVIDIA_BRIDGE=1 python -m unittest discover -s tests -p "test_iq_native_weight_registry.py" -v
