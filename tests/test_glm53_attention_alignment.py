@@ -21,6 +21,9 @@ from iq_transfer.glm53_attention_alignment import (
     evaluate_alignment, fit_attention_from_paired_activations, validate_pairing,
 )
 from iq_transfer.transport import CoordinateMap, MapDiagnostics
+from iq_transfer.glm53_token_alignment import (
+    GLMTokenAlignmentError, align_teacher_by_char_spans,
+)
 from scripts.distill_glm53_attention_stage import checksum, load_paired
 
 
@@ -122,6 +125,57 @@ class StagewiseAlignmentTests(unittest.TestCase):
         with self.assertRaisesRegex(GLM53AttentionAlignmentError, "token axes"):
             replace(train, glm_attention_output=torch.zeros(2, 4, 8))
 
+    def test_different_tokenizers_use_completed_source_character_spans(self):
+        output = torch.tensor([[[2.0, 4.0], [6.0, 8.0], [10.0, 12.0]]])
+        source_offsets = torch.tensor([[[0, 2], [2, 3], [3, 5]]])
+        iq_offsets = torch.tensor([[[0, 1], [1, 3], [3, 5]]])
+        identity = torch.full((1, 32), 9, dtype=torch.uint8)
+        mapped = align_teacher_by_char_spans(
+            output, source_offsets, iq_offsets,
+            source_text_hashes=identity, target_text_hashes=identity.clone(),
+        )
+        self.assertTrue(torch.equal(
+            mapped.supervision_mask, torch.tensor([[False, True, True]])
+        ))
+        torch.testing.assert_close(
+            mapped.mapped_teacher_output[0, 1],
+            torch.tensor([4.0, 6.0]),
+        )
+        torch.testing.assert_close(
+            mapped.mapped_teacher_output[0, 2],
+            torch.tensor([10.0, 12.0]),
+        )
+        self.assertAlmostEqual(mapped.coverage_ratio, 2 / 3, places=6)
+        with self.assertRaisesRegex(GLMTokenAlignmentError, "exact raw text"):
+            align_teacher_by_char_spans(
+                output, source_offsets, iq_offsets,
+                source_text_hashes=identity,
+                target_text_hashes=torch.full((1, 32), 8, dtype=torch.uint8),
+            )
+
+    def test_span_aligned_student_trains_without_fake_dsa_index_parity(self):
+        student, train, val = self.make_real_small_module_pairs()
+        train = replace(
+            train, dsa_indices=None,
+            supervision_mask=torch.tensor([[False, True, True, True, True]] * 2),
+            sample_text_hashes=torch.full((2, 32), 1, dtype=torch.uint8),
+            alignment_mode="causal_character_spans",
+        )
+        val = replace(
+            val, dsa_indices=None,
+            supervision_mask=torch.tensor([[False, True, True, True, True]] * 2),
+            sample_text_hashes=torch.full((2, 32), 2, dtype=torch.uint8),
+            alignment_mode="causal_character_spans",
+        )
+        report = fit_attention_from_paired_activations(
+            student, train, val, map_data(),
+            steps=2, learning_rate=0.003,
+        )
+        self.assertIsNone(report["heldout_dsa_topk_recall"])
+        self.assertEqual(report["tokenizer_alignment_mode"], "causal_character_spans")
+        self.assertAlmostEqual(report["validation_supervision_coverage"], 0.8, places=5)
+        self.assertFalse(report["full_model_pretrained"])
+
     def test_capture_file_hash_and_exact_token_pairing(self):
         with TemporaryDirectory() as tmp:
             folder = Path(tmp)
@@ -151,6 +205,7 @@ class StagewiseAlignmentTests(unittest.TestCase):
             (teacher / "manifest.json").write_text(json.dumps(meta), encoding="utf-8")
             sample, evidence = load_paired(
                 teacher_dir=teacher, iq_capture=iq, layer=6,
+                allow_shared_token_ids=True,
             )
             self.assertEqual(sample.token_ids.shape, (1, 3))
             self.assertEqual(evidence["index_source_block"], 6)
@@ -159,7 +214,10 @@ class StagewiseAlignmentTests(unittest.TestCase):
                 "token_ids": torch.tensor([[99, 2, 3]], dtype=torch.int64),
             }, str(iq))
             with self.assertRaisesRegex(ValueError, "identical token"):
-                load_paired(teacher_dir=teacher, iq_capture=iq, layer=6)
+                load_paired(
+                    teacher_dir=teacher, iq_capture=iq, layer=6,
+                    allow_shared_token_ids=True,
+                )
             meta["output_sha256"] = "tampered"
             (teacher / "manifest.json").write_text(json.dumps(meta), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "hash"):
