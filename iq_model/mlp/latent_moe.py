@@ -28,6 +28,10 @@ class StableLatentMoEConfig:
     expert_bias: bool = False
     router_bias: bool = False
     expert_activation: str = "situ"
+    router_groups: int = 1
+    router_topk_groups: int = 1
+    normalize_topk_prob: bool = True
+    router_fp32: bool = False
 
     def __post_init__(self) -> None:
         ints = {
@@ -45,6 +49,18 @@ class StableLatentMoEConfig:
             )
         if self.top_k >= self.num_experts:
             raise ValueError("top_k must be smaller than num_experts")
+        if (
+            type(self.router_groups) is not int
+            or type(self.router_topk_groups) is not int
+            or self.router_groups < 1
+            or self.router_topk_groups < 1
+            or self.num_experts % self.router_groups != 0
+            or self.router_topk_groups > self.router_groups
+            or self.num_experts // self.router_groups < 2
+        ):
+            raise ValueError("invalid grouped expert router topology")
+        if type(self.normalize_topk_prob) is not bool or type(self.router_fp32) is not bool:
+            raise ValueError("router normalization and FP32 flags must be booleans")
         if self.expert_activation not in ("situ", "silu"):
             raise ValueError("expert_activation must be 'situ' or 'silu'")
         if self.situ_beta <= 0 or self.situ_linear_beta <= 0:
@@ -167,8 +183,39 @@ class StableLatentMoE(nn.Module):
         self,
         flat: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        raw = torch.sigmoid(self.router(flat).float())
+        """GLM-compatible group mask, correction bias and sigmoid weighting.
+
+        Mirrors transformers GlmMoeDsaTopkRouter.forward. Legacy IQ models
+        keep the existing ungrouped defaults, except opt-in router_fp32.
+        """
+        if self.config.router_fp32:
+            # GLM computes router logits in float32 before sigmoid. Casting
+            # the parameter is differentiable and preserves its gradients.
+            scores_in = torch.nn.functional.linear(
+                flat.float(),
+                self.router.weight.float(),
+                self.router.bias.float() if self.router.bias is not None else None,
+            )
+        else:
+            scores_in = self.router(flat).float()
+        raw = torch.sigmoid(scores_in)
         choice_scores = raw + self.routing_bias.float().unsqueeze(0)
+        if self.config.router_groups > 1:
+            grouped = choice_scores.reshape(
+                -1, self.config.router_groups,
+                self.config.num_experts // self.config.router_groups,
+            )
+            two_per_group = grouped.topk(2, dim=-1).values.sum(dim=-1)
+            group_idx = torch.topk(
+                two_per_group, k=self.config.router_topk_groups,
+                dim=-1, sorted=False,
+            ).indices
+            group_mask = torch.zeros_like(two_per_group, dtype=torch.bool)
+            group_mask.scatter_(1, group_idx, True)
+            keep = group_mask.unsqueeze(-1).expand_as(grouped).reshape(
+                -1, self.config.num_experts
+            )
+            choice_scores = choice_scores.masked_fill(~keep, float("-inf"))
         _, selected = torch.topk(
             choice_scores,
             k=self.config.top_k,
@@ -177,10 +224,10 @@ class StableLatentMoE(nn.Module):
             sorted=False,
         )
         weights = raw.gather(1, selected)
-        weights = weights / weights.sum(
-            dim=-1,
-            keepdim=True,
-        ).clamp_min(torch.finfo(weights.dtype).tiny)
+        if self.config.normalize_topk_prob:
+            weights = weights / weights.sum(
+                dim=-1, keepdim=True,
+            ).clamp_min(1e-20)
         weights = weights * self.config.routed_scaling_factor
         return raw, selected, weights
 
