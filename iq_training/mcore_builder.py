@@ -111,6 +111,26 @@ class IQMegatronModule(MegatronModule):
         )
 
 
+def iq_mcore_transformer_metadata(iq: IQHybridConfig) -> TransformerConfig:
+    """Real MCore 0.19 config validation for IQ EP-only model metadata.
+
+    TransformerConfig describes widths/parallel groups; it does not mean the
+    model executes the vanilla GPT TransformerLayer.
+    """
+    return TransformerConfig(
+        num_layers=78,
+        hidden_size=iq.model.hidden_size,
+        num_attention_heads=iq.model.num_attention_heads,
+        ffn_hidden_size=iq.model.intermediate_size,
+        num_moe_experts=iq.stable_moe.num_experts if iq.stable_moe else None,
+        moe_router_topk=iq.stable_moe.top_k if iq.stable_moe else 2,
+        tensor_model_parallel_size=1,
+        pipeline_model_parallel_size=1,
+        expert_model_parallel_size=iq.expert_parallel_size,
+        bf16=True,
+    )
+
+
 class IQMegatronModelBuilder(ModelBuilder[IQMegatronModule, IQMegatronModelConfig]):
     """Documented NVIDIA builder for a real, EP-only IQ model graph."""
 
@@ -149,16 +169,7 @@ class IQMegatronModelBuilder(ModelBuilder[IQMegatronModule, IQMegatronModelConfi
             raise IQBridgeBuilderError(
                 "constructing native IQ Mamba-3 requires an NVIDIA GPU"
             )
-        native = TransformerConfig(
-            num_layers=78,
-            hidden_size=iq.model.hidden_size,
-            num_attention_heads=iq.model.num_attention_heads,
-            ffn_hidden_size=iq.model.intermediate_size,
-            tensor_model_parallel_size=1,
-            pipeline_model_parallel_size=1,
-            expert_model_parallel_size=iq.expert_parallel_size,
-            bf16=True,
-        )
+        native = iq_mcore_transformer_metadata(iq)
         return IQMegatronModule(native, iq, ep_group=ep)
 
     def build_distributed_models(
