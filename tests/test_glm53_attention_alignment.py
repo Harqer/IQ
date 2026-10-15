@@ -89,6 +89,9 @@ class StagewiseAlignmentTests(unittest.TestCase):
         self.assertEqual(record["stage_training_steps"], 5)
         self.assertFalse(record["source_operator_equivalence"])
         self.assertFalse(record["full_model_pretrained"])
+        self.assertGreaterEqual(record["heldout_dsa_topk_recall"], 0.0)
+        self.assertLessEqual(record["heldout_dsa_topk_recall"], 1.0)
+        self.assertTrue(record["heldout_student_causal"]["causal_pass"])
         self.assertLessEqual(
             record["best_holdout"]["mse"],
             record["initial_holdout"]["mse"],
