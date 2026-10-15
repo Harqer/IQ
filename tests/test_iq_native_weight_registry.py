@@ -6,6 +6,7 @@ mechanics, not to assert GLM-5.3 or IQ 78-block weight equivalence.
 from __future__ import annotations
 
 import unittest
+import os
 
 import torch
 from torch import nn
@@ -94,6 +95,8 @@ class NativeIQRegistryTests(unittest.TestCase):
         try:
             import megatron.bridge.models.conversion.mapping_registry
         except ImportError:
+            if os.environ.get("IQ_REQUIRE_NVIDIA_BRIDGE") == "1":
+                raise
             self.skipTest("actual NVIDIA megatron-bridge is not installed")
         torch.manual_seed(90)
         with torch.no_grad():
@@ -144,6 +147,8 @@ class NativeIQRegistryTests(unittest.TestCase):
             )
             from megatron.bridge.models.conversion.param_mapping import DirectMapping
         except ImportError:
+            if os.environ.get("IQ_REQUIRE_NVIDIA_BRIDGE") == "1":
+                raise
             self.skipTest("megatron-bridge optional outside dedicated NVIDIA CI")
         plan = plan_iq_native_tensors(
             self.hf, self.native, iq_config=self.config, full_78_required=False
