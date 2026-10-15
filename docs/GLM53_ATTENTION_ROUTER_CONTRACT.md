@@ -76,6 +76,42 @@ and `parallel_parameter_plan` labels attention
 Do not silently use `torch.reshape`, padding or random QKV adapters
 as pretrained attention weight conversion.
 
+## Real source-native attention evaluation, one layer at a time
+
+`iq_transfer/glm53_official_attention.py` uses actual
+`transformers==5.15.0` `GlmMoeDsaAttention` rather than duplicating
+GLM's MLA/DSA kernels. It can load a **single real BF16 donor attention
+layer** from indexed Hugging Face safetensors, with exact source tensor
+keys, shape checks and source-native `indexer` submodules.
+
+The executable `scripts/evaluate_glm53_attention_teacher.py` takes
+**captured GLM source-layer input activations** from the corresponding
+layer. It does not accept fabricated vectors or relabel IQ residual
+states as GLM's 6144-dimensional source coordinates:
+
+```bash
+python -m pip install "transformers==5.15.0"
+python -m scripts.evaluate_glm53_attention_teacher \\
+  --donor "$GLM_BF16_DIR" \\
+  --layer 6 \\
+  --source-activations /scratch/glm-captures/layer-006.safetensors \\
+  --output /scratch/iq/teacher-attention-layer-006
+```
+
+The activation file must contain `source_layer_input` of shape
+`[batch, tokens, 6144]`, obtained from the actual GLM donor capture.
+For a **shared-indexer** layer (e.g. 7), additionally pass
+`--shared-indices` with the `dsa_indices` tensor from its preceding
+full-indexer source layer's evaluation, using the *same* token sequence.
+The evaluator writes source attention output and index selections plus
+a checksum manifest. It does **not** overwrite any donor file, convert
+IQ attention or assert IQ model quality.
+
+The CI `official-glm-attention` job runs the real published
+`GlmMoeDsaAttention` CPU operator on small diagnostic parameters
+and validates causal masking / source IndexShare. Large pretrained
+activations and checkpoints remain external inputs.
+
 ## Next gates (still open)
 
 1. Choose **either** a genuine MLA/DSA branch in IQ with source-owned
