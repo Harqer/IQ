@@ -89,3 +89,31 @@ jobs:
         run: |
           python -m unittest discover -s tests -p "test_iq_mcore_builder.py" -v
           python -m unittest discover -s tests -p "test_iq_bridge_model_contract.py" -v
+
+  native-bridge-weight-registry:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-model.txt
+
+      - name: Install documented NVIDIA Bridge and MCore releases
+        run: |
+          python -m pip install -r requirements-model.txt
+          python -m pip install "megatron-core==0.19.0" "megatron-bridge==0.6.2"
+
+      - name: Validate actual NVIDIA DirectMapping registry and native tensor round trips
+        run: |
+          python - <<'PY'
+          from importlib.metadata import version
+          assert version("megatron-core") == "0.19.0"
+          assert version("megatron-bridge") == "0.6.2"
+          PY
+          python -m unittest discover -s tests -p "test_iq_native_weight_registry.py" -v
