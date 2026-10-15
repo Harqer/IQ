@@ -128,7 +128,14 @@ def _sharded_state(
         raise IQDistributedCheckpointError("training checkpoint requires a scheduler")
     if not isinstance(dataloader_state, Mapping):
         raise IQDistributedCheckpointError("training checkpoint requires dataloader state")
-    model_config = getattr(model, "config", None)
+    # Native NVIDIA MegatronModule wrappers expose a TransformerConfig at
+    # model.config, while the real IQ architecture lives at model.iq.config.
+    # Never mistake TransformerConfig for IQHybridConfig/fingerprint.
+    inner = getattr(model, "iq", None)
+    model_config = (
+        getattr(inner, "config", None)
+        if inner is not None else getattr(model, "config", None)
+    )
     if model_config is not None:
         actual_fingerprint = getattr(model_config, "fingerprint", None)
         if actual_fingerprint != progress.config_fingerprint:
