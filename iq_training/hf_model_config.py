@@ -51,6 +51,9 @@ class IQHFCausalConfig(PretrainedConfig):
             ("vocab_size", hybrid.model.vocab_size),
             ("hidden_size", hybrid.model.hidden_size),
             ("num_hidden_layers", 78),
+            ("num_attention_heads", hybrid.model.num_attention_heads),
+            ("num_key_value_heads", hybrid.model.num_key_value_heads),
+            ("max_position_embeddings", hybrid.model.max_position_embeddings),
             ("tie_word_embeddings", hybrid.model.tie_word_embeddings),
         ):
             if flat in kwargs and kwargs[flat] != expected:
@@ -61,7 +64,8 @@ class IQHFCausalConfig(PretrainedConfig):
         # canonical IQ config and must not diverge after JSON serialization.
         for duplicate in (
             "vocab_size", "hidden_size", "num_hidden_layers",
-            "tie_word_embeddings",
+            "num_attention_heads", "num_key_value_heads",
+            "max_position_embeddings", "tie_word_embeddings",
         ):
             kwargs.pop(duplicate, None)
         super().__init__(
@@ -81,6 +85,17 @@ class IQHFCausalConfig(PretrainedConfig):
         result = IQHybridConfig.from_dict(self.iq_hybrid)
         if result.fingerprint != self.iq_hybrid_sha256:
             raise IQHFConfigError("IQ HF config was modified without fingerprint update")
+        for flat, expected in (
+            ("vocab_size", result.model.vocab_size),
+            ("hidden_size", result.model.hidden_size),
+            ("num_hidden_layers", len(result.schedule.layers)),
+            ("num_attention_heads", result.model.num_attention_heads),
+            ("num_key_value_heads", result.model.num_key_value_heads),
+            ("max_position_embeddings", result.model.max_position_embeddings),
+            ("tie_word_embeddings", result.model.tie_word_embeddings),
+        ):
+            if getattr(self, flat) != expected:
+                raise IQHFConfigError(f"HF {flat} changed independently of IQ backbone")
         return result
 
 
