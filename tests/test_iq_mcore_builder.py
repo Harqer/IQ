@@ -9,18 +9,24 @@ from __future__ import annotations
 from dataclasses import replace
 import unittest
 
-from megatron.core.process_groups_config import ProcessGroupCollection
-from megatron.training.models.base import ModelConfig, ModelBuilder
+try:
+    from megatron.core.process_groups_config import ProcessGroupCollection
+    from megatron.training.models.base import ModelConfig, ModelBuilder
+    from iq_training.mcore_builder import (
+        IQBridgeBuilderError,
+        IQMegatronModelBuilder,
+        IQMegatronModelConfig,
+        iq_mcore_transformer_metadata,
+    )
+except ImportError:
+    MCORE_PRESENT = False
+else:
+    MCORE_PRESENT = True
 
-from iq_training.mcore_builder import (
-    IQBridgeBuilderError,
-    IQMegatronModelBuilder,
-    IQMegatronModelConfig,
-    iq_mcore_transformer_metadata,
-)
 from iq_transfer.complete_transplant import nvidia_parallel_78_config
 
 
+@unittest.skipUnless(MCORE_PRESENT, "official megatron-core is not installed in CPU unit job")
 class IQOfficialMCoreModelBuilderTests(unittest.TestCase):
     def test_real_nvidia_builder_registration_and_serialization(self):
         cfg = IQMegatronModelConfig(
