@@ -57,6 +57,9 @@ class StableLatentMoEConfig:
             or self.num_experts % self.router_groups != 0
             or self.router_topk_groups > self.router_groups
             or self.num_experts // self.router_groups < 2
+            or self.top_k > (
+                self.num_experts // self.router_groups
+            ) * self.router_topk_groups
         ):
             raise ValueError("invalid grouped expert router topology")
         if type(self.normalize_topk_prob) is not bool or type(self.router_fp32) is not bool:
