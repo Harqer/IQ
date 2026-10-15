@@ -14,6 +14,9 @@ from iq_transfer.glm53_expert_mapping import (
     iter_glm53_expert_transfer_tasks,
     glm53_expert_transfer_manifest,
 )
+from iq_transfer.glm53_attention_contract import (
+    GLM53AttentionGeometry, attention_source_manifest,
+)
 from iq_transfer.glm53_parallel_contract import (
     GLM53Topology, expected_indexer_types,
 )
@@ -37,6 +40,18 @@ def published_glm53_config() -> dict:
         "mlp_layer_types": ["dense"] * 3 + ["sparse"] * 75,
         "num_nextn_predict_layers": 1,
         "vocab_size": 154880,
+        "num_attention_heads": 64,
+        "q_lora_rank": 2048,
+        "kv_lora_rank": 512,
+        "qk_nope_head_dim": 192,
+        "qk_rope_head_dim": 64,
+        "v_head_dim": 256,
+        "index_n_heads": 32,
+        "index_head_dim": 128,
+        "indexer_rope_interleave": True,
+        "rope_interleave": True,
+        "attention_bias": False,
+        "rope_parameters": {"rope_theta": 8000000, "rope_type": "default"},
     }
 
 
@@ -175,6 +190,31 @@ class OfficialDonorPreflightContractTests(unittest.TestCase):
         self.assertFalse(manifest["attention_mapping_complete"])
         self.assertEqual(len(manifest["sha256"]), 64)
         self.assertEqual(manifest, glm53_expert_transfer_manifest(8))
+
+    def test_full_glm5_attention_registry_matches_publisher_shapes(self):
+        config = published_glm53_config()
+        geom = GLM53AttentionGeometry.from_hf_config(config)
+        topology = GLM53Topology.from_hf_config(config)
+        data = attention_source_manifest(topology, geom)
+        self.assertEqual(data["decoder_blocks"], 78)
+        self.assertEqual(data["full_indexer_blocks"], 21)
+        self.assertEqual(data["source_tensor_count"], 78 * 7 + 21 * 5)
+        self.assertFalse(data["converted"])
+        self.assertTrue(all(item["destination"] is None for item in data["source_tensors"]))
+        self.assertEqual(geom.source_shapes_for_block(0, indexer_full=True)[
+            "model.layers.0.self_attn.q_b_proj.weight"
+        ], (16384, 2048))
+        self.assertEqual(geom.source_shapes_for_block(5, indexer_full=False)[
+            "model.layers.5.self_attn.kv_b_proj.weight"
+        ], (28672, 512))
+        self.assertEqual(geom.source_shapes_for_block(6, indexer_full=True)[
+            "model.layers.6.self_attn.indexer.k_norm.bias"
+        ], (128,))
+        self.assertEqual(data, attention_source_manifest(topology, geom))
+        with self.assertRaisesRegex(ValueError, "GLM-5.3 MLA"):
+            GLM53AttentionGeometry.from_hf_config({
+                **config, "q_lora_rank": 256
+            })
 
     def test_safetensors_index_paths_do_not_escape_source_root(self):
         with TemporaryDirectory() as temp:
