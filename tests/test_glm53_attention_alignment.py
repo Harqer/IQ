@@ -21,6 +21,9 @@ from iq_transfer.glm53_attention_alignment import (
     evaluate_alignment, fit_attention_from_paired_activations, validate_pairing,
 )
 from iq_transfer.transport import CoordinateMap, MapDiagnostics
+from iq_transfer.glm53_attention_capture import (
+    capture_attention_input, GLMAttentionCaptureError,
+)
 from iq_transfer.glm53_token_alignment import (
     GLMTokenAlignmentError, align_teacher_by_char_spans,
 )
@@ -175,6 +178,40 @@ class StagewiseAlignmentTests(unittest.TestCase):
         self.assertEqual(report["tokenizer_alignment_mode"], "causal_character_spans")
         self.assertAlmostEqual(report["validation_supervision_coverage"], 0.8, places=5)
         self.assertFalse(report["full_model_pretrained"])
+
+    def test_actual_attention_pre_hook_writes_valid_token_spans(self):
+        torch.manual_seed(109)
+        model = CompressedSparseContextAttention(small_config()).eval()
+        inputs = torch.randn(1, 3, 8)
+        ids = torch.tensor([[101, 102, 103]], dtype=torch.int64)
+        offsets = torch.tensor([[[0, 1], [1, 3], [3, 4]]])
+        digest = torch.full((1, 32), 7, dtype=torch.uint8)
+        with TemporaryDirectory() as folder:
+            outfile = Path(folder) / "iq-captured.safetensors"
+            with capture_attention_input(
+                model, model_input_ids=ids, tokenizer_ids=ids,
+                token_offsets=offsets, text_sha256=digest,
+                kind="iq", output_file=outfile,
+            ):
+                with torch.no_grad():
+                    model(inputs)
+            from safetensors.torch import load_file
+            captured = load_file(str(outfile))
+            torch.testing.assert_close(
+                captured["iq_attention_input"], inputs, atol=0, rtol=0
+            )
+            self.assertTrue(torch.equal(captured["token_offsets"], offsets))
+            self.assertTrue(torch.equal(captured["text_sha256"], digest))
+            # Hook cleanup on context exit: second forward cannot overwrite.
+            with torch.no_grad():
+                model(inputs)
+            with self.assertRaisesRegex(GLMAttentionCaptureError, "differ"):
+                with capture_attention_input(
+                    model, model_input_ids=ids + 1, tokenizer_ids=ids,
+                    token_offsets=offsets, text_sha256=digest,
+                    kind="iq", output_file=outfile.with_name("wrong.safetensors"),
+                ):
+                    model(inputs)
 
     def test_capture_file_hash_and_exact_token_pairing(self):
         with TemporaryDirectory() as tmp:
