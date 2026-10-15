@@ -17,6 +17,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Mapping
 
 from .glm53_parallel_contract import GLM53Topology
+from .glm53_attention_contract import GLM53AttentionGeometry
 
 
 class GLM53DonorPreflightError(ValueError):
@@ -95,6 +96,7 @@ def required_glm53_hf_keys(topology: GLM53Topology) -> tuple[str, ...]:
                 f"{att}.indexer.wk.weight",
                 f"{att}.indexer.weights_proj.weight",
                 f"{att}.indexer.k_norm.weight",
+                f"{att}.indexer.k_norm.bias",
             ))
         if layer in topology.dense_blocks:
             for name in ("gate_proj", "up_proj", "down_proj"):
@@ -127,9 +129,18 @@ def _validate_shard(root: Path, name: str) -> Path:
 
 
 def expected_glm53_tensor_shape(
-    key: str, *, vocab_size: int
+    key: str, *, vocab_size: int,
+    attention_geometry: GLM53AttentionGeometry | None = None,
 ) -> tuple[int, ...] | None:
     """Publisher GLM5Bridge dense/expert tensor geometry, no tensor loading."""
+    if attention_geometry is not None and key.startswith("model.layers."):
+        pieces = key.split(".")
+        if len(pieces) > 3 and pieces[2].isdigit() and pieces[3] == "self_attn":
+            block = int(pieces[2])
+            if 0 <= block < 78:
+                return attention_geometry.source_shapes_for_block(
+                    block, indexer_full=True
+                ).get(key)
     if key in ("model.embed_tokens.weight", "lm_head.weight"):
         return (vocab_size, 6144)
     if key == "model.norm.weight":
@@ -203,6 +214,7 @@ def audit_glm53_donor(
     with config_path.open(encoding="utf-8") as handle:
         config = json.load(handle)
     topology = GLM53Topology.from_hf_config(config)
+    attention_geometry = GLM53AttentionGeometry.from_hf_config(config)
     vocab_size = config.get("vocab_size")
     if type(vocab_size) is not int or vocab_size <= 0:
         raise GLM53DonorPreflightError("checkpoint vocabulary size must be explicit")
@@ -268,7 +280,8 @@ def audit_glm53_donor(
                     if any(d <= 0 for d in shape):
                         raise GLM53DonorPreflightError(f"invalid tensor geometry: {key}")
                     expected = expected_glm53_tensor_shape(
-                        key, vocab_size=vocab_size
+                        key, vocab_size=vocab_size,
+                        attention_geometry=attention_geometry,
                     )
                     if expected is not None and tuple(shape) != expected:
                         raise GLM53DonorPreflightError(
