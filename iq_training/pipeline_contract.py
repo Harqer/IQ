@@ -93,9 +93,9 @@ class IQPipelinePartition:
                 + ", ".join(self.blocked_capabilities)
             )
         raise IQPipelineContractError(
-            "IQ has no registered Megatron Core fused Mamba-3/CSA layer spec, "
-            "MegatronModule pipeline handoff, or ModelBuilder; a stage layout "
-            "alone cannot construct distributed IQ training"
+            "IQ's current builder supports only TP=1/PP=1; a stage layout "
+            "alone is not a registered full MegatronModelBridge mapping or "
+            "pipeline-capable model"
         )
 
 
@@ -170,9 +170,9 @@ def partition_iq_78(
         raise IQPipelineContractError("pipeline ownership is incomplete/overlapping")
 
     blockers = [
-        "custom fused Mamba-3/CSA MCore module and builder are not registered",
-        "IQ pipeline set_input_tensor/pre_process/post_process is absent",
-        "IQ pipeline optimizer/checkpoint TP/PP mapping has not been implemented",
+        "full MegatronModelBridge bidirectional mapping is not registered",
+        "IQ runtime pipeline stage handoff/pre_process/post_process is absent",
+        "IQ optimizer/checkpoint TP/PP mapping has not been implemented",
     ]
     if len(stages) > 1:
         if config.attnres is not None:
