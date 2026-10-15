@@ -179,6 +179,63 @@ class StagewiseAlignmentTests(unittest.TestCase):
         self.assertAlmostEqual(report["validation_supervision_coverage"], 0.8, places=5)
         self.assertFalse(report["full_model_pretrained"])
 
+    def test_paired_file_loader_handles_different_token_ids_and_lengths(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            teacher = root / "teacher"
+            teacher.mkdir()
+            target_file = root / "iq.safetensors"
+            source_file = teacher / "reference.safetensors"
+            raw_hash = torch.full((1, 32), 7, dtype=torch.uint8)
+            save_file({
+                "source_attention_output": torch.randn(1, 3, 8),
+                "dsa_indices": torch.tensor([[[0], [0], [1]]], dtype=torch.int32),
+                "token_ids": torch.tensor([[11, 12, 13]], dtype=torch.int64),
+                "token_offsets": torch.tensor([[[0, 2], [2, 3], [3, 5]]]),
+                "text_sha256": raw_hash,
+            }, str(source_file))
+            save_file({
+                "iq_attention_input": torch.randn(1, 3, 8),
+                "token_ids": torch.tensor([[101, 102, 103]], dtype=torch.int64),
+                "token_offsets": torch.tensor([[[0, 1], [1, 3], [3, 5]]]),
+                "text_sha256": raw_hash,
+            }, str(target_file))
+            (teacher / "manifest.json").write_text(json.dumps({
+                "format": "iq_source_native_glm53_attention_reference_v1",
+                "layer": 6,
+                "donor_operator": "transformers==5.15.0 GlmMoeDsaAttention",
+                "output_sha256": checksum(source_file),
+                "donor_config_sha256": "verified-test-fingerprint",
+                "index_source_block": 6,
+                "indexer_kind": "full",
+            }), encoding="utf-8")
+            paired, evidence = load_paired(
+                teacher_dir=teacher, iq_capture=target_file, layer=6
+            )
+            self.assertEqual(paired.alignment_mode, "causal_character_spans")
+            self.assertIsNone(paired.dsa_indices)
+            self.assertEqual(
+                paired.supervision_mask.tolist(), [[False, True, True]]
+            )
+            self.assertAlmostEqual(
+                evidence["token_alignment"]["causal_supervision_coverage"],
+                2 / 3,
+                places=6,
+            )
+            self.assertFalse(evidence["token_alignment"]["DSA_index_recall_comparable"])
+            # An altered text digest must never be paired even if offset
+            # arrays happen to have the same shapes.
+            save_file({
+                "iq_attention_input": torch.randn(1, 3, 8),
+                "token_ids": torch.tensor([[101, 102, 103]], dtype=torch.int64),
+                "token_offsets": torch.tensor([[[0, 1], [1, 3], [3, 5]]]),
+                "text_sha256": torch.full((1, 32), 5, dtype=torch.uint8),
+            }, str(target_file))
+            with self.assertRaisesRegex(Exception, "exact raw text"):
+                load_paired(
+                    teacher_dir=teacher, iq_capture=target_file, layer=6
+                )
+
     def test_actual_attention_pre_hook_writes_valid_token_spans(self):
         torch.manual_seed(109)
         model = CompressedSparseContextAttention(small_config()).eval()
