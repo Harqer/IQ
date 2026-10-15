@@ -81,7 +81,10 @@ class OfficialGLMAttentionTests(unittest.TestCase):
             output[:, :-1], reference[:, :-1], rtol=1e-5, atol=1e-5,
         )
         self.assertTrue(torch.equal(indices[:, :-1], ref_indices[:, :-1]))
-        self.assertTrue(torch.all(indices[:, 0] == 0))
+        # For the first query only key 0 is causal. Top-k can still return
+        # masked future positions when k>1; the official additive causal
+        # mask must remove their contribution from output, not the indexer.
+        self.assertTrue(torch.any(indices[:, 0] == 0, dim=-1).all())
         self.assertTrue(torch.isfinite(output).all())
 
     def test_actual_official_shared_indexer_uses_previous_indices(self):
