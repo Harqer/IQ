@@ -189,7 +189,7 @@ def fit_attention_from_paired_activations(
         if not bool(torch.isfinite(loss)):
             raise GLM53AttentionAlignmentError("nonfinite distillation loss")
         loss.backward()
-        grad = torch.nn.utils.clip_grad_norm_(
+        torch.nn.utils.clip_grad_norm_(
             parameters, max_grad_norm, error_if_nonfinite=True
         )
         optimizer.step()
@@ -208,7 +208,7 @@ def fit_attention_from_paired_activations(
         "initial_holdout": before,
         "best_holdout": best,
         "holdout_improved": best["mse"] < before["mse"],
-        "training_objective": "mapped_GLМ_MLA_DSA_attention_output_MSE",
+        "training_objective": "mapped_GLM_MLA_DSA_attention_output_MSE",
         "source_operator_equivalence": False,
         "full_model_pretrained": False,
     }
