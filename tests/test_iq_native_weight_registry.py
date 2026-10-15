@@ -10,6 +10,7 @@ import unittest
 import torch
 from torch import nn
 
+from iq_training.native_weight_transfer import transfer_native_iq_weights
 from iq_training.native_weight_registry import (
     IQNativeMappingError,
     megatron_native_mapping_registry,
@@ -88,6 +89,53 @@ class NativeIQRegistryTests(unittest.TestCase):
                 self.hf, self.native, iq_config=self.config,
                 tensor_parallel_size=2, full_78_required=False,
             )
+
+    def test_actual_bidirectional_weight_transfer_exact_bytes(self):
+        try:
+            import megatron.bridge.models.conversion.mapping_registry
+        except ImportError:
+            self.skipTest("actual NVIDIA megatron-bridge is not installed")
+        torch.manual_seed(90)
+        with torch.no_grad():
+            self.hf.model.embed_tokens.weight.copy_(
+                torch.arange(28, dtype=torch.float32).reshape(7, 4)
+            )
+            self.hf.model.norm.weight.fill_(0.83)
+            self.hf.model.norm.bias.fill_(0.15)
+            self.hf.model.offsets.copy_(torch.tensor([9, 8, 7]))
+            self.native.iq.embed_tokens.weight.zero_()
+            self.native.iq.norm.weight.zero_()
+            self.native.iq.norm.bias.zero_()
+            self.native.iq.offsets.zero_()
+        transferred = transfer_native_iq_weights(
+            self.hf, self.native, iq_config=self.config,
+            direction="hf_to_megatron", full_78_required=False
+        )
+        self.assertTrue(transferred.exact_values_verified)
+        self.assertFalse(transferred.full_iq_78_verified)
+        self.assertEqual(transferred.tensor_count, 4)
+        self.assertFalse(transferred.to_dict()["GLM_to_IQ_pretrained_transform"])
+        for hf_name, native_name in (
+            ("model.embed_tokens.weight", "iq.embed_tokens.weight"),
+            ("model.norm.weight", "iq.norm.weight"),
+            ("model.norm.bias", "iq.norm.bias"),
+            ("model.offsets", "iq.offsets"),
+        ):
+            torch.testing.assert_close(
+                self.hf.state_dict()[hf_name], self.native.state_dict()[native_name],
+                atol=0, rtol=0
+            )
+        with torch.no_grad():
+            self.native.iq.norm.weight.fill_(3.5)
+        result = transfer_native_iq_weights(
+            self.hf, self.native, iq_config=self.config,
+            direction="megatron_to_hf", full_78_required=False
+        )
+        self.assertTrue(result.exact_values_verified)
+        torch.testing.assert_close(
+            self.hf.model.norm.weight, self.native.iq.norm.weight,
+            atol=0, rtol=0
+        )
 
     def test_true_bridge_mapping_registry_both_directions(self):
         try:
