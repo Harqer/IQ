@@ -67,9 +67,23 @@ non-pretrained weights), verify missing/shape-mismatched tensors fail,
 verify full-78 model coverage is required in production mode, and execute
 actual import/export steps through the NVIDIA registry.
 
-A dedicated CI job pins `megatron-bridge==0.6.2` and
-`megatron-core==0.19.0`, ensuring registry behavior is validated against
-the installed NVIDIA packages, not stand-in implementations.
+A dedicated CPU CI job pins the genuine NVIDIA release
+`megatron-bridge==0.6.2` and `megatron-core==0.19.0`. The
+Bridge package currently imports Transformer Engine through its global
+initialization chain; this is unavailable on a plain CPU runner.
+Rather than providing fake `transformer_engine` modules, the CPU job
+**inspects the exact installed NVIDIA wheel source** with Python AST,
+verifies the `DirectMapping` identity transform and both registry
+lookup APIs, and executes real IQ-native tensor copy/restore using
+PyTorch. This verifies the source-level contract, **not** that NVIDIA's
+runtime registry executed. NVIDIA's actual registry and AutoBridge
+import/export still require a correctly provisioned CUDA runtime
+validation job.
+
+`transfer_native_iq_weights(..., require_nvidia_bridge=False)` is
+the standalone exact IQ-native copy. To require the *real* Bridge
+`DirectMapping` runtime, pass `require_nvidia_bridge=True` on an
+NVIDIA environment; this never instantiates or simulates a fake Bridge.
 
 ```bash
 python -m unittest discover -s tests -p "test_iq_native_weight_registry.py" -v
