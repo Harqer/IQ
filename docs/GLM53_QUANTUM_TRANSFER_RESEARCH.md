@@ -43,7 +43,7 @@ The implementation verifies this equality on every local bitstring. QAOA p=1 pre
 ## Execute with real published checkpoints and WARM alignment
 
 ```
-python scripts/benchmark_quantum_router_alignment.py \
+python -m scripts.benchmark_quantum_router_alignment \
   --glm-checkpoint /path/to/verified/GLM-5.3-BF16 \
   --glm-router-key model.layers.3.mlp.gate.weight \
   --iq-checkpoint /path/to/verified/IQ-checkpoint \
