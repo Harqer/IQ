@@ -25,7 +25,7 @@ def _parser() -> argparse.ArgumentParser:
     glm.add_argument(
         "--allow-quantized",
         action="store_true",
-        help="allow an FP8/quantized checkpoint for inspection only",
+        help="accept the published FP8 checkpoint with verified 128x128-scale BF16 materialization",
     )
 
     mamba = sub.add_parser(
