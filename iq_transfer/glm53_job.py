@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 import json
 
-from .checkpoint import SafetensorsSource
+from .glm53_fp8 import GLM53DequantizedSource
 from .glm53 import GLM53Inspector
 from .job import hash_tokenizer_files
 from .manifest import DonorManifest, build_donor_manifest
@@ -19,6 +19,9 @@ class GLM53TransferError(RuntimeError):
 class GLM53DonorArtifact:
     manifest: DonorManifest
     checkpoint_dir: Path
+
+    def open_source(self) -> GLM53DequantizedSource:
+        return GLM53DequantizedSource(self.checkpoint_dir)
 
 
 def validate_glm53_donor(
@@ -57,7 +60,26 @@ def validate_glm53_donor(
             f"canonical GLM-5.3 donor must be BF16, got dtype={inspector.config.dtype!r}"
         )
 
-    source = SafetensorsSource(root)
+    quant = config_data.get("quantization_config")
+    if quant is not None:
+        if (
+            not isinstance(quant, dict)
+            or quant.get("fmt") != "e4m3"
+            or quant.get("weight_block_size") != [128, 128]
+        ):
+            raise GLM53TransferError(
+                "unsupported GLM-5.3 quantization layout; expected E4M3 128x128 blocks"
+            )
+
+    source = GLM53DequantizedSource(root)
+    if require_bf16 and source.quantized_weight_count:
+        raise GLM53TransferError(
+            "BF16-only validation refused FP8 tensors with block scales"
+        )
+    if quant is not None and source.quantized_weight_count == 0:
+        raise GLM53TransferError(
+            "checkpoint declares FP8 block quantization but has no weight_scale_inv tensors"
+        )
     report = inspector.validate_checkpoint(source)
     report.require_ok()
     if require_bf16 and report.warnings:
