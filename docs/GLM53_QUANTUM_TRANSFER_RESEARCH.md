@@ -59,7 +59,9 @@ It reports **baseline energy, exact local optimum, QAOA/CVaR-QAOA results, proba
 
 ## Empirical boundary
 
-A full-256-row synthetic-matrix *unit/integration fixture* was executed locally to validate the pipeline. Its baseline and QAOA produced the same best objective; no speedup was observed or claimed. This is not a measurement on pretrained GLM weights. The exact local enumeration beat the variable-parameter noiseless QAOA solver on guarantee, as expected. QASM gate probabilities were independently checked against qBraid's exact simulator on a 2-qubit known-answer gate identity test. **No full-checkpoint GLM→IQ experiment, hardware run, or model-level forward/distillation comparison has occurred.** An improvement to this artificial pairwise matching loss would not imply better language-model quality.
+A full-256-row synthetic-matrix *unit/integration fixture* was executed locally to validate the pipeline. Its baseline and QAOA produced the same best objective; no speedup was observed or claimed. This is not a measurement on pretrained GLM weights. The exact local enumeration beat the variable-parameter noiseless QAOA solver on guarantee, as expected. QASM gate probabilities were independently checked against qBraid's exact simulator both on a 2-qubit known-answer identity and the generated **8-qubit circuit** for the full-256-expert synthetic fixture; its best-state probability agreed to better than 1e-12. **No full-checkpoint GLM→IQ experiment, hardware run, or model-level forward/distillation comparison has occurred.** An improvement to this artificial pairwise matching loss would not imply better language-model quality.
+
+Repository validation: the experimental branch passed **223 GitHub Actions unit tests** and Python package compilation in run [38890756769](https://github.com/Harqer/IQ/actions/runs/38890756769). This checks code integration, not model-level transfer on real GLM weights.
 
 ## Production gate
 
