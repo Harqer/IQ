@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -43,11 +44,15 @@ def main() -> int:
         if not shard.is_file() or shard.stat().st_size == 0:
             p.error(f"Missing or empty safetensors shard: {shard}")
 
-    # Actual tokenizer semantics are checked by AutoTokenizer on inference.
+    # The Mamba-3 foundation supplies the Llama 3.1 vocabulary. The original
+    # HF inference job mounted tokenizer assets separately from IQ shards.
+    # Never copy or mutate the immutable checkpoint volume.
+    tokenizer_dir = Path(os.getenv("IQ_TOKENIZER_DIR") or root)
     if not any(
-        (root / name).is_file() for name in ("tokenizer.json", "tokenizer.model")
+        (tokenizer_dir / name).is_file()
+        for name in ("tokenizer.json", "tokenizer.model")
     ):
-        p.error("Compiled IQ checkpoint has no tokenizer.json/tokenizer.model")
+        p.error(f"Tokenizer assets unavailable at {tokenizer_dir}")
     print(
         f"IQ checkpoint files available: {len(weight_map)} weights in "
         f"{len(shards)} nonempty shards; complete loader will check tensor coverage"
