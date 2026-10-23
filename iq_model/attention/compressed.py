@@ -105,6 +105,8 @@ class CompressedAttentionCache:
     compressed_count: int
     index_keys: torch.Tensor
     index_count: int
+    direct_kv: torch.Tensor
+    direct_count: int
 
 
 def _append_cache_row(buffer: torch.Tensor, count: int, row: torch.Tensor) -> torch.Tensor:
@@ -836,7 +838,11 @@ class _V4CompressedContextAttention(nn.Module):
         q = self._rope(q, positions)
         local_kv = self._normalize_main_candidate(self.kv_proj(hidden), self.kv_norm)
         local_kv = self._rope(local_kv.unsqueeze(1), positions).squeeze(1)
-        compressed = self._compress_main(hidden, positions)
+        compressed = (
+            hidden.new_empty((0, self.config.head_dim))
+            if self.mode == "csa" and self.config.direct_token_indexer
+            else self._compress_main(hidden, positions)
+        )
         index_keys = self._index_keys(hidden, positions) if self.mode == "csa" else None
 
         pieces: list[torch.Tensor] = []
@@ -870,6 +876,8 @@ class _V4CompressedContextAttention(nn.Module):
             compressed_count=0,
             index_keys=torch.empty((16, self.config.index_head_dim), device=device, dtype=dtype),
             index_count=0,
+            direct_kv=torch.empty((16, self.config.head_dim), device=device, dtype=dtype),
+            direct_count=0,
         )
 
     @torch.no_grad()
@@ -915,7 +923,10 @@ class _V4CompressedContextAttention(nn.Module):
             new_idx = self._index_keys(token, pos_t)[0]
             cache.index_keys = _append_cache_row(cache.index_keys, cache.index_count, new_idx)
             cache.index_count += 1
-        if cache.length % self.compress_rate == 0:
+        if (
+            cache.length % self.compress_rate == 0
+            and not (self.mode == "csa" and self.config.direct_token_indexer)
+        ):
             new_compressed = self._compress_main(
                 cache.hidden_tail, cache.positions_tail
             )[-1]
@@ -935,13 +946,8 @@ class _V4CompressedContextAttention(nn.Module):
                 torch.tensor([offset], device=x.device),
                 cache.index_keys[:cache.index_count],
             )[0]
-            source = cache.index_keys  # selection is only an index, not attention value
             if self.config.direct_token_indexer:
-                # CSA direct index selection attends to historical local KVs.
-                # Without retaining those values the cache cannot decode correctly.
-                if not hasattr(cache, "direct_kv"):
-                    cache.direct_kv = cache.local_kv.new_empty((16, self.config.head_dim))
-                    cache.direct_count = 0
+                # The checkpoint's direct indexer retrieves uncompressed token KVs.
                 cache.direct_kv = _append_cache_row(
                     cache.direct_kv, cache.direct_count, local_new[0]
                 )
