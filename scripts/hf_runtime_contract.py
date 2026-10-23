@@ -100,6 +100,18 @@ def _cuda_toolkit_and_gpu() -> dict[str, str]:
         )
     if not torch.cuda.is_bf16_supported():
         raise RuntimeContractError("Device does not advertise required BF16 support")
+    arch_list = torch.cuda.get_arch_list()
+    if arch_list and not any(
+        name.startswith(("sm_90", "compute_90")) for name in arch_list
+    ):
+        raise RuntimeContractError(
+            f"Image PyTorch does not include Hopper SM90 kernels: {arch_list}"
+        )
+    requested_arches = os.getenv("TORCH_CUDA_ARCH_LIST", "")
+    if requested_arches and "9.0" not in requested_arches:
+        raise RuntimeContractError(
+            f"TORCH_CUDA_ARCH_LIST={requested_arches!r} does not target H200 SM90"
+        )
     return {
         "nvcc": compiled_cuda,
         "nvcc_path": str(Path(nvcc).resolve()),
