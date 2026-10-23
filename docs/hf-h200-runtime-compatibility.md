@@ -38,6 +38,82 @@ in this configuration; do **not** enable it or claim it works on CUDA
 its distinct CUDA/toolkit/TVM-FFI requirements before adopting a new
 image.
 
+## Native image safety, dependency pinning, and same-model fallback
+
+The HF image `pytorch/pytorch:2.10.0-cuda12.8-cudnn9-devel` provides
+the baseline CUDA-enabled PyTorch **and** its corresponding Triton package.
+This is a base-image assumption supported by earlier job startup logs, not
+proof of full IQ generation. Official PyTorch publishes Torch 2.10 with a
+CUDA 12.8 wheel; the exact HF GPU host driver is checked at job startup.
+
+`scripts/hf_runtime_contract.py` is an **inference-job startup check**,
+not a standalone GPU job or kernel execution test. It verifies:
+- the selected image's installed Torch 2.10.0 and CUDA 12.8 runtime;
+- the matching CUDA 12.8 `nvcc` from the *devel* image;
+- H200 SM90, BF16 support, and availability of a CUDA device;
+- an active venv inheriting image-native GPU packages;
+- the physical import paths/versions of Torch and Triton **before and
+  after** pip dependency resolution;
+- Mamba-3's pinned source commit, TileLang 0.1.8, TVM-FFI 0.1.9, and
+  QuACK package metadata.
+
+The installer adds exact Torch/Triton version constraints based on the
+image **before installing anything**. Dependency resolver conflicts fail
+explicitly instead of silently replacing a GPU Torch wheel with CPU or
+another CUDA build. `pip check` is required after installing IQ. Keep
+the installed CUDA compiler and PyTorch CUDA minor versions aligned for
+the source-built Mamba extension.
+
+**Fallback policy:** A missing/unusable CuTe recurrent decoding backend
+falls back to IQ's existing full-prefix recomputation, preserving the
+same rank-4 MIMO weights and TileLang forward computation. This is
+slower but is not an architecture change. That safe fallback is the
+default for `scripts/test_complete_iq.py`, which passes the complete
+prefix on every generation step. It is **not an automatic recovery from
+TileLang compilation failure**. Missing CUDA, SM90, a valid MIMO kernel,
+or compatible compiled packages are hard failures. Switching to CPU,
+SISO, or mismatched CUDA wheels would silently change/corrupt the intended
+runtime and is not a supported fallback.
+
+For one authorized full IQ inference job, with checkpoint files already
+mounted into the container, use:
+
+```bash
+cd /app/IQ
+# The HF job should check out the exact current main commit, not 37447ea.
+bash scripts/hf_full_inference.sh /mounted/iq-checkpoint --max-new-tokens 16
+```
+
+The HF job must supply `git`, `python -m venv`, and a working C/C++
+build toolchain: the earlier launcher installed `git` and
+`python3-venv` with `apt-get`. For a reproducible full-inference
+run, check out a specific reviewed `main` commit, mount the checkpoint,
+and then call the entrypoint; the scripts do not silently clone or
+change their own Git revision.
+
+The runner checks checkpoint shard/index/tokenizer *presence* before
+installing model dependencies, enters the inherited-image venv, checks
+dependency compatibility, and invokes the **complete IQ model generator**.
+It does not start any separate benchmark job or kernel smoke test.
+The full checkpoint loader then checks tensor names and shapes. The HF
+checkpoint mount path must be provided by the deployment; do not infer it.
+
+An external `/launcher/serve_iq.py` from a prior job is **not** tracked
+in this repository and is not automatically updated by these changes.
+Only use that launcher after separately inspecting its checkout commit,
+checkpoint mapping, decode policy, and actual `/generate` call.
+
+### Out-of-scope fallbacks
+
+CuTe/QuACK decoding may demand a newer CUDA toolkit and TVM-FFI than
+this TileLang 0.1.8 setup permits. Full-prefix MIMO avoids the CuTe
+`step()` requirement and must not be misrepresented as verified CuTe
+compatibility. A separately sourced and verified CuTe backend or an
+alternative full MIMO kernel could be introduced in the future via an
+explicit operator-selection policy, but is **not** currently present.
+No amount of dependency metadata inspection proves actual H200 kernel
+JIT compilation or that the entire model generates valid tokens.
+
 ## Important: MIMO prefill and incremental decoding are NOT equivalent
 
 Pinned upstream `mamba3.py`:
@@ -66,8 +142,9 @@ copy the shape/layout rewrite into IQ without a matching source path.
 MegaCpp's H200 MIMO training evidence supports Hopper viability but
 does not validate IQ's 4096-width, 128-state configuration.
 
-The repository installer exports `PIP_CONSTRAINT` to enforce the
-documented TileLang/TVM-FFI pair for the entire installation.
+The repository installer builds an isolated `PIP_CONSTRAINT` file from
+its documented TileLang/TVM-FFI pair **and the base image's Torch/Triton
+versions**, while preserving caller constraints.
 `scripts/hf_container_venv.sh` creates/activates a Python venv and
 installs IQ's runtime without starting any standalone GPU test.
 It executes the caller's inference command directly.
@@ -115,3 +192,7 @@ entrypoint/schema instead of inventing them.
   https://megacpp.com/blog/mamba3-parallel-performance/
 - Hugging Face Jobs Docker image rules:
   https://huggingface.co/docs/hub/jobs-images
+- PyTorch 2.10 official CUDA 12.8 wheels:
+  https://pytorch.org/get-started/previous-versions/
+- NVIDIA CUDA 12.8 release and driver compatibility notes:
+  https://docs.nvidia.com/cuda/archive/12.8.0/cuda-toolkit-release-notes/index.html

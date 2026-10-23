@@ -106,21 +106,31 @@ See:
 
 Production training target:
 
-Install the model runtime with:
+For the next authorized **full IQ inference** job on H200, use the
+documented PyTorch 2.10/CUDA 12.8 devel image and the repository's
+complete-inference entrypoint:
 
 ```bash
-bash scripts/install_model_runtime.sh
+# Inside the HF H200 inference job, with a compiled IQ checkpoint mounted:
+bash scripts/hf_full_inference.sh /mounted/iq-checkpoint --max-new-tokens 16
 ```
 
-This installs Torch first, then builds the exact pinned Mamba-3 source revision with `--no-build-isolation`, and verifies that the CUDA MIMO kernel is available. The verifier fails rather than switching IQ to SISO.
+The entrypoint verifies checkpoint file presence, creates `/opt/iq-venv`
+inheriting image-native CUDA PyTorch, pins Torch/Triton against replacement,
+installs the pinned Mamba-3 source and TileLang/TVM-FFI pair, then loads
+the full checkpoint and **generates tokens**. All of this is one full
+inference job, not a separate GPU compatibility test. The startup checks
+validate metadata and GPU/device properties, but cannot prove execution
+until generation actually runs.
 
-Before promoting Mamba-3 inference on the H200 training/decode target, run:
+The safe decode fallback is **full-prefix MIMO recomputation** rather than
+unverified CuTe `step()` decoding; no CPU or SISO fallback silently changes
+the checkpoint architecture. For CUDA toolkit, driver and CuTe limitations,
+see `docs/hf-h200-runtime-compatibility.md`.
 
-```bash
-python scripts/verify_mamba3_mimo_h200.py
-```
-
-That gate exercises the full 4096-wide rank-4 BF16 MIMO block, backward gradients, pure recurrent decode, and mixed prefill+decode parity. A failure blocks deployment; it does not change the architecture to SISO.
+`scripts/verify_mamba3_mimo_h200.py` remains available as a training/decode
+diagnostic, but is **not** an automatic deployment prerequisite and does not
+replace complete IQ inference.
 
 - PyTorch autograd
 - NVIDIA Megatron-Core for distributed parallelism
