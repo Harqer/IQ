@@ -8,6 +8,9 @@ if (( $# == 0 )); then
   exit 2
 fi
 
+repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+cd "$repo_root"
+
 venv_dir="${IQ_VENV_DIR:-/opt/iq-venv}"
 if [[ ! -f "$venv_dir/bin/activate" ]]; then
   python -m venv --system-site-packages "$venv_dir"
