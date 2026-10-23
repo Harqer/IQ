@@ -29,9 +29,12 @@ def main() -> int:
     weight_map = index.get("weight_map")
     if not isinstance(weight_map, dict) or not weight_map:
         p.error("Checkpoint index must declare a nonempty weight_map")
-    shards = set(weight_map.values())
-    if not all(isinstance(s, str) and s for s in shards):
+    if not all(isinstance(name, str) and name for name in weight_map):
+        p.error("Checkpoint index has malformed parameter names")
+    names = list(weight_map.values())
+    if not all(isinstance(name, str) and name for name in names):
         p.error("Malformed checkpoint shard names")
+    shards = set(names)
     for name in sorted(shards):
         relative = Path(name)
         if relative.is_absolute() or ".." in relative.parts or len(relative.parts) != 1:
