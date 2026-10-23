@@ -84,6 +84,13 @@ cd /app/IQ
 bash scripts/hf_full_inference.sh /mounted/iq-checkpoint --max-new-tokens 16
 ```
 
+The HF job must supply `git`, `python -m venv`, and a working C/C++
+build toolchain: the earlier launcher installed `git` and
+`python3-venv` with `apt-get`. For a reproducible full-inference
+run, check out a specific reviewed `main` commit, mount the checkpoint,
+and then call the entrypoint; the scripts do not silently clone or
+change their own Git revision.
+
 The runner checks checkpoint shard/index/tokenizer *presence* before
 installing model dependencies, enters the inherited-image venv, checks
 dependency compatibility, and invokes the **complete IQ model generator**.
