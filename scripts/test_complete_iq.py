@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import json
+import os
 from pathlib import Path
 
 import torch
@@ -32,18 +34,29 @@ def main() -> int:
         raise SystemExit("complete IQ inference requires CUDA")
 
     root = Path(args.checkpoint)
+    tokenizer_root = Path(os.getenv("IQ_TOKENIZER_DIR") or root)
     from transformers import AutoTokenizer
 
+    print(f"IQ: loading tokenizer from {tokenizer_root}", flush=True)
     tokenizer = AutoTokenizer.from_pretrained(
-        str(root),
+        str(tokenizer_root),
         local_files_only=True,
     )
+    config = json.loads((root / "iq_config.json").read_text(encoding="utf-8"))
+    expected_vocab = config["model"]["vocab_size"]
+    if len(tokenizer) != expected_vocab:
+        raise RuntimeError(
+            f"Checkpoint vocabulary {expected_vocab} does not match "
+            f"tokenizer size {len(tokenizer)}"
+        )
+    print(f"IQ: loading checkpoint from {root}", flush=True)
     model = load_complete_iq_checkpoint(
         root,
         device=torch.device("cuda:0"),
         dtype=torch.bfloat16,
     )
 
+    print("IQ: checkpoint loaded; generating real tokens", flush=True)
     messages = [{"role": "user", "content": args.prompt}]
     try:
         encoded = tokenizer.apply_chat_template(
