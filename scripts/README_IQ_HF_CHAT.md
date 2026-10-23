@@ -34,8 +34,8 @@ python scripts/iq_hf_inference.py --run-h200 --interactive
 ```
 
 Type `/quit` or Ctrl+C to cancel. The script also attempts cancellation
-when inference fails or SIGTERM is received. HF Jobs enforces a 30-minute
-maximum lifetime if the client machine becomes unreachable.
+when inference fails or SIGTERM is received. The Job itself is configured with a 30-minute
+timeout if the client machine becomes unreachable.
 
 The IQ server provides `GET /health`, legacy `POST /chat`, and
 `POST /v1/chat/completions`, with `messages` and `max_tokens`
