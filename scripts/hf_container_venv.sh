@@ -10,6 +10,9 @@ fi
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$repo_root"
+# Scripts executed by path have scripts/ (not the repository root) in sys.path.
+# Keep IQ imports available both to runtime verification and the chat server.
+export PYTHONPATH="$repo_root${PYTHONPATH:+:$PYTHONPATH}"
 
 venv_dir="${IQ_VENV_DIR:-/opt/iq-venv}"
 if [[ ! -f "$venv_dir/bin/activate" ]]; then
