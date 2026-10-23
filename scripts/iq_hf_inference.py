@@ -54,12 +54,16 @@ def preflight() -> None:
 
 def get_deployed_commit() -> str:
     branch = git("branch", "--show-current")
-    if branch != "main":
-        raise RuntimeError(f"Expected canonical branch 'main', found '{branch}'")
+    if branch not in ("main", ""):
+        raise RuntimeError(
+            f"Expected canonical main or detached origin/main, found '{branch}'"
+        )
     subprocess.run(["git", "-C", str(REPO), "fetch", "-q", "origin", "main"], check=True)
     head, origin = git("rev-parse", "HEAD"), git("rev-parse", "origin/main")
     if head != origin:
-        raise RuntimeError("Local main differs from origin/main; reconcile before GPU startup.")
+        raise RuntimeError("Current commit differs from origin/main; reconcile before GPU startup.")
+    if git("status", "--porcelain", "--untracked-files=no"):
+        raise RuntimeError("Checkout contains uncommitted tracked changes; refusing GPU startup.")
     return head
 
 
