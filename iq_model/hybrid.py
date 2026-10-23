@@ -500,7 +500,8 @@ def pack_mamba_varlen(
 
     Fully valid batches without document boundaries keep the native batched
     Mamba path. Otherwise valid tokens are packed row-major into batch=1 and
-    cu_seqlens resets recurrence at each row/document boundary.
+    cu_seqlens resets recurrence at each row, document boundary, or
+    masked-token gap so separated valid spans never share SSM state.
     """
 
     if hidden_states.ndim != 3:
@@ -531,14 +532,22 @@ def pack_mamba_varlen(
 
         segment_length = 0
         previous_doc: int | None = None
+        previous_col: int | None = None
         for col in row_positions:
             doc = int(docs[row, col]) if docs is not None else row
-            if segment_length and doc != previous_doc:
+            # Treat invalid/masked token gaps like a document boundary.
+            # Otherwise recurrence leaks from tokens before the gap into
+            # a later segment despite attention isolating those segments.
+            if segment_length and (
+                doc != previous_doc
+                or (previous_col is not None and col != previous_col + 1)
+            ):
                 segment_lengths.append(segment_length)
                 segment_length = 0
             flat_indices.append(row * sequence + col)
             segment_length += 1
             previous_doc = doc
+            previous_col = col
         if segment_length:
             segment_lengths.append(segment_length)
 

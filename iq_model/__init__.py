@@ -17,6 +17,7 @@ from .state import (
 )
 from .adapters import DoRALinear, install_dora
 from .attention import (
+    CompressedAttentionCache,
     CompressedContextConfig,
     CompressedContextError,
     CompressedSparseContextAttention,
@@ -47,6 +48,7 @@ __all__ = [
     "MHCWeights",
     "ManifoldHyperConnection",
     "CompressedContextResidualLayer",
+    "CompressedAttentionCache",
     "CompressedContextConfig",
     "CompressedContextError",
     "CompressedSparseContextAttention",

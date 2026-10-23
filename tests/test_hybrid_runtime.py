@@ -222,6 +222,52 @@ class HeterogeneousHybridRuntimeTests(unittest.TestCase):
             )
         )
 
+    def test_varlen_pack_resets_across_masked_gaps_without_documents(self):
+        hidden = torch.arange(7 * 3, dtype=torch.float32).reshape(1, 7, 3)
+        mask = torch.tensor([[1, 1, 0, 1, 0, 1, 1]])
+        layout = pack_mamba_varlen(hidden, attention_mask=mask)
+
+        self.assertTrue(layout.packed)
+        self.assertEqual(layout.cu_seqlens.tolist(), [0, 2, 3, 5])
+        self.assertEqual(tuple(layout.packed_hidden_states.shape), (1, 5, 3))
+        self.assertTrue(torch.equal(
+            layout.packed_hidden_states.squeeze(0),
+            hidden[mask.to(dtype=torch.bool)],
+        ))
+        restored = unpack_mamba_varlen(layout.packed_hidden_states, layout)
+        self.assertTrue(torch.equal(
+            restored[mask.to(dtype=torch.bool)],
+            hidden[mask.to(dtype=torch.bool)],
+        ))
+        self.assertTrue(torch.equal(
+            restored[~mask.to(dtype=torch.bool)],
+            torch.zeros_like(restored[~mask.to(dtype=torch.bool)]),
+        ))
+
+    def test_varlen_pack_resets_across_masked_gaps_with_same_document_id(self):
+        hidden = torch.randn(2, 6, 4)
+        mask = torch.tensor([
+            [1, 1, 0, 1, 1, 0],
+            [1, 0, 1, 0, 0, 0],
+        ])
+        docs = torch.tensor([
+            [7, 7, 7, 7, 7, 7],
+            [8, 8, 8, 8, 8, 8],
+        ])
+        layout = pack_mamba_varlen(
+            hidden,
+            attention_mask=mask,
+            document_ids=docs,
+        )
+        # Split row 0 into [0,1] and [3,4], row 1 into [0] and [2].
+        self.assertEqual(layout.cu_seqlens.tolist(), [0, 2, 4, 5, 6])
+
+    def test_varlen_packing_preserves_contiguous_valid_span(self):
+        hidden = torch.randn(2, 5, 4)
+        mask = torch.tensor([[1, 1, 1, 0, 0], [0, 1, 1, 1, 0]])
+        layout = pack_mamba_varlen(hidden, attention_mask=mask)
+        self.assertEqual(layout.cu_seqlens.tolist(), [0, 3, 6])
+
     def test_fully_valid_batch_uses_native_batched_mamba_path(self):
         hidden = torch.randn(3, 5, 8)
         layout = pack_mamba_varlen(hidden)
