@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 import traceback
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -101,7 +102,7 @@ def create_handler(tokenizer, model):
                 self.respond(404, {"error": "not found"})
 
         def do_POST(self) -> None:
-            if self.path != "/chat":
+            if self.path not in ("/chat", "/v1/chat/completions", "/chat/completions"):
                 self.respond(404, {"error": "not found"})
                 return
             try:
@@ -126,7 +127,10 @@ def create_handler(tokenizer, model):
                     )
                 ):
                     raise ValueError("invalid messages: expected 1..24 chat messages")
-                tokens = data.get("max_new_tokens", 16)
+                compatible = self.path != "/chat"
+                if compatible and data.get("stream", False):
+                    raise ValueError("streaming is not supported by IQ yet")
+                tokens = data.get("max_tokens", 16) if compatible else data.get("max_new_tokens", 16)
                 if type(tokens) is not int or not 1 <= tokens <= MAX_NEW_TOKENS:
                     raise ValueError(f"max_new_tokens must be 1..{MAX_NEW_TOKENS}")
                 response = generate(tokenizer, model, messages, tokens)
@@ -137,7 +141,25 @@ def create_handler(tokenizer, model):
                 traceback.print_exc(file=sys.stderr)
                 self.respond(500, {"error": "inference failed; see job logs"})
                 return
-            self.respond(200, {"response": response})
+            if compatible:
+                self.respond(
+                    200,
+                    {
+                        "id": "chatcmpl-iq",
+                        "object": "chat.completion",
+                        "created": int(time.time()),
+                        "model": "IQ",
+                        "choices": [
+                            {
+                                "index": 0,
+                                "message": {"role": "assistant", "content": response},
+                                "finish_reason": "stop",
+                            }
+                        ],
+                    },
+                )
+            else:
+                self.respond(200, {"response": response})
 
     return Handler
 
