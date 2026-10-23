@@ -58,7 +58,7 @@ info = inspect_mamba3_mimo_runtime(torch.device("cuda"))
 require_mamba3_mimo_runtime(torch.device("cuda"))
 
 print(
-    "Mamba-3 MIMO runtime verified (imports; not kernel execution):",
+    "Mamba-3 MIMO dependencies verified (imports; full IQ inference still required):",
     {
         "version": info.installed_version,
         "source_commit": info.source_commit,
@@ -70,8 +70,6 @@ print(
 )
 PY
 
-# A real CUDA forward is the only reliable signal of a working TileLang JIT.
-# HF launchers should set IQ_VERIFY_CUDA_KERNEL=1 before starting a server.
-if [[ "${IQ_VERIFY_CUDA_KERNEL:-0}" == "1" ]]; then
-  python scripts/preflight_mamba3_mimo.py
-fi
+# No standalone GPU kernel test or separate paid job is launched here.
+# The next H200 container invocation must perform actual IQ inference
+# (checkpoint load + generate), which exercises the MIMO prefill path.
