@@ -44,7 +44,9 @@ def main() -> int:
             p.error(f"Missing or empty safetensors shard: {shard}")
 
     # Actual tokenizer semantics are checked by AutoTokenizer on inference.
-    if not any((root / name).is_file() for name in ("tokenizer.json", "tokenizer.model")):
+    if not any(
+        (root / name).is_file() for name in ("tokenizer.json", "tokenizer.model")
+    ):
         p.error("Compiled IQ checkpoint has no tokenizer.json/tokenizer.model")
     print(
         f"IQ checkpoint files available: {len(weight_map)} weights in "
