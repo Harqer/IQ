@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import inspect
 import json
+import signal
 import subprocess
 import sys
 import time
@@ -17,7 +18,7 @@ from urllib.request import Request, urlopen
 
 try:
     from huggingface_hub import (
-        InferenceClient, Volume, cancel_job, fetch_job_logs, get_token,
+        InferenceClient, Volume, cancel_job, get_token,
         inspect_job, run_job, whoami,
     )
 except ImportError as exc:
@@ -163,6 +164,7 @@ def run(args: argparse.Namespace) -> None:
                 history.pop()
                 raise
             history.append({"role": "assistant", "content": answer})
+            history[:] = history[-16:]  # Bound history to the server chat limit.
             print("IQ:", answer, flush=True)
     finally:
         if job_id is not None:
@@ -203,6 +205,7 @@ def main() -> int:
         if not args.run_h200:
             print("Paid GPU remains OFF. Add --run-h200 only when ready.")
             return 0
+        signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt))
         run(args)
         return 0
     except KeyboardInterrupt:
