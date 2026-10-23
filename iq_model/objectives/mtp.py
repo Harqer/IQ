@@ -137,11 +137,17 @@ class MultiTokenPrediction(nn.Module):
     ) -> None:
         super().__init__()
         if shared_embedding.embedding_dim != model_config.hidden_size:
-            raise MTPConfigError("shared embedding width does not match model hidden_size")
+            raise MTPConfigError(
+                "shared embedding width does not match model hidden_size"
+            )
         if shared_embedding.num_embeddings != model_config.vocab_size:
-            raise MTPConfigError("shared embedding vocabulary does not match model config")
+            raise MTPConfigError(
+                "shared embedding vocabulary does not match model config"
+            )
         if shared_head.in_features != model_config.hidden_size:
-            raise MTPConfigError("shared head input width does not match model hidden_size")
+            raise MTPConfigError(
+                "shared head input width does not match model hidden_size"
+            )
         if shared_head.out_features != model_config.vocab_size:
             raise MTPConfigError("shared head vocabulary does not match model config")
 
@@ -250,8 +256,7 @@ class MultiTokenPrediction(nn.Module):
                 target_valid = pair_valid[:, :-1] & base_valid[:, depth + 1 :]
                 if docs is not None:
                     target_valid = target_valid & (
-                        docs[:, depth : sequence_length - 1]
-                        == docs[:, depth + 1 :]
+                        docs[:, depth : sequence_length - 1] == docs[:, depth + 1 :]
                     )
                 targets = targets.masked_fill(~target_valid, -100)
                 valid_target_count = int((targets != -100).sum().item())

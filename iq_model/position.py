@@ -5,7 +5,9 @@ from torch import nn
 
 
 class RotaryEmbedding(nn.Module):
-    def __init__(self, dim: int, max_position_embeddings: int, base: float = 10000.0) -> None:
+    def __init__(
+        self, dim: int, max_position_embeddings: int, base: float = 10000.0
+    ) -> None:
         super().__init__()
         if dim <= 0 or dim % 2:
             raise ValueError("rotary dim must be a positive even integer")
@@ -30,10 +32,9 @@ class RotaryEmbedding(nn.Module):
             or int(position_ids.max()) >= self.max_position_embeddings
         ):
             raise ValueError("position_ids exceed configured maximum")
-        freqs = (
-            position_ids.to(device=device, dtype=torch.float32).unsqueeze(-1)
-            * self.inv_freq.to(device=device)
-        )
+        freqs = position_ids.to(device=device, dtype=torch.float32).unsqueeze(
+            -1
+        ) * self.inv_freq.to(device=device)
         angles = torch.cat((freqs, freqs), dim=-1)
         return angles.cos().to(dtype), angles.sin().to(dtype)
 
@@ -55,10 +56,9 @@ class InterleavedRotaryEmbedding(RotaryEmbedding):
             or int(position_ids.max()) >= self.max_position_embeddings
         ):
             raise ValueError("position_ids exceed configured maximum")
-        freqs = (
-            position_ids.to(device=device, dtype=torch.float32).unsqueeze(-1)
-            * self.inv_freq.to(device=device)
-        )
+        freqs = position_ids.to(device=device, dtype=torch.float32).unsqueeze(
+            -1
+        ) * self.inv_freq.to(device=device)
         angles = freqs.repeat_interleave(2, dim=-1)
         return angles.cos().to(dtype), angles.sin().to(dtype)
 
@@ -99,7 +99,9 @@ def apply_rotary_to_tensor(
     if rotary_dim <= 0 or rotary_dim % 2 or rotary_dim > x.shape[-1]:
         raise ValueError("rotary_dim must be positive, even, and <= head_dim")
     if cos.ndim != 3 or sin.ndim != 3 or cos.shape != sin.shape:
-        raise ValueError("cos and sin must have matching [batch, sequence, rotary_dim] shapes")
+        raise ValueError(
+            "cos and sin must have matching [batch, sequence, rotary_dim] shapes"
+        )
     if cos.shape[-1] != rotary_dim:
         raise ValueError("cos/sin final dimension must equal rotary_dim")
     if cos.shape[0] != x.shape[0] or cos.shape[1] != x.shape[2]:

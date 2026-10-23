@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
 import math
+from dataclasses import asdict, dataclass
+from typing import Any, cast
 
 import torch
 from torch import nn
@@ -23,6 +24,7 @@ class IQMultimodalConfig:
     self-attention. TimeViper-style transfer progressively moves visual
     information into text states and compresses visual memory after fusion.
     """
+
     vision_model_name: str
     fusion_layers: tuple[int, ...]
     transv_layers: tuple[int, ...]
@@ -47,7 +49,9 @@ class IQMultimodalConfig:
         if self.vision_backend not in {"auto", "glm5_next"}:
             raise ValueError("vision_backend must be 'auto' or 'glm5_next'")
         if self.visual_mamba_layers <= 0 or self.cross_attention_heads <= 0:
-            raise ValueError("visual_mamba_layers and cross_attention_heads must be positive")
+            raise ValueError(
+                "visual_mamba_layers and cross_attention_heads must be positive"
+            )
         if self.tokens_per_video_frame <= 0:
             raise ValueError("tokens_per_video_frame must be positive")
         if self.projector_hidden_multiplier <= 0:
@@ -62,7 +66,9 @@ class IQMultimodalConfig:
             raise ValueError("min_visual_tokens and max_frames must be positive")
         if self.query_projector_tokens <= 0:
             raise ValueError("query_projector_tokens must be positive")
-        if not self.temporal_dilations or any(int(x) <= 0 for x in self.temporal_dilations):
+        if not self.temporal_dilations or any(
+            int(x) <= 0 for x in self.temporal_dilations
+        ):
             raise ValueError("temporal_dilations must contain positive strides")
         if tuple(sorted(set(self.fusion_layers))) != self.fusion_layers:
             raise ValueError("fusion_layers must be sorted and unique")
@@ -79,12 +85,18 @@ class IQMultimodalConfig:
         return data
 
     @classmethod
-    def from_dict(cls, data: dict[str, object]) -> "IQMultimodalConfig":
+    def from_dict(cls, data: dict[str, object]) -> IQMultimodalConfig:
         payload = dict(data)
-        payload["fusion_layers"] = tuple(int(x) for x in payload.get("fusion_layers", ()))
-        payload["transv_layers"] = tuple(int(x) for x in payload.get("transv_layers", ()))
-        payload["temporal_dilations"] = tuple(int(x) for x in payload.get("temporal_dilations", (1, 2, 4)))
-        return cls(**payload)
+        payload["fusion_layers"] = tuple(
+            int(x) for x in payload.get("fusion_layers", ())
+        )
+        payload["transv_layers"] = tuple(
+            int(x) for x in payload.get("transv_layers", ())
+        )
+        payload["temporal_dilations"] = tuple(
+            int(x) for x in payload.get("temporal_dilations", (1, 2, 4))
+        )
+        return cls(**cast(dict[str, Any], payload))
 
 
 @dataclass
@@ -95,7 +107,9 @@ class VisualMemory:
     source: str
 
 
-def _sinusoidal_positions(length: int, width: int, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
+def _sinusoidal_positions(
+    length: int, width: int, device: torch.device, dtype: torch.dtype
+) -> torch.Tensor:
     pos = torch.arange(length, device=device, dtype=torch.float32).unsqueeze(1)
     half = max(1, width // 2)
     scale = torch.exp(
@@ -109,13 +123,21 @@ def _sinusoidal_positions(length: int, width: int, device: torch.device, dtype: 
 
 
 class VisionTower(nn.Module):
-    def __init__(self, config: IQMultimodalConfig, hidden_size: int, *, dtype: torch.dtype, device: torch.device) -> None:
+    def __init__(
+        self,
+        config: IQMultimodalConfig,
+        hidden_size: int,
+        *,
+        dtype: torch.dtype,
+        device: torch.device,
+    ) -> None:
         super().__init__()
         self.config = config
         self.is_glm5 = config.vision_backend == "glm5_next"
         try:
             if self.is_glm5:
                 from transformers import AutoConfig, Glm5NextVisionModel
+
                 composite = AutoConfig.from_pretrained(config.vision_model_name)
                 vision_config = getattr(composite, "vision_config", None)
                 if vision_config is None:
@@ -128,19 +150,26 @@ class VisionTower(nn.Module):
                 vision_width = getattr(vision_config, "out_hidden_size", None)
             else:
                 from transformers import AutoModel
+
                 self.encoder = AutoModel.from_pretrained(
                     config.vision_model_name,
                     dtype=dtype,
                 ).to(device=device)
                 vision_width = getattr(self.encoder.config, "hidden_size", None)
                 if vision_width is None:
-                    vision_width = getattr(self.encoder.config, "vision_embed_dim", None)
+                    vision_width = getattr(
+                        self.encoder.config, "vision_embed_dim", None
+                    )
         except ImportError as exc:
-            raise MultimodalError("Transformers with the configured vision backend is required") from exc
+            raise MultimodalError(
+                "Transformers with the configured vision backend is required"
+            ) from exc
         if config.freeze_vision_tower:
             self.encoder.requires_grad_(False)
         if not isinstance(vision_width, int) or vision_width <= 0:
-            raise MultimodalError("vision encoder does not expose a usable output width")
+            raise MultimodalError(
+                "vision encoder does not expose a usable output width"
+            )
         mid = max(hidden_size, int(hidden_size * config.projector_hidden_multiplier))
         self.projector = nn.Sequential(
             nn.Linear(vision_width, mid, bias=False),
@@ -153,7 +182,9 @@ class VisionTower(nn.Module):
         output = self.encoder(pixel_values=frames)
         hidden = getattr(output, "last_hidden_state", None)
         if hidden is None or hidden.ndim != 3:
-            raise MultimodalError("generic vision encoder must return rank-3 last_hidden_state")
+            raise MultimodalError(
+                "generic vision encoder must return rank-3 last_hidden_state"
+            )
         if self.config.drop_cls_token and hidden.shape[1] > 1:
             hidden = hidden[:, 1:]
         return self.projector(hidden)
@@ -166,7 +197,9 @@ class VisionTower(nn.Module):
         video: bool,
     ) -> tuple[torch.Tensor, list[int], torch.Tensor]:
         if grid_thw is None or grid_thw.ndim != 2 or grid_thw.shape[1] != 3:
-            raise MultimodalError("GLM-5.3 vision requires grid_thw with shape [items, 3]")
+            raise MultimodalError(
+                "GLM-5.3 vision requires grid_thw with shape [items, 3]"
+            )
         if video:
             t = grid_thw[:, 0]
             hw = grid_thw[:, 1:]
@@ -175,14 +208,18 @@ class VisionTower(nn.Module):
             encoder_grid = torch.cat((ones, flat_hw), dim=1)
         else:
             encoder_grid = grid_thw
-        output = self.encoder(values.to(dtype=self.encoder.dtype), grid_thw=encoder_grid)
+        output = self.encoder(
+            values.to(dtype=self.encoder.dtype), grid_thw=encoder_grid
+        )
         pooled = getattr(output, "pooler_output", None)
         if pooled is None or pooled.ndim != 2:
             raise MultimodalError("GLM-5.3 vision tower did not return pooler_output")
         merge = int(self.encoder.spatial_merge_size)
         split_sizes = (grid_thw.prod(-1) // (merge * merge)).tolist()
         if sum(split_sizes) != pooled.shape[0]:
-            raise MultimodalError("GLM-5.3 grid metadata does not match visual feature count")
+            raise MultimodalError(
+                "GLM-5.3 grid metadata does not match visual feature count"
+            )
         return self.projector(pooled), [int(x) for x in split_sizes], grid_thw
 
     @staticmethod
@@ -197,8 +234,12 @@ class VisionTower(nn.Module):
         width = features.shape[-1]
         max_tokens = max(split_sizes)
         hidden = features.new_zeros((batch, max_tokens, width))
-        mask = torch.zeros((batch, max_tokens), dtype=torch.bool, device=features.device)
-        frame_ids = torch.zeros((batch, max_tokens), dtype=torch.long, device=features.device)
+        mask = torch.zeros(
+            (batch, max_tokens), dtype=torch.bool, device=features.device
+        )
+        frame_ids = torch.zeros(
+            (batch, max_tokens), dtype=torch.long, device=features.device
+        )
         cursor = 0
         for row, count in enumerate(split_sizes):
             item = features[cursor : cursor + count]
@@ -207,7 +248,9 @@ class VisionTower(nn.Module):
             if source == "video":
                 frames = max(1, int(grid_thw[row, 0]))
                 per_frame = max(1, count // frames)
-                ids = torch.arange(frames, device=features.device).repeat_interleave(per_frame)
+                ids = torch.arange(frames, device=features.device).repeat_interleave(
+                    per_frame
+                )
                 if ids.numel() < count:
                     ids = F.pad(ids, (0, count - ids.numel()), value=frames - 1)
                 frame_ids[row, :count] = ids[:count]
@@ -226,13 +269,21 @@ class VisionTower(nn.Module):
         if pixel_values is not None and video_values is not None:
             raise MultimodalError("provide pixel_values or video_values, not both")
         if pixel_values is None and video_values is None:
-            if frame_mask is not None or image_grid_thw is not None or video_grid_thw is not None:
-                raise MultimodalError("visual masks/grid metadata require visual values")
+            if (
+                frame_mask is not None
+                or image_grid_thw is not None
+                or video_grid_thw is not None
+            ):
+                raise MultimodalError(
+                    "visual masks/grid metadata require visual values"
+                )
             return None
 
         if self.is_glm5:
             if frame_mask is not None:
-                raise MultimodalError("GLM-5.3 processed video uses video_grid_thw, not frame_mask")
+                raise MultimodalError(
+                    "GLM-5.3 processed video uses video_grid_thw, not frame_mask"
+                )
             if pixel_values is not None:
                 features, sizes, grid = self._glm_features(
                     pixel_values, image_grid_thw, video=False
@@ -247,21 +298,33 @@ class VisionTower(nn.Module):
             return self._pad_items(features, sizes, grid, source="video")
 
         if image_grid_thw is not None or video_grid_thw is not None:
-            raise MultimodalError("grid_thw metadata is only valid for the glm5_next vision backend")
+            raise MultimodalError(
+                "grid_thw metadata is only valid for the glm5_next vision backend"
+            )
         if pixel_values is not None:
             if pixel_values.ndim != 4:
-                raise MultimodalError("pixel_values must have shape [batch, channels, height, width]")
+                raise MultimodalError(
+                    "pixel_values must have shape [batch, channels, height, width]"
+                )
             projected = self._generic_frames(pixel_values)
-            mask = torch.ones(projected.shape[:2], dtype=torch.bool, device=projected.device)
-            frame_ids = torch.zeros(projected.shape[:2], dtype=torch.long, device=projected.device)
+            mask = torch.ones(
+                projected.shape[:2], dtype=torch.bool, device=projected.device
+            )
+            frame_ids = torch.zeros(
+                projected.shape[:2], dtype=torch.long, device=projected.device
+            )
             return VisualMemory(projected, mask, frame_ids, "image")
 
         assert video_values is not None
         if video_values.ndim != 5:
-            raise MultimodalError("video_values must have shape [batch, frames, channels, height, width]")
+            raise MultimodalError(
+                "video_values must have shape [batch, frames, channels, height, width]"
+            )
         batch, frames = video_values.shape[:2]
         if frames > self.config.max_frames:
-            raise MultimodalError(f"video has {frames} frames; configured maximum is {self.config.max_frames}")
+            raise MultimodalError(
+                f"video has {frames} frames; configured maximum is {self.config.max_frames}"
+            )
         valid_frames = (
             torch.ones((batch, frames), dtype=torch.bool, device=video_values.device)
             if frame_mask is None
@@ -270,18 +333,29 @@ class VisionTower(nn.Module):
         if valid_frames.shape != (batch, frames):
             raise MultimodalError(f"frame_mask must have shape {(batch, frames)}")
         if bool((valid_frames.sum(dim=1) == 0).any()):
-            raise MultimodalError("every video row must contain at least one valid frame")
+            raise MultimodalError(
+                "every video row must contain at least one valid frame"
+            )
         flat = video_values.reshape(batch * frames, *video_values.shape[2:])
         projected = self._generic_frames(flat)
         patches = projected.shape[1]
         projected = projected.view(batch, frames, patches, -1)
-        temporal = _sinusoidal_positions(frames, projected.shape[-1], projected.device, projected.dtype)
+        temporal = _sinusoidal_positions(
+            frames, projected.shape[-1], projected.device, projected.dtype
+        )
         projected = projected + temporal.view(1, frames, 1, -1)
         tokens = projected.reshape(batch, frames * patches, -1)
-        mask = valid_frames.unsqueeze(-1).expand(batch, frames, patches).reshape(batch, frames * patches)
+        mask = (
+            valid_frames.unsqueeze(-1)
+            .expand(batch, frames, patches)
+            .reshape(batch, frames * patches)
+        )
         frame_ids = torch.arange(frames, device=tokens.device).view(1, frames, 1)
-        frame_ids = frame_ids.expand(batch, frames, patches).reshape(batch, frames * patches)
+        frame_ids = frame_ids.expand(batch, frames, patches).reshape(
+            batch, frames * patches
+        )
         return VisualMemory(tokens, mask, frame_ids, "video")
+
 
 def _tome_merge(tokens: torch.Tensor, target: int) -> torch.Tensor:
     """Training-free ToMe-style bipartite similarity merging to a target count."""
@@ -337,9 +411,11 @@ def _merge_video_frames(memory: VisualMemory, target_per_frame: int) -> VisualMe
                 min(target_per_frame, frame_tokens.shape[0]),
             )
             parts.append(merged)
-            ids.append(torch.full(
-                (merged.shape[0],), int(frame), dtype=torch.long, device=src.device
-            ))
+            ids.append(
+                torch.full(
+                    (merged.shape[0],), int(frame), dtype=torch.long, device=src.device
+                )
+            )
         rows.append(torch.cat(parts, dim=0))
         row_frames.append(torch.cat(ids, dim=0))
     max_tokens = max(x.shape[0] for x in rows)
@@ -347,7 +423,9 @@ def _merge_video_frames(memory: VisualMemory, target_per_frame: int) -> VisualMe
         (len(rows), max_tokens, memory.hidden_states.shape[-1])
     )
     mask = torch.zeros((len(rows), max_tokens), dtype=torch.bool, device=hidden.device)
-    frame_ids = torch.zeros((len(rows), max_tokens), dtype=torch.long, device=hidden.device)
+    frame_ids = torch.zeros(
+        (len(rows), max_tokens), dtype=torch.long, device=hidden.device
+    )
     for row, values in enumerate(rows):
         count = values.shape[0]
         hidden[row, :count] = values
@@ -358,6 +436,7 @@ def _merge_video_frames(memory: VisualMemory, target_per_frame: int) -> VisualMe
 
 class VisualMambaEncoder(nn.Module):
     """Linear-complexity visual-token processor; no visual self-attention."""
+
     def __init__(
         self,
         hidden_size: int,
@@ -369,7 +448,10 @@ class VisualMambaEncoder(nn.Module):
     ) -> None:
         super().__init__()
         self.norms = nn.ModuleList(
-            [RMSNorm(hidden_size).to(device=device, dtype=dtype) for _ in range(num_layers)]
+            [
+                RMSNorm(hidden_size).to(device=device, dtype=dtype)
+                for _ in range(num_layers)
+            ]
         )
         self.layers = nn.ModuleList(
             [
@@ -380,7 +462,7 @@ class VisualMambaEncoder(nn.Module):
 
     def forward(self, memory: VisualMemory) -> VisualMemory:
         x = memory.hidden_states
-        batch, tokens, _ = x.shape
+        batch, _tokens, _ = x.shape
         valid = memory.attention_mask
         # Pack valid visual tokens so padded frames never alter recurrent state.
         flat_parts: list[torch.Tensor] = []
@@ -407,24 +489,42 @@ class VisualMambaEncoder(nn.Module):
 class QueryConditionedProjector(nn.Module):
     """Q-Mamba-style query compression without introducing another SSM."""
 
-    def __init__(self, hidden_size: int, heads: int, num_queries: int, *, dtype: torch.dtype, device: torch.device) -> None:
+    def __init__(
+        self,
+        hidden_size: int,
+        heads: int,
+        num_queries: int,
+        *,
+        dtype: torch.dtype,
+        device: torch.device,
+    ) -> None:
         super().__init__()
-        self.queries = nn.Parameter(torch.empty(num_queries, hidden_size, device=device, dtype=dtype))
-        nn.init.normal_(self.queries, std=hidden_size ** -0.5)
+        self.queries = nn.Parameter(
+            torch.empty(num_queries, hidden_size, device=device, dtype=dtype)
+        )
+        nn.init.normal_(self.queries, std=hidden_size**-0.5)
         self.query_norm = RMSNorm(hidden_size).to(device=device, dtype=dtype)
         self.visual_norm = RMSNorm(hidden_size).to(device=device, dtype=dtype)
-        self.attn = nn.MultiheadAttention(hidden_size, heads, batch_first=True, device=device, dtype=dtype)
+        self.attn = nn.MultiheadAttention(
+            hidden_size, heads, batch_first=True, device=device, dtype=dtype
+        )
 
-    def forward(self, memory: VisualMemory, text: torch.Tensor, text_mask: torch.Tensor | None) -> VisualMemory:
+    def forward(
+        self, memory: VisualMemory, text: torch.Tensor, text_mask: torch.Tensor | None
+    ) -> VisualMemory:
         batch = text.shape[0]
         if memory.hidden_states.shape[0] != batch:
-            raise MultimodalError("query projection requires one visual memory row per text row")
+            raise MultimodalError(
+                "query projection requires one visual memory row per text row"
+            )
         if text_mask is None:
             instruction = text.mean(dim=1)
         else:
             mask = text_mask.to(text.dtype).unsqueeze(-1)
             instruction = (text * mask).sum(dim=1) / mask.sum(dim=1).clamp_min(1)
-        queries = self.queries.unsqueeze(0).expand(batch, -1, -1) + instruction.unsqueeze(1)
+        queries = self.queries.unsqueeze(0).expand(
+            batch, -1, -1
+        ) + instruction.unsqueeze(1)
         projected, _ = self.attn(
             self.query_norm(queries),
             self.visual_norm(memory.hidden_states),
@@ -432,46 +532,86 @@ class QueryConditionedProjector(nn.Module):
             key_padding_mask=~memory.attention_mask,
             need_weights=False,
         )
-        mask = torch.ones(projected.shape[:2], dtype=torch.bool, device=projected.device)
-        frames = torch.zeros(projected.shape[:2], dtype=torch.long, device=projected.device)
+        mask = torch.ones(
+            projected.shape[:2], dtype=torch.bool, device=projected.device
+        )
+        frames = torch.zeros(
+            projected.shape[:2], dtype=torch.long, device=projected.device
+        )
         return VisualMemory(projected, mask, frames, memory.source)
 
 
 class MultiScaleTemporalMamba3(nn.Module):
     """MS-Temba-style multi-scale temporal views using IQ's single Mamba-3 primitive."""
 
-    def __init__(self, hidden_size: int, config: Mamba3MIMOConfig, dilations: tuple[int, ...], *, dtype: torch.dtype, device: torch.device) -> None:
+    def __init__(
+        self,
+        hidden_size: int,
+        config: Mamba3MIMOConfig,
+        dilations: tuple[int, ...],
+        *,
+        dtype: torch.dtype,
+        device: torch.device,
+    ) -> None:
         super().__init__()
         self.dilations = dilations
-        self.mixers = nn.ModuleList([
-            VisualMambaEncoder(hidden_size, config, 1, dtype=dtype, device=device)
-            for _ in dilations
-        ])
-        self.scale_logits = nn.Parameter(torch.zeros(len(dilations), device=device, dtype=dtype))
+        self.mixers = nn.ModuleList(
+            [
+                VisualMambaEncoder(hidden_size, config, 1, dtype=dtype, device=device)
+                for _ in dilations
+            ]
+        )
+        self.scale_logits = nn.Parameter(
+            torch.zeros(len(dilations), device=device, dtype=dtype)
+        )
 
     def forward(self, memory: VisualMemory) -> VisualMemory:
         if memory.source != "video":
             return memory
         outputs = []
         for dilation, mixer in zip(self.dilations, self.mixers, strict=True):
-            sampled_mask = memory.attention_mask & (memory.frame_ids.remainder(dilation) == 0)
+            sampled_mask = memory.attention_mask & (
+                memory.frame_ids.remainder(dilation) == 0
+            )
             if bool((sampled_mask.sum(dim=1) == 0).any()):
                 sampled_mask = memory.attention_mask
-            sampled = VisualMemory(memory.hidden_states, sampled_mask, memory.frame_ids, memory.source)
+            sampled = VisualMemory(
+                memory.hidden_states, sampled_mask, memory.frame_ids, memory.source
+            )
             mixed = mixer(sampled)
             outputs.append(mixed.hidden_states)
-        weights = torch.softmax(self.scale_logits.float(), dim=0).to(memory.hidden_states.dtype)
-        merged = sum(weight * output for weight, output in zip(weights, outputs, strict=True))
-        return VisualMemory(memory.hidden_states + merged, memory.attention_mask, memory.frame_ids, memory.source)
+        weights = torch.softmax(self.scale_logits.float(), dim=0).to(
+            memory.hidden_states.dtype
+        )
+        merged = sum(
+            weight * output for weight, output in zip(weights, outputs, strict=True)
+        )
+        return VisualMemory(
+            memory.hidden_states + merged,
+            memory.attention_mask,
+            memory.frame_ids,
+            memory.source,
+        )
 
 
 class BidirectionalVideoMamba3(nn.Module):
     """VideoMambaPro-style backward context and residual preservation on Mamba-3."""
 
-    def __init__(self, hidden_size: int, config: Mamba3MIMOConfig, *, dtype: torch.dtype, device: torch.device) -> None:
+    def __init__(
+        self,
+        hidden_size: int,
+        config: Mamba3MIMOConfig,
+        *,
+        dtype: torch.dtype,
+        device: torch.device,
+    ) -> None:
         super().__init__()
-        self.forward_mixer = VisualMambaEncoder(hidden_size, config, 1, dtype=dtype, device=device)
-        self.backward_mixer = VisualMambaEncoder(hidden_size, config, 1, dtype=dtype, device=device)
+        self.forward_mixer = VisualMambaEncoder(
+            hidden_size, config, 1, dtype=dtype, device=device
+        )
+        self.backward_mixer = VisualMambaEncoder(
+            hidden_size, config, 1, dtype=dtype, device=device
+        )
         self.gate = nn.Parameter(torch.zeros((), device=device, dtype=dtype))
 
     def forward(self, memory: VisualMemory) -> VisualMemory:
@@ -487,12 +627,17 @@ class BidirectionalVideoMamba3(nn.Module):
         backward = self.backward_mixer(reversed_memory).hidden_states.flip(1)
         correction = 0.5 * (forward.hidden_states + backward)
         hidden = memory.hidden_states + torch.tanh(self.gate) * correction
-        return VisualMemory(hidden, memory.attention_mask, memory.frame_ids, memory.source)
+        return VisualMemory(
+            hidden, memory.attention_mask, memory.frame_ids, memory.source
+        )
 
 
 class CrossModalFusion(nn.Module):
     """Text queries visual memory; visual tokens never enter quadratic self-attention."""
-    def __init__(self, hidden_size: int, heads: int, *, dtype: torch.dtype, device: torch.device) -> None:
+
+    def __init__(
+        self, hidden_size: int, heads: int, *, dtype: torch.dtype, device: torch.device
+    ) -> None:
         super().__init__()
         if hidden_size % heads:
             raise ValueError("hidden_size must be divisible by cross_attention_heads")
@@ -534,7 +679,9 @@ class CrossModalFusion(nn.Module):
             )
             positions = torch.nonzero(valid_text, as_tuple=False).flatten()
             if positions.numel() == 0:
-                raise MultimodalError("TransV requires at least one valid instruction token")
+                raise MultimodalError(
+                    "TransV requires at least one valid instruction token"
+                )
             last = q_all[row, positions[-1]]
             q = F.linear(last, q_weight, q_bias).view(heads, head_dim)
             valid_visual = memory.attention_mask[row]
@@ -568,6 +715,7 @@ class CrossModalFusion(nn.Module):
 
 class TransVTransfer(nn.Module):
     """TimeViper-style shallow uniform and deep attention-guided compression."""
+
     def __init__(self, config: IQMultimodalConfig) -> None:
         super().__init__()
         self.config = config
@@ -594,7 +742,9 @@ class TransVTransfer(nn.Module):
         max_target = int(target.max())
         out = memory.hidden_states.new_zeros((batch, max_target, hidden))
         out_mask = torch.zeros((batch, max_target), dtype=torch.bool, device=out.device)
-        out_frames = torch.zeros((batch, max_target), dtype=torch.long, device=out.device)
+        out_frames = torch.zeros(
+            (batch, max_target), dtype=torch.long, device=out.device
+        )
 
         for row in range(batch):
             src = memory.hidden_states[row, memory.attention_mask[row]]
@@ -610,16 +760,25 @@ class TransVTransfer(nn.Module):
                 scores = relevance_scores[row, memory.attention_mask[row]]
                 # Select by learned cross-attention relevance, then restore
                 # temporal/token order for recurrent processing.
-                indices = torch.topk(scores, k=count, sorted=False).indices.sort().values
+                indices = (
+                    torch.topk(scores, k=count, sorted=False).indices.sort().values
+                )
             else:
                 # TimeViper shallow TransV uses uniform token dropping.
-                indices = torch.linspace(
-                    0, src.shape[0] - 1, steps=count, device=src.device
-                ).round().long().unique(sorted=True)
+                indices = (
+                    torch.linspace(0, src.shape[0] - 1, steps=count, device=src.device)
+                    .round()
+                    .long()
+                    .unique(sorted=True)
+                )
                 if indices.numel() < count:
-                    chosen = torch.zeros(src.shape[0], dtype=torch.bool, device=src.device)
+                    chosen = torch.zeros(
+                        src.shape[0], dtype=torch.bool, device=src.device
+                    )
                     chosen[indices] = True
-                    fill = torch.nonzero(~chosen, as_tuple=False).flatten()[: count - indices.numel()]
+                    fill = torch.nonzero(~chosen, as_tuple=False).flatten()[
+                        : count - indices.numel()
+                    ]
                     indices = torch.cat((indices, fill)).sort().values
 
             selected = src.index_select(0, indices[:count])
@@ -628,6 +787,7 @@ class TransVTransfer(nn.Module):
             out_mask[row, :count] = True
             out_frames[row, :count] = selected_frames
         return VisualMemory(out, out_mask, out_frames, memory.source)
+
 
 @dataclass
 class AudioMemory:
@@ -639,36 +799,67 @@ class AudioMemory:
 class AudioMamba3Pathway(nn.Module):
     """SSAMBA/Speech-Mamba-inspired audio pathway implemented only with Mamba-3 MIMO."""
 
-    def __init__(self, hidden_size: int, mamba_config: Mamba3MIMOConfig, *, dtype: torch.dtype, device: torch.device) -> None:
+    def __init__(
+        self,
+        hidden_size: int,
+        mamba_config: Mamba3MIMOConfig,
+        *,
+        dtype: torch.dtype,
+        device: torch.device,
+    ) -> None:
         super().__init__()
-        self.input_projection = nn.LazyLinear(hidden_size, bias=False, device=device, dtype=dtype)
-        self.forward_mixer = VisualMambaEncoder(hidden_size, mamba_config, 1, dtype=dtype, device=device)
-        self.backward_mixer = VisualMambaEncoder(hidden_size, mamba_config, 1, dtype=dtype, device=device)
-        self.global_attn = nn.MultiheadAttention(hidden_size, 8, batch_first=True, device=device, dtype=dtype)
+        self.input_projection = nn.LazyLinear(
+            hidden_size, bias=False, device=device, dtype=dtype
+        )
+        self.forward_mixer = VisualMambaEncoder(
+            hidden_size, mamba_config, 1, dtype=dtype, device=device
+        )
+        self.backward_mixer = VisualMambaEncoder(
+            hidden_size, mamba_config, 1, dtype=dtype, device=device
+        )
+        self.global_attn = nn.MultiheadAttention(
+            hidden_size, 8, batch_first=True, device=device, dtype=dtype
+        )
         self.gate = nn.Parameter(torch.zeros((), device=device, dtype=dtype))
 
-    def forward(self, features: torch.Tensor, mask: torch.Tensor | None, *, streaming: bool) -> VisualMemory:
+    def forward(
+        self, features: torch.Tensor, mask: torch.Tensor | None, *, streaming: bool
+    ) -> VisualMemory:
         if features.ndim != 3:
-            raise MultimodalError("audio_features must have shape [batch, time, features]")
+            raise MultimodalError(
+                "audio_features must have shape [batch, time, features]"
+            )
         hidden = self.input_projection(features)
         valid = (
             torch.ones(hidden.shape[:2], dtype=torch.bool, device=hidden.device)
-            if mask is None else mask.to(device=hidden.device, dtype=torch.bool)
+            if mask is None
+            else mask.to(device=hidden.device, dtype=torch.bool)
         )
         if valid.shape != hidden.shape[:2] or bool((valid.sum(dim=1) == 0).any()):
-            raise MultimodalError("audio_attention_mask must match audio time and keep one valid step per row")
-        frames = torch.arange(hidden.shape[1], device=hidden.device).unsqueeze(0).expand(hidden.shape[0], -1)
+            raise MultimodalError(
+                "audio_attention_mask must match audio time and keep one valid step per row"
+            )
+        frames = (
+            torch.arange(hidden.shape[1], device=hidden.device)
+            .unsqueeze(0)
+            .expand(hidden.shape[0], -1)
+        )
         memory = VisualMemory(hidden, valid, frames, "audio")
         forward = self.forward_mixer(memory)
         if streaming:
             contextual = forward.hidden_states
         else:
-            reverse = VisualMemory(hidden.flip(1), valid.flip(1), frames.flip(1), "audio")
+            reverse = VisualMemory(
+                hidden.flip(1), valid.flip(1), frames.flip(1), "audio"
+            )
             backward = self.backward_mixer(reverse).hidden_states.flip(1)
             contextual = 0.5 * (forward.hidden_states + backward)
         attended, _ = self.global_attn(
-            contextual, contextual, contextual,
-            key_padding_mask=~valid, need_weights=False,
+            contextual,
+            contextual,
+            contextual,
+            key_padding_mask=~valid,
+            need_weights=False,
         )
         output = contextual + torch.tanh(self.gate) * attended
         return VisualMemory(output, valid, frames, "audio")
@@ -688,11 +879,18 @@ class IQMultimodalPathway(nn.Module):
         self.config = config
         self.vision = VisionTower(config, hidden_size, dtype=dtype, device=device)
         self.temporal = MultiScaleTemporalMamba3(
-            hidden_size, mamba_config, config.temporal_dilations, dtype=dtype, device=device
+            hidden_size,
+            mamba_config,
+            config.temporal_dilations,
+            dtype=dtype,
+            device=device,
         )
         self.video_context = (
-            BidirectionalVideoMamba3(hidden_size, mamba_config, dtype=dtype, device=device)
-            if config.use_bidirectional_video else nn.Identity()
+            BidirectionalVideoMamba3(
+                hidden_size, mamba_config, dtype=dtype, device=device
+            )
+            if config.use_bidirectional_video
+            else nn.Identity()
         )
         self.query_projector = QueryConditionedProjector(
             hidden_size,
@@ -721,7 +919,10 @@ class IQMultimodalPathway(nn.Module):
         self.fusion = nn.ModuleDict(
             {
                 str(layer): CrossModalFusion(
-                    hidden_size, config.cross_attention_heads, dtype=dtype, device=device
+                    hidden_size,
+                    config.cross_attention_heads,
+                    dtype=dtype,
+                    device=device,
                 )
                 for layer in config.fusion_layers
             }
@@ -766,7 +967,9 @@ class IQMultimodalPathway(nn.Module):
             if audio_attention_mask is not None:
                 raise MultimodalError("audio_attention_mask requires audio_features")
             return None
-        return self.audio(audio_features, audio_attention_mask, streaming=audio_streaming)
+        return self.audio(
+            audio_features, audio_attention_mask, streaming=audio_streaming
+        )
 
     def fuse(
         self,

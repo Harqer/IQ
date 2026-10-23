@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from .transport import CoordinateMap
 import numpy as np
 
 
@@ -54,10 +58,14 @@ def _numpy(value: Any) -> np.ndarray:
     return np.asarray(value, dtype=np.float64)
 
 
-def _validate_token_spans(token_spans: Iterable[TokenByteSpan], token_count: int) -> tuple[TokenByteSpan, ...]:
+def _validate_token_spans(
+    token_spans: Iterable[TokenByteSpan], token_count: int
+) -> tuple[TokenByteSpan, ...]:
     spans = tuple(sorted(token_spans, key=lambda x: (x.start, x.end, x.token_index)))
     if len(spans) != token_count:
-        raise AlignmentError(f"expected one byte span per token: got {len(spans)} spans for {token_count} tokens")
+        raise AlignmentError(
+            f"expected one byte span per token: got {len(spans)} spans for {token_count} tokens"
+        )
     indices = sorted(x.token_index for x in spans)
     if indices != list(range(token_count)):
         raise AlignmentError("token byte spans must cover token indices exactly once")
@@ -96,7 +104,9 @@ def pool_activations_by_byte_spans(
                 weighted += x[token.token_index] * overlap
                 total_overlap += overlap
         if total_overlap == 0:
-            raise AlignmentError(f"canonical span [{span.start}, {span.end}) has no token coverage")
+            raise AlignmentError(
+                f"canonical span [{span.start}, {span.end}) has no token coverage"
+            )
         if require_full_coverage and total_overlap != span.length:
             raise AlignmentError(
                 f"canonical span [{span.start}, {span.end}) coverage is {total_overlap}/{span.length} bytes"
@@ -116,10 +126,16 @@ def align_token_activations_by_bytes(
 ) -> PairedSpanActivations:
     spans = tuple(canonical_spans)
     source = pool_activations_by_byte_spans(
-        source_activations, source_token_spans, spans, require_full_coverage=require_full_coverage
+        source_activations,
+        source_token_spans,
+        spans,
+        require_full_coverage=require_full_coverage,
     )
     target = pool_activations_by_byte_spans(
-        target_activations, target_token_spans, spans, require_full_coverage=require_full_coverage
+        target_activations,
+        target_token_spans,
+        spans,
+        require_full_coverage=require_full_coverage,
     )
     return PairedSpanActivations(spans=spans, source=source, target=target)
 
@@ -127,6 +143,7 @@ def align_token_activations_by_bytes(
 @dataclass(frozen=True)
 class CausalTokenAlignment:
     """GLM source hidden projected into IQ's vocabulary-position and hidden frame."""
+
     teacher_aligned_hidden: np.ndarray
     valid_token_mask: np.ndarray
 
@@ -138,7 +155,7 @@ def align_glm_states_to_mamba_tokens(
     *,
     source_document_sha256: str,
     target_document_sha256: str,
-    coordinate_map: "CoordinateMap",
+    coordinate_map: CoordinateMap,
 ) -> CausalTokenAlignment:
     """Align one real, unpacked document without observing future GLM tokens.
 
@@ -160,18 +177,24 @@ def align_glm_states_to_mamba_tokens(
         or source_document_sha256.lower() != target_document_sha256.lower()
         or any(c not in "0123456789abcdef" for c in source_document_sha256.lower())
     ):
-        raise AlignmentError("source and target must identify the same SHA-256 UTF-8 document")
+        raise AlignmentError(
+            "source and target must identify the same SHA-256 UTF-8 document"
+        )
     if (
         coordinate_map.diagnostics is None
         or coordinate_map.diagnostics.validation_rmse is None
         or not np.isfinite(coordinate_map.diagnostics.validation_rmse)
     ):
-        raise AlignmentError("the output coordinate map must have held-out validation metrics")
+        raise AlignmentError(
+            "the output coordinate map must have held-out validation metrics"
+        )
     if (
         "residual_out" not in coordinate_map.source_space
         or "residual_out" not in coordinate_map.target_space
     ):
-        raise AlignmentError("Stage 2 requires an explicit residual_out-to-residual_out map")
+        raise AlignmentError(
+            "Stage 2 requires an explicit residual_out-to-residual_out map"
+        )
 
     source = _numpy(source_hidden)
     if source.ndim != 2 or source.shape[0] == 0 or not np.isfinite(source).all():
@@ -180,18 +203,24 @@ def align_glm_states_to_mamba_tokens(
     target_spans_unsorted = tuple(target_token_spans)
     if not target_spans_unsorted:
         raise AlignmentError("target tokens cannot be empty")
-    target_spans = _validate_token_spans(target_spans_unsorted, len(target_spans_unsorted))
+    target_spans = _validate_token_spans(
+        target_spans_unsorted, len(target_spans_unsorted)
+    )
 
     def full_coverage(spans: tuple[TokenByteSpan, ...]) -> int:
         previous = 0
         for span in spans:
             if span.start != previous:
-                raise AlignmentError("source/target spans must continuously cover UTF-8 bytes")
+                raise AlignmentError(
+                    "source/target spans must continuously cover UTF-8 bytes"
+                )
             previous = span.end
         return previous
 
     if full_coverage(source_spans) != full_coverage(target_spans):
-        raise AlignmentError("source and target tokenizations cover different byte lengths")
+        raise AlignmentError(
+            "source and target tokenizations cover different byte lengths"
+        )
     matrix = np.asarray(coordinate_map.matrix, dtype=np.float64)
     if matrix.shape[0] != source.shape[1]:
         raise AlignmentError("source hidden width does not match GLM-to-IQ map")
@@ -204,10 +233,14 @@ def align_glm_states_to_mamba_tokens(
     valid = np.zeros(len(target_spans), dtype=np.bool_)
     projected = source @ matrix
     for target in target_spans:
-        source_position = int(np.searchsorted(source_ends, target.end, side="right") - 1)
+        source_position = int(
+            np.searchsorted(source_ends, target.end, side="right") - 1
+        )
         if source_position < 0:
             continue
-        result[target.token_index] = projected[source_spans[source_position].token_index]
+        result[target.token_index] = projected[
+            source_spans[source_position].token_index
+        ]
         valid[target.token_index] = True
     if not bool(valid.any()):
         raise AlignmentError("no causal GLM token prefixes are available for IQ tokens")

@@ -109,7 +109,9 @@ class CompressedAttentionCache:
     direct_count: int
 
 
-def _append_cache_row(buffer: torch.Tensor, count: int, row: torch.Tensor) -> torch.Tensor:
+def _append_cache_row(
+    buffer: torch.Tensor, count: int, row: torch.Tensor
+) -> torch.Tensor:
     if row.ndim != 1 or row.shape[0] != buffer.shape[1]:
         raise ValueError("attention cache row has incorrect dimensions")
     if count == buffer.shape[0]:
@@ -146,9 +148,7 @@ class GroupedLowRankOutput(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if x.ndim != 3 or x.shape[1:] != (self.num_heads, self.head_dim):
-            raise ValueError(
-                "grouped output expects [tokens, num_heads, head_dim]"
-            )
+            raise ValueError("grouped output expects [tokens, num_heads, head_dim]")
         grouped = x.reshape(
             x.shape[0],
             self.groups,
@@ -175,9 +175,8 @@ def _segments(
             previous_doc = None
             continue
         doc = int(document_ids[col]) if document_ids is not None else 0
-        boundary = (
-            previous_col is not None
-            and (col != previous_col + 1 or doc != previous_doc)
+        boundary = previous_col is not None and (
+            col != previous_col + 1 or doc != previous_doc
         )
         if boundary and current:
             result.append(current)
@@ -528,9 +527,8 @@ class _V4CompressedContextAttention(nn.Module):
             compressed.float(),
         )
         scores = F.relu(scores) * (self.config.index_head_dim**-0.5)
-        weights = (
-            self.index_weight_proj(hidden).float()
-            * (self.config.index_n_heads**-0.5)
+        weights = self.index_weight_proj(hidden).float() * (
+            self.config.index_n_heads**-0.5
         )
         index_scores = (scores * weights.unsqueeze(-1)).sum(dim=1)
 
@@ -601,11 +599,7 @@ class _V4CompressedContextAttention(nn.Module):
             attention_mask=attention_mask,
             document_ids=document_ids,
         )
-        docs = (
-            document_ids.to(x.device)
-            if document_ids is not None
-            else None
-        )
+        docs = document_ids.to(x.device) if document_ids is not None else None
         result: list[IndexerSegmentScores] = []
         for row in range(batch):
             row_docs = docs[row] if docs is not None else None
@@ -662,13 +656,8 @@ class _V4CompressedContextAttention(nn.Module):
             sink,
         )
         numerator = torch.exp(scores - max_score)
-        denominator = (
-            numerator.sum(dim=-1, keepdim=True)
-            + torch.exp(sink - max_score)
-        )
-        weights = numerator / denominator.clamp_min(
-            torch.finfo(numerator.dtype).tiny
-        )
+        denominator = numerator.sum(dim=-1, keepdim=True) + torch.exp(sink - max_score)
+        weights = numerator / denominator.clamp_min(torch.finfo(numerator.dtype).tiny)
         if self.training and self.config.attention_dropout:
             weights = F.dropout(
                 weights,
@@ -681,7 +670,9 @@ class _V4CompressedContextAttention(nn.Module):
             candidates,
         )
 
-    def _index_keys(self, hidden: torch.Tensor, positions: torch.Tensor) -> torch.Tensor:
+    def _index_keys(
+        self, hidden: torch.Tensor, positions: torch.Tensor
+    ) -> torch.Tensor:
         """Preproject keys once for streamed CSA indexing."""
         assert self.mode == "csa"
         assert self.index_kv_proj is not None and self.index_kv_norm is not None
@@ -721,21 +712,23 @@ class _V4CompressedContextAttention(nn.Module):
         query_count = query_hidden.shape[0]
         total = index_keys.shape[0]
         if total == 0:
-            return torch.empty((query_count, 0), dtype=torch.long, device=query_hidden.device)
+            return torch.empty(
+                (query_count, 0), dtype=torch.long, device=query_hidden.device
+            )
         k = min(self.config.index_topk, total)
         q = self.index_q_proj(query_residual).view(
             query_count, self.config.index_n_heads, self.config.index_head_dim
         )
         q = self._rope(q, query_positions).float()
         w = self.index_weight_proj(query_hidden).float() * (
-            self.config.index_n_heads ** -0.5
+            self.config.index_n_heads**-0.5
         )
         best_scores = q.new_empty((query_count, 0))
         best_indices = torch.empty((query_count, 0), dtype=torch.long, device=q.device)
         for lo in range(0, total, key_chunk_size):
             hi = min(total, lo + key_chunk_size)
             scores = torch.einsum("qhd,kd->qhk", q, index_keys[lo:hi].float())
-            scores = F.relu(scores) * (self.config.index_head_dim ** -0.5)
+            scores = F.relu(scores) * (self.config.index_head_dim**-0.5)
             scores = (scores * w.unsqueeze(-1)).sum(dim=1)
             positions = torch.arange(lo, hi, device=q.device)
             if self.config.direct_token_indexer:
@@ -767,29 +760,37 @@ class _V4CompressedContextAttention(nn.Module):
         window_start = max(0, start - self.config.sliding_window + 1)
         local = local_kv[window_start : start + count]
         local_offsets = torch.arange(window_start, start + count, device=q.device)
-        local_valid = (
-            (local_offsets.unsqueeze(0) <= offsets.unsqueeze(1))
-            & (local_offsets.unsqueeze(0) + self.config.sliding_window > offsets.unsqueeze(1))
+        local_valid = (local_offsets.unsqueeze(0) <= offsets.unsqueeze(1)) & (
+            local_offsets.unsqueeze(0) + self.config.sliding_window
+            > offsets.unsqueeze(1)
         )
-        local_scores = torch.einsum("qhd,kd->qhk", q.float(), local.float()) * self.scale
-        local_scores = local_scores.masked_fill(~local_valid.unsqueeze(1), float("-inf"))
+        local_scores = (
+            torch.einsum("qhd,kd->qhk", q.float(), local.float()) * self.scale
+        )
+        local_scores = local_scores.masked_fill(
+            ~local_valid.unsqueeze(1), float("-inf")
+        )
 
         if self.mode == "hca":
             long_kv = compressed
-            long_scores = torch.einsum("qhd,kd->qhk", q.float(), long_kv.float()) * self.scale
-            visible = (offsets + 1) // self.config.hca_compress_rate
-            long_valid = (
-                torch.arange(long_kv.shape[0], device=q.device).unsqueeze(0)
-                < visible.unsqueeze(1)
+            long_scores = (
+                torch.einsum("qhd,kd->qhk", q.float(), long_kv.float()) * self.scale
             )
+            visible = (offsets + 1) // self.config.hca_compress_rate
+            long_valid = torch.arange(long_kv.shape[0], device=q.device).unsqueeze(
+                0
+            ) < visible.unsqueeze(1)
         else:
             assert selected is not None
             source = local_kv if self.config.direct_token_indexer else compressed
             if selected.shape[1]:
-                long_kv = source.index_select(0, selected.clamp_min(0).reshape(-1)).view(
-                    count, selected.shape[1], self.config.head_dim
+                long_kv = source.index_select(
+                    0, selected.clamp_min(0).reshape(-1)
+                ).view(count, selected.shape[1], self.config.head_dim)
+                long_scores = (
+                    torch.einsum("qhd,qkd->qhk", q.float(), long_kv.float())
+                    * self.scale
                 )
-                long_scores = torch.einsum("qhd,qkd->qhk", q.float(), long_kv.float()) * self.scale
             else:
                 long_kv = q.new_empty((count, 0, self.config.head_dim))
                 long_scores = q.new_empty((count, q.shape[1], 0), dtype=torch.float32)
@@ -798,9 +799,12 @@ class _V4CompressedContextAttention(nn.Module):
         sink = self.sinks.float().view(1, -1, 1)
         # Treat the sink as an extra softmax entry (without an associated value).
         max_score = torch.maximum(
-            torch.maximum(local_scores.max(dim=-1, keepdim=True).values,
-                          long_scores.max(dim=-1, keepdim=True).values
-                          if long_scores.shape[-1] else sink),
+            torch.maximum(
+                local_scores.max(dim=-1, keepdim=True).values,
+                long_scores.max(dim=-1, keepdim=True).values
+                if long_scores.shape[-1]
+                else sink,
+            ),
             sink,
         )
         local_exp = torch.exp(local_scores - max_score)
@@ -813,13 +817,21 @@ class _V4CompressedContextAttention(nn.Module):
         local_weight = local_exp / denom
         long_weight = long_exp / denom
         if self.training and self.config.attention_dropout:
-            local_weight = F.dropout(local_weight, p=self.config.attention_dropout, training=True)
-            long_weight = F.dropout(long_weight, p=self.config.attention_dropout, training=True)
+            local_weight = F.dropout(
+                local_weight, p=self.config.attention_dropout, training=True
+            )
+            long_weight = F.dropout(
+                long_weight, p=self.config.attention_dropout, training=True
+            )
         local_out = torch.einsum("qhk,kd->qhd", local_weight.to(local.dtype), local)
         if self.mode == "hca":
-            long_out = torch.einsum("qhk,kd->qhd", long_weight.to(long_kv.dtype), long_kv)
+            long_out = torch.einsum(
+                "qhk,kd->qhd", long_weight.to(long_kv.dtype), long_kv
+            )
         else:
-            long_out = torch.einsum("qhk,qkd->qhd", long_weight.to(long_kv.dtype), long_kv)
+            long_out = torch.einsum(
+                "qhk,qkd->qhd", long_weight.to(long_kv.dtype), long_kv
+            )
         return local_out + long_out
 
     def _forward_segment(
@@ -851,32 +863,54 @@ class _V4CompressedContextAttention(nn.Module):
             end = min(start + 32, length)
             selected = (
                 self._streaming_index_selection(
-                    hidden[start:end], q_residual[start:end], positions[start:end],
-                    torch.arange(start, end, device=hidden.device), index_keys,
+                    hidden[start:end],
+                    q_residual[start:end],
+                    positions[start:end],
+                    torch.arange(start, end, device=hidden.device),
+                    index_keys,
                 )
-                if index_keys is not None else None
+                if index_keys is not None
+                else None
             )
-            pieces.append(self._attend_chunk(
-                q[start:end], local_kv, compressed, start=start, selected=selected,
-            ))
+            pieces.append(
+                self._attend_chunk(
+                    q[start:end],
+                    local_kv,
+                    compressed,
+                    start=start,
+                    selected=selected,
+                )
+            )
         attended = torch.cat(pieces, dim=0)
         attended = self._rope(attended, positions, inverse=True)
         return self.output(attended)
 
-    def new_cache(self, *, device: torch.device, dtype: torch.dtype) -> CompressedAttentionCache:
+    def new_cache(
+        self, *, device: torch.device, dtype: torch.dtype
+    ) -> CompressedAttentionCache:
         """Allocate an empty inference cache for one sequence/document and layer."""
         if self.training:
-            raise ValueError("set eval() before using compressed-attention inference cache")
+            raise ValueError(
+                "set eval() before using compressed-attention inference cache"
+            )
         return CompressedAttentionCache(
             length=0,
-            hidden_tail=torch.empty((0, self.config.hidden_size), device=device, dtype=dtype),
+            hidden_tail=torch.empty(
+                (0, self.config.hidden_size), device=device, dtype=dtype
+            ),
             positions_tail=torch.empty((0,), device=device, dtype=torch.long),
             local_kv=torch.empty((0, self.config.head_dim), device=device, dtype=dtype),
-            compressed=torch.empty((16, self.config.head_dim), device=device, dtype=dtype),
+            compressed=torch.empty(
+                (16, self.config.head_dim), device=device, dtype=dtype
+            ),
             compressed_count=0,
-            index_keys=torch.empty((16, self.config.index_head_dim), device=device, dtype=dtype),
+            index_keys=torch.empty(
+                (16, self.config.index_head_dim), device=device, dtype=dtype
+            ),
             index_count=0,
-            direct_kv=torch.empty((16, self.config.head_dim), device=device, dtype=dtype),
+            direct_kv=torch.empty(
+                (16, self.config.head_dim), device=device, dtype=dtype
+            ),
             direct_count=0,
         )
 
@@ -913,19 +947,24 @@ class _V4CompressedContextAttention(nn.Module):
         local_new = self._normalize_main_candidate(self.kv_proj(token), self.kv_norm)
         local_new = self._rope(local_new.unsqueeze(1), pos_t).squeeze(1)
         cache.local_kv = torch.cat((cache.local_kv, local_new), dim=0)[
-            -self.config.sliding_window:
+            -self.config.sliding_window :
         ]
         tail_capacity = 2 * self.compress_rate
-        cache.hidden_tail = torch.cat((cache.hidden_tail, token), dim=0)[-tail_capacity:]
-        cache.positions_tail = torch.cat((cache.positions_tail, pos_t), dim=0)[-tail_capacity:]
+        cache.hidden_tail = torch.cat((cache.hidden_tail, token), dim=0)[
+            -tail_capacity:
+        ]
+        cache.positions_tail = torch.cat((cache.positions_tail, pos_t), dim=0)[
+            -tail_capacity:
+        ]
         cache.length += 1
         if self.mode == "csa" and self.config.direct_token_indexer:
             new_idx = self._index_keys(token, pos_t)[0]
-            cache.index_keys = _append_cache_row(cache.index_keys, cache.index_count, new_idx)
+            cache.index_keys = _append_cache_row(
+                cache.index_keys, cache.index_count, new_idx
+            )
             cache.index_count += 1
-        if (
-            cache.length % self.compress_rate == 0
-            and not (self.mode == "csa" and self.config.direct_token_indexer)
+        if cache.length % self.compress_rate == 0 and not (
+            self.mode == "csa" and self.config.direct_token_indexer
         ):
             new_compressed = self._compress_main(
                 cache.hidden_tail, cache.positions_tail
@@ -936,15 +975,19 @@ class _V4CompressedContextAttention(nn.Module):
             cache.compressed_count += 1
             if self.mode == "csa" and not self.config.direct_token_indexer:
                 new_idx = self._index_keys(cache.hidden_tail, cache.positions_tail)[-1]
-                cache.index_keys = _append_cache_row(cache.index_keys, cache.index_count, new_idx)
+                cache.index_keys = _append_cache_row(
+                    cache.index_keys, cache.index_count, new_idx
+                )
                 cache.index_count += 1
 
-        history = cache.compressed[:cache.compressed_count]
+        history = cache.compressed[: cache.compressed_count]
         if self.mode == "csa":
             selected = self._streaming_index_selection(
-                token, q_residual, pos_t,
+                token,
+                q_residual,
+                pos_t,
                 torch.tensor([offset], device=x.device),
-                cache.index_keys[:cache.index_count],
+                cache.index_keys[: cache.index_count],
             )[0]
             if self.config.direct_token_indexer:
                 # The checkpoint's direct indexer retrieves uncompressed token KVs.
@@ -952,7 +995,7 @@ class _V4CompressedContextAttention(nn.Module):
                     cache.direct_kv, cache.direct_count, local_new[0]
                 )
                 cache.direct_count += 1
-                source = cache.direct_kv[:cache.direct_count]
+                source = cache.direct_kv[: cache.direct_count]
             else:
                 source = history
             picked = source.index_select(0, selected[selected >= 0])
@@ -984,11 +1027,7 @@ class _V4CompressedContextAttention(nn.Module):
             attention_mask=attention_mask,
             document_ids=document_ids,
         )
-        docs = (
-            document_ids.to(x.device)
-            if document_ids is not None
-            else None
-        )
+        docs = document_ids.to(x.device) if document_ids is not None else None
         output = torch.zeros_like(x)
         for row in range(batch):
             row_docs = docs[row] if docs is not None else None

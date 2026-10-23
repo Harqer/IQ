@@ -35,9 +35,7 @@ class RoutedMoEConfig:
         }
         bad = [name for name, value in ints.items() if int(value) <= 0]
         if bad:
-            raise MoEConfigError(
-                f"positive MoE fields required: {', '.join(bad)}"
-            )
+            raise MoEConfigError(f"positive MoE fields required: {', '.join(bad)}")
         if self.top_k > self.num_experts:
             raise MoEConfigError("top_k cannot exceed num_experts")
         if (
@@ -50,9 +48,7 @@ class RoutedMoEConfig:
         if self.capacity_factor is not None and self.capacity_factor <= 0:
             raise MoEConfigError("capacity_factor must be positive when configured")
         if self.overflow_policy not in {"unbounded", "error"}:
-            raise MoEConfigError(
-                "overflow_policy must be 'unbounded' or 'error'"
-            )
+            raise MoEConfigError("overflow_policy must be 'unbounded' or 'error'")
 
 
 @dataclass
@@ -76,9 +72,7 @@ class SwiGLUExpert(nn.Module):
         self.down_proj = nn.Linear(intermediate_size, hidden_size, bias=False)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.down_proj(
-            F.silu(self.gate_proj(x)) * self.up_proj(x)
-        )
+        return self.down_proj(F.silu(self.gate_proj(x)) * self.up_proj(x))
 
 
 class RoutedSwiGLUMoE(nn.Module):
@@ -124,19 +118,13 @@ class RoutedSwiGLUMoE(nn.Module):
             return None
         return max(
             1,
-            ceil(
-                factor
-                * token_count
-                * self.config.top_k
-                / self.config.num_experts
-            ),
+            ceil(factor * token_count * self.config.top_k / self.config.num_experts),
         )
 
     def forward(self, x: torch.Tensor) -> MoEOutput:
         if x.ndim < 2 or x.shape[-1] != self.config.hidden_size:
             raise ValueError(
-                "MoE input must end in hidden_size="
-                f"{self.config.hidden_size}"
+                f"MoE input must end in hidden_size={self.config.hidden_size}"
             )
         original_shape = x.shape
         flat = x.reshape(-1, self.config.hidden_size)
@@ -170,10 +158,7 @@ class RoutedSwiGLUMoE(nn.Module):
         if capacity is not None:
             overflow = torch.clamp(expert_counts - capacity, min=0)
             overflow_count = int(overflow.sum().item())
-            if (
-                overflow_count > 0
-                and self.config.overflow_policy == "error"
-            ):
+            if overflow_count > 0 and self.config.overflow_policy == "error":
                 raise RuntimeError(
                     "MoE routing exceeded configured capacity without token "
                     f"dropping: capacity={capacity}, counts={expert_counts.tolist()}"
@@ -185,9 +170,7 @@ class RoutedSwiGLUMoE(nn.Module):
             device=flat.device,
         )
         for expert_index, expert in enumerate(self.experts):
-            token_indices, topk_slots = torch.where(
-                selected_experts == expert_index
-            )
+            token_indices, topk_slots = torch.where(selected_experts == expert_index)
             if token_indices.numel() == 0:
                 continue
             expert_input = flat.index_select(0, token_indices)

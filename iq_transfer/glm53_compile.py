@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Mapping
 import json
 import shutil
 import tempfile
+from collections.abc import Mapping
+from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -14,7 +14,6 @@ from iq_model import HybridLayerType, IQHybridConfig
 
 from .checkpoint import SafetensorsSource
 from .complete_transplant import (
-    CompleteTransplantError,
     _native_controller_state,
     _save_shard,
     _translate_mamba_overlay,
@@ -26,13 +25,13 @@ from .glm53_calibration import GLM53CalibrationSolution, GLM53StageCalibration
 from .glm53_direct import GLM53MLALayout, transform_glm53_mla
 from .glm53_dsa import transform_glm53_dsa_indexer
 from .glm53_job import validate_glm53_donor, validate_glm53_streaming_donor
-from .glm53_stream_capture import HubSafetensorsSource
 from .glm53_moe import (
     ExpertWeights,
     select_experts_by_usage,
     transform_glm53_dense_mlp,
     transform_glm53_moe_selected,
 )
+from .glm53_stream_capture import HubSafetensorsSource
 from .mamba3_direct import (
     compile_official_mamba3_mimo_15b_transplant,
     load_official_mamba3_foundation_globals,
@@ -56,7 +55,9 @@ def _tensor(source: SafetensorsSource, key: str) -> torch.Tensor:
     return source.get(key)
 
 
-def _as_tensor(value: np.ndarray | torch.Tensor, *, dtype: torch.dtype = torch.bfloat16) -> torch.Tensor:
+def _as_tensor(
+    value: np.ndarray | torch.Tensor, *, dtype: torch.dtype = torch.bfloat16
+) -> torch.Tensor:
     if isinstance(value, torch.Tensor):
         out = value.detach().cpu()
     else:
@@ -76,7 +77,9 @@ def _identity_map(width: int, *, space: str) -> CoordinateMap:
     )
 
 
-def _transport_input_only(weight: torch.Tensor, residual_map: CoordinateMap) -> torch.Tensor:
+def _transport_input_only(
+    weight: torch.Tensor, residual_map: CoordinateMap
+) -> torch.Tensor:
     array = weight.detach().cpu().double().numpy()
     transformed = array @ np.linalg.pinv(residual_map.matrix).T
     return _as_tensor(transformed, dtype=weight.dtype)
@@ -129,7 +132,9 @@ def _context_state(
         stage.attention_input_map,
     )
     state: dict[str, torch.Tensor] = {
-        f"layers.{physical}.norm.weight": torch.ones(config.model.hidden_size, dtype=torch.bfloat16),
+        f"layers.{physical}.norm.weight": torch.ones(
+            config.model.hidden_size, dtype=torch.bfloat16
+        ),
         f"{target}.q_a_proj.weight": q_a,
         f"{target}.q_a_norm.weight": _tensor(
             source, f"{prefix}.self_attn.q_a_layernorm.weight"
@@ -138,7 +143,8 @@ def _context_state(
         f"{target}.kv_proj.weight": _as_tensor(mla.kv_weight),
         f"{target}.kv_norm.weight": torch.ones(
             c.head_dim - c.partial_rotary_dim
-            if c.normalize_candidate_nonrotary_only else c.head_dim,
+            if c.normalize_candidate_nonrotary_only
+            else c.head_dim,
             dtype=torch.bfloat16,
         ),
         f"{target}.compressor_gate_proj.weight": torch.zeros(
@@ -153,7 +159,8 @@ def _context_state(
         ),
         f"{target}.compressor_kv_norm.weight": torch.ones(
             c.head_dim - c.partial_rotary_dim
-            if c.normalize_candidate_nonrotary_only else c.head_dim,
+            if c.normalize_candidate_nonrotary_only
+            else c.head_dim,
             dtype=torch.bfloat16,
         ),
         f"{target}.sinks": torch.zeros(c.num_attention_heads, dtype=torch.bfloat16),
@@ -232,15 +239,17 @@ def _moe_state(
     target = f"layers.{physical}.moe"
     stable = config.stable_moe
     state: dict[str, torch.Tensor] = {
-        f"layers.{physical}.norm.weight": torch.ones(config.model.hidden_size, dtype=torch.bfloat16),
-        f"{target}.latent_norm.weight": torch.ones(stable.latent_size, dtype=torch.bfloat16),
+        f"layers.{physical}.norm.weight": torch.ones(
+            config.model.hidden_size, dtype=torch.bfloat16
+        ),
+        f"{target}.latent_norm.weight": torch.ones(
+            stable.latent_size, dtype=torch.bfloat16
+        ),
     }
 
     if source_layer < inspector.layout.first_k_dense_replace:
         if stage.dense_intermediate_map is None:
-            raise GLM53CompileError(
-                "dense GLM stage is missing dense_intermediate_map"
-            )
+            raise GLM53CompileError("dense GLM stage is missing dense_intermediate_map")
         transformed = transform_glm53_dense_mlp(
             dense_expert=_expert(source, f"{donor_prefix}.mlp"),
             target_experts=stable.num_experts,
@@ -253,7 +262,9 @@ def _moe_state(
         state[f"{target}.routing_bias"] = _as_tensor(
             transformed.routing_bias, dtype=torch.float32
         )
-        state[f"{target}.latent_down.weight"] = _as_tensor(transformed.latent_down_weight)
+        state[f"{target}.latent_down.weight"] = _as_tensor(
+            transformed.latent_down_weight
+        )
         state[f"{target}.latent_up.weight"] = _as_tensor(transformed.latent_up_weight)
         for i, expert in enumerate(transformed.routed_experts):
             _write_expert(state, f"{target}.routed_experts.{i}", expert)
@@ -411,10 +422,7 @@ def compile_glm53_iq_checkpoint(
     _save_shard(
         output,
         "model-global.safetensors",
-        {
-            key: value.to(torch.bfloat16)
-            for key, value in foundation_globals.items()
-        },
+        {key: value.to(torch.bfloat16) for key, value in foundation_globals.items()},
         weight_map,
     )
 

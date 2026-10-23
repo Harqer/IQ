@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
+
 import numpy as np
 
 from .transport import CoordinateMap
@@ -101,11 +102,15 @@ def fit_gqa_group_projection(
             f"got source={source_repeat}, target={target_repeat}"
         )
     if target_kv_heads > source_kv_heads:
-        raise GQATransportError("PCA group projection currently supports KV-head compression only")
+        raise GQATransportError(
+            "PCA group projection currently supports KV-head compression only"
+        )
 
     x = _numpy(source_key_activations)
     if x.ndim != 2:
-        raise GQATransportError("source_key_activations must be rank-2 [samples, kv_heads * head_dim]")
+        raise GQATransportError(
+            "source_key_activations must be rank-2 [samples, kv_heads * head_dim]"
+        )
     expected_features = source_kv_heads * head_dim
     if x.shape[1] != expected_features:
         raise GQATransportError(
@@ -116,13 +121,19 @@ def fit_gqa_group_projection(
 
     grouped = x.reshape(x.shape[0], source_kv_heads, head_dim)
     group_observations = grouped.transpose(0, 2, 1).reshape(-1, source_kv_heads)
-    group_observations = group_observations - group_observations.mean(axis=0, keepdims=True)
+    group_observations = group_observations - group_observations.mean(
+        axis=0, keepdims=True
+    )
     if np.linalg.norm(group_observations) <= 0:
-        raise GQATransportError("source K activations have zero centered group variance")
+        raise GQATransportError(
+            "source K activations have zero centered group variance"
+        )
 
     _, singular, vt = np.linalg.svd(group_observations, full_matrices=False)
     if vt.shape[0] < target_kv_heads:
-        raise GQATransportError("not enough rank to construct requested KV-group projection")
+        raise GQATransportError(
+            "not enough rank to construct requested KV-group projection"
+        )
     group_map = _fix_svd_signs(vt[:target_kv_heads].T)
 
     total_variance = float(np.sum(singular * singular))

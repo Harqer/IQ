@@ -27,10 +27,14 @@ def _resolve_parameter(model: torch.nn.Module, path: str) -> torch.nn.Parameter:
             try:
                 current = current[int(part)]
             except (IndexError, KeyError, TypeError) as exc:
-                raise ApplyError(f"cannot resolve parameter path {path!r} at index {part}") from exc
+                raise ApplyError(
+                    f"cannot resolve parameter path {path!r} at index {part}"
+                ) from exc
         else:
             if not hasattr(current, part):
-                raise ApplyError(f"cannot resolve parameter path {path!r}: missing {part!r}")
+                raise ApplyError(
+                    f"cannot resolve parameter path {path!r}: missing {part!r}"
+                )
             current = getattr(current, part)
     parameter = getattr(current, parts[-1], None)
     if not isinstance(parameter, torch.nn.Parameter):
@@ -54,17 +58,31 @@ def apply_parameter_updates(
     staged: list[tuple[str, torch.nn.Parameter, torch.Tensor]] = []
     for update in updates:
         if not update.source_description.strip():
-            raise ApplyError(f"source_description is empty for {update.target_parameter}")
+            raise ApplyError(
+                f"source_description is empty for {update.target_parameter}"
+            )
         parameter = _resolve_parameter(model, update.target_parameter)
-        value = update.value if isinstance(update.value, torch.Tensor) else torch.as_tensor(update.value)
+        value = (
+            update.value
+            if isinstance(update.value, torch.Tensor)
+            else torch.as_tensor(update.value)
+        )
         if tuple(value.shape) != tuple(parameter.shape):
             raise ApplyError(
                 f"shape mismatch for {update.target_parameter}: got {tuple(value.shape)}, "
                 f"expected {tuple(parameter.shape)}"
             )
         if not bool(torch.isfinite(value).all()):
-            raise ApplyError(f"non-finite transported tensor for {update.target_parameter}")
-        staged.append((update.target_parameter, parameter, value.to(parameter.device, parameter.dtype)))
+            raise ApplyError(
+                f"non-finite transported tensor for {update.target_parameter}"
+            )
+        staged.append(
+            (
+                update.target_parameter,
+                parameter,
+                value.to(parameter.device, parameter.dtype),
+            )
+        )
 
     # Validate the complete bundle before mutating any model parameter.
     for _path, parameter, value in staged:

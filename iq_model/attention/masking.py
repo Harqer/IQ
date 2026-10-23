@@ -102,8 +102,10 @@ def prepare_causal_attention(
 
     if position_ids is None:
         if docs is None:
-            positions = torch.arange(sequence_length, device=device).unsqueeze(0).expand(
-                batch_size, sequence_length
+            positions = (
+                torch.arange(sequence_length, device=device)
+                .unsqueeze(0)
+                .expand(batch_size, sequence_length)
             )
         else:
             positions = _positions_from_documents(docs, valid_tokens).to(device)
@@ -126,9 +128,7 @@ def prepare_causal_attention(
         ).tril()
         allowed = causal.unsqueeze(0).unsqueeze(0)
         allowed = (
-            allowed
-            & valid_tokens[:, None, None, :]
-            & valid_tokens[:, None, :, None]
+            allowed & valid_tokens[:, None, None, :] & valid_tokens[:, None, :, None]
         )
         if docs is not None:
             same_document = docs[:, None, :, None] == docs[:, None, None, :]

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from pathlib import Path
-from typing import Mapping
 import json
+from collections.abc import Mapping
+from pathlib import Path
 
 from iq_model import HybridLayerType, IQHybridConfig
 
@@ -29,14 +29,10 @@ def load_safetensors_weight_map(
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        raise GLM53ShardPlanError(
-            f"invalid safetensors index: {path}"
-        ) from exc
+        raise GLM53ShardPlanError(f"invalid safetensors index: {path}") from exc
     weight_map = data.get("weight_map")
     if not isinstance(weight_map, dict) or not weight_map:
-        raise GLM53ShardPlanError(
-            "safetensors index is missing weight_map"
-        )
+        raise GLM53ShardPlanError("safetensors index is missing weight_map")
     return {str(k): str(v) for k, v in weight_map.items()}
 
 
@@ -103,6 +99,8 @@ def _bootstrap_tensor_keys(
                 }
             )
     return keys
+
+
 def plan_glm53_bootstrap_shards(
     *,
     config_path: str | Path,

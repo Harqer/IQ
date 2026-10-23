@@ -243,9 +243,7 @@ class StableLatentMoE(nn.Module):
         raw_router_scores: torch.Tensor,
     ) -> torch.Tensor:
         if raw_router_scores.shape[-1] != self.config.num_experts:
-            raise ValueError(
-                "raw_router_scores final dimension must equal num_experts"
-            )
+            raise ValueError("raw_router_scores final dimension must equal num_experts")
         scores = raw_router_scores.reshape(
             -1,
             self.config.num_experts,
@@ -307,7 +305,5 @@ class StableLatentMoELayer(nn.Module):
 
     def forward(self, x: torch.Tensor) -> StableLatentMoEOutput:
         output = self.moe(self.norm(x))
-        output.hidden_states = (
-            x + self.residual_dropout(output.hidden_states)
-        )
+        output.hidden_states = x + self.residual_dropout(output.hidden_states)
         return output

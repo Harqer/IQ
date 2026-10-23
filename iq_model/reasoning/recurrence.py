@@ -35,9 +35,7 @@ class ReasoningRecurrenceConfig:
         }
         bad = [name for name, value in integer_fields.items() if int(value) <= 0]
         if bad:
-            raise ValueError(
-                f"positive integer fields required: {', '.join(bad)}"
-            )
+            raise ValueError(f"positive integer fields required: {', '.join(bad)}")
         if self.min_steps > self.max_steps:
             raise ValueError("min_steps cannot exceed max_steps")
         if not 0.0 < self.halt_threshold < 1.0:
@@ -86,9 +84,7 @@ class SpectralDepthEncoding(nn.Module):
         frequency_index = torch.arange(half, dtype=torch.float32)
         denominator = max(1, half - 1)
         frequencies = torch.exp(
-            -torch.log(torch.tensor(float(base)))
-            * frequency_index
-            / float(denominator)
+            -torch.log(torch.tensor(float(base))) * frequency_index / float(denominator)
         )
         self.dim = int(dim)
         self.register_buffer("frequencies", frequencies, persistent=False)
@@ -151,9 +147,7 @@ class ReasoningStateTransition(nn.Module):
         if state.shape != context_state.shape:
             raise ValueError("state and context_state must have identical shape")
         if state.ndim != 2 or state.shape[-1] != self.config.state_dim:
-            raise ValueError(
-                "reasoning state must have shape [batch, state_dim]"
-            )
+            raise ValueError("reasoning state must have shape [batch, state_dim]")
         if step <= 0:
             raise ValueError("step must be positive")
 
@@ -203,9 +197,7 @@ class AdaptiveHaltingHead(nn.Module):
         if state.ndim != 2:
             raise ValueError("state must have shape [batch, state_dim]")
         if relative_state_delta.shape != (state.shape[0],):
-            raise ValueError(
-                "relative_state_delta must have shape [batch]"
-            )
+            raise ValueError("relative_state_delta must have shape [batch]")
 
         zeros = torch.zeros_like(relative_state_delta)
         verifier_feature = (
@@ -259,18 +251,14 @@ class ReasoningStateInjector(nn.Module):
         token_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
         if hidden_states.ndim != 3:
-            raise ValueError(
-                "hidden_states must have shape [batch, sequence, hidden]"
-            )
+            raise ValueError("hidden_states must have shape [batch, sequence, hidden]")
         if hidden_states.shape[-1] != self.hidden_size:
             raise ValueError("hidden_states final dimension does not match hidden_size")
         if reasoning_state.shape != (
             hidden_states.shape[0],
             self.state_dim,
         ):
-            raise ValueError(
-                "reasoning_state must have shape [batch, state_dim]"
-            )
+            raise ValueError("reasoning_state must have shape [batch, state_dim]")
         injection = self.proj(reasoning_state).unsqueeze(1)
         if token_mask is not None:
             if token_mask.shape != hidden_states.shape[:2]:
@@ -316,9 +304,7 @@ class ReasoningRecurrence(nn.Module):
         attention_mask: torch.Tensor | None,
     ) -> torch.Tensor:
         if hidden_states.ndim != 3:
-            raise ValueError(
-                "hidden_states must have shape [batch, sequence, hidden]"
-            )
+            raise ValueError("hidden_states must have shape [batch, sequence, hidden]")
         if hidden_states.shape[-1] != self.config.hidden_size:
             raise ValueError(
                 "hidden_states final dimension does not match configured hidden_size"
@@ -327,9 +313,7 @@ class ReasoningRecurrence(nn.Module):
         if attention_mask is None:
             return self.context_norm(hidden_states).mean(dim=1)
         if attention_mask.shape != (batch, sequence):
-            raise ValueError(
-                f"attention_mask must have shape {(batch, sequence)}"
-            )
+            raise ValueError(f"attention_mask must have shape {(batch, sequence)}")
         valid = attention_mask.to(
             device=hidden_states.device,
             dtype=torch.bool,
@@ -354,9 +338,7 @@ class ReasoningRecurrence(nn.Module):
         if document_ids is None:
             return
         if document_ids.shape != (batch, sequence):
-            raise ValueError(
-                f"document_ids must have shape {(batch, sequence)}"
-            )
+            raise ValueError(f"document_ids must have shape {(batch, sequence)}")
         if document_ids.dtype not in (torch.int32, torch.int64):
             raise ValueError("document_ids must be integer typed")
         valid = (
@@ -407,9 +389,7 @@ class ReasoningRecurrence(nn.Module):
         require_verifier_stability: bool = False,
     ) -> ReasoningRecurrenceOutput:
         if hidden_states.ndim != 3:
-            raise ValueError(
-                "hidden_states must have shape [batch, sequence, hidden]"
-            )
+            raise ValueError("hidden_states must have shape [batch, sequence, hidden]")
         batch, sequence, _ = hidden_states.shape
         self._validate_document_isolation(
             document_ids,
@@ -454,9 +434,7 @@ class ReasoningRecurrence(nn.Module):
                     "reasoning verifier context_dim must match reasoning hidden_size"
                 )
         elif require_verifier_stability:
-            raise ValueError(
-                "require_verifier_stability needs a reasoning verifier"
-            )
+            raise ValueError("require_verifier_stability needs a reasoning verifier")
 
         halt_probabilities: list[torch.Tensor] = []
         relative_deltas: list[torch.Tensor] = []
@@ -512,14 +490,10 @@ class ReasoningRecurrence(nn.Module):
                 state,
                 delta,
                 verifier_score=(
-                    verifier_score.detach()
-                    if verifier_score is not None
-                    else None
+                    verifier_score.detach() if verifier_score is not None else None
                 ),
                 verifier_delta=(
-                    verifier_delta.detach()
-                    if verifier_delta is not None
-                    else None
+                    verifier_delta.detach() if verifier_delta is not None else None
                 ),
             )
             if step < self.config.min_steps:
@@ -530,9 +504,7 @@ class ReasoningRecurrence(nn.Module):
             halt_probabilities.append(halt_probability)
 
             if not self.training and step >= self.config.min_steps:
-                converged = (
-                    halt_probability >= self.config.halt_threshold
-                ) & (
+                converged = (halt_probability >= self.config.halt_threshold) & (
                     delta <= self.config.state_delta_epsilon
                 )
                 if require_verifier_stability:
@@ -567,9 +539,7 @@ class ReasoningRecurrence(nn.Module):
                     remaining = remaining - weight
                 weights.append(weight)
             weight_stack = torch.stack(weights, dim=1)
-            final_state = (
-                state_stack * weight_stack.unsqueeze(-1)
-            ).sum(dim=1)
+            final_state = (state_stack * weight_stack.unsqueeze(-1)).sum(dim=1)
         else:
             weight_stack = torch.zeros(
                 (
@@ -588,29 +558,17 @@ class ReasoningRecurrence(nn.Module):
             device=weight_stack.device,
             dtype=weight_stack.dtype,
         )
-        expected_steps = (
-            weight_stack * step_numbers.unsqueeze(0)
-        ).sum(dim=-1).mean()
+        expected_steps = (weight_stack * step_numbers.unsqueeze(0)).sum(dim=-1).mean()
 
         verifier_trace = (
-            torch.stack(verifier_scores, dim=1)
-            if verifier_scores
-            else None
+            torch.stack(verifier_scores, dim=1) if verifier_scores else None
         )
         verifier_delta_trace = (
-            torch.stack(verifier_deltas, dim=1)
-            if verifier_deltas
-            else None
+            torch.stack(verifier_deltas, dim=1) if verifier_deltas else None
         )
-        energy_trace = (
-            torch.stack(energies, dim=1)
-            if energies
-            else None
-        )
+        energy_trace = torch.stack(energies, dim=1) if energies else None
         energy_delta_trace = (
-            torch.stack(energy_deltas, dim=1)
-            if energy_deltas
-            else None
+            torch.stack(energy_deltas, dim=1) if energy_deltas else None
         )
 
         return ReasoningRecurrenceOutput(

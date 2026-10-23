@@ -1,13 +1,12 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from importlib import metadata
-import json
 from typing import Any
 
 import torch
 from torch import nn
-
 
 MAMBA3_UPSTREAM_COMMIT = "e9594ce1c732d97440f0332fdc43170a2294dbfa"
 
@@ -55,7 +54,7 @@ class Mamba3MIMOConfig:
         return int(self.expand * self.d_model)
 
     @classmethod
-    def production_4096x32(cls) -> "Mamba3MIMOConfig":
+    def production_4096x32(cls) -> Mamba3MIMOConfig:
         return cls(
             d_model=4096,
             num_layers=32,
@@ -92,9 +91,7 @@ def recommended_mamba3_chunk_size(
     dtype: torch.dtype,
 ) -> int:
     if mimo_rank < 2:
-        raise Mamba3MIMORuntimeError(
-            "IQ requires Mamba-3 MIMO; mimo_rank must be >= 2"
-        )
+        raise Mamba3MIMORuntimeError("IQ requires Mamba-3 MIMO; mimo_rank must be >= 2")
     base = 64 if dtype is torch.bfloat16 else 32
     if base % mimo_rank != 0:
         raise Mamba3MIMORuntimeError(
@@ -132,12 +129,14 @@ def inspect_mamba3_mimo_runtime(
     version: str | None = None
     mimo_available = False
     try:
-        import mamba_ssm
-        from mamba_ssm.modules import mamba3 as mamba3_module
+        import mamba_ssm  # pyright: ignore[reportMissingImports]
+        from mamba_ssm.modules import mamba3 as mamba3_module  # pyright: ignore[reportMissingImports]
 
         version = str(getattr(mamba_ssm, "__version__", "unknown"))
-        mimo_available = getattr(mamba3_module, "mamba3_mimo_combined", None) is not None
-    except Exception:
+        mimo_available = (
+            getattr(mamba3_module, "mamba3_mimo_combined", None) is not None
+        )
+    except Exception:  # noqa: BLE001 - optional CUDA runtime probe
         mimo_available = False
 
     cuda_available = torch.cuda.is_available()
@@ -202,14 +201,20 @@ class Mamba3MIMOState(nn.Module):
                 f"layer_idx must be in [0, {config.num_layers}), got {layer_idx}"
             )
 
-        device_obj = torch.device(device) if device is not None else (
-            torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+        device_obj = (
+            torch.device(device)
+            if device is not None
+            else (
+                torch.device("cuda")
+                if torch.cuda.is_available()
+                else torch.device("cpu")
+            )
         )
         require_mamba3_mimo_runtime(device_obj)
 
         try:
-            from mamba_ssm import Mamba3
-            from mamba_ssm.modules import mamba3 as mamba3_module
+            from mamba_ssm import Mamba3  # pyright: ignore[reportMissingImports]
+            from mamba_ssm.modules import mamba3 as mamba3_module  # pyright: ignore[reportMissingImports]
         except Exception as exc:
             raise Mamba3MIMORuntimeError(
                 "failed to import pinned upstream Mamba-3"

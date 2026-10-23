@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from typing import Any, Iterable, Mapping
+from typing import Any
 
 import numpy as np
 
@@ -221,6 +222,7 @@ def latent_codec_weights(
         raise GLM53MoETransformError("latent codec contains non-finite values")
     return latent_down, latent_up
 
+
 def _transport_expert(
     expert: ExpertWeights,
     *,
@@ -328,9 +330,7 @@ def transform_glm53_moe(
     if router.ndim != 2:
         raise GLM53MoETransformError("router weight must be rank-2")
     if len(experts) != router.shape[0]:
-        raise GLM53MoETransformError(
-            "router row count must equal routed expert count"
-        )
+        raise GLM53MoETransformError("router row count must equal routed expert count")
     if source_bias.shape != (router.shape[0],):
         raise GLM53MoETransformError(
             "routing_bias must have one entry per donor expert"
@@ -349,9 +349,7 @@ def transform_glm53_moe(
 
     selection = np.asarray(selected)
     selected_router = router[selection]
-    target_router = selected_router @ np.linalg.pinv(
-        source_input.matrix
-    ).T
+    target_router = selected_router @ np.linalg.pinv(source_input.matrix).T
     target_bias = source_bias[selection].copy()
     target_bias -= target_bias.mean()
     latent_down, latent_up = latent_codec_weights(

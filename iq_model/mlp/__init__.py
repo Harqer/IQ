@@ -6,7 +6,6 @@ from .latent_moe import (
     StableLatentMoELayer,
     StableLatentMoEOutput,
 )
-from .situ import SiTUAndMul
 from .moe import (
     MoEConfigError,
     MoEOutput,
@@ -15,6 +14,7 @@ from .moe import (
     RoutedSwiGLUMoELayer,
     SwiGLUExpert,
 )
+from .situ import SiTUAndMul
 from .swiglu import SwiGLU
 
 __all__ = [

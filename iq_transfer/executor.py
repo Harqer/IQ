@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any
 
 import numpy as np
 import torch
@@ -59,7 +60,11 @@ def _numpy(value: Any) -> np.ndarray:
 
 
 def _target_parameter_path(assignment: TargetAssignment) -> str:
-    return assignment.target_module_path if assignment.target_module_path.endswith(".weight") else assignment.target_module_path + ".weight"
+    return (
+        assignment.target_module_path
+        if assignment.target_module_path.endswith(".weight")
+        else assignment.target_module_path + ".weight"
+    )
 
 
 def _operator_index(runtime: DonorRuntime) -> dict[tuple[int, str], OperatorRef]:
@@ -69,7 +74,9 @@ def _operator_index(runtime: DonorRuntime) -> dict[tuple[int, str], OperatorRef]
     for ref in runtime.inspector.operators(runtime.source):
         key = (ref.layer, ref.role)
         if key in result:
-            raise ExecutionError(f"duplicate donor operator: layer={ref.layer} role={ref.role}")
+            raise ExecutionError(
+                f"duplicate donor operator: layer={ref.layer} role={ref.role}"
+            )
         result[key] = ref
     return result
 
@@ -82,9 +89,15 @@ def _source_value(
     if assignment.source_operator is None:
         raise ExecutionError("donor-backed assignment is missing source_operator")
     if assignment.source_layer is None:
-        if assignment.source_operator not in runtime.source.keys():
-            raise ExecutionError(f"missing raw donor tensor: {assignment.source_operator}")
-        return runtime.source.get(assignment.source_operator), assignment.source_operator, None
+        if assignment.source_operator not in runtime.source:
+            raise ExecutionError(
+                f"missing raw donor tensor: {assignment.source_operator}"
+            )
+        return (
+            runtime.source.get(assignment.source_operator),
+            assignment.source_operator,
+            None,
+        )
 
     key = (assignment.source_layer, assignment.source_operator)
     try:
@@ -99,7 +112,9 @@ def _source_value(
     return ref.materialize(runtime.source), ref.source_key, slice_desc
 
 
-def _require_map(maps: Mapping[str, CoordinateMap], map_id: str | None, role: str) -> CoordinateMap:
+def _require_map(
+    maps: Mapping[str, CoordinateMap], map_id: str | None, role: str
+) -> CoordinateMap:
     if not map_id:
         raise ExecutionError(f"{role} coordinate map id is required")
     try:
@@ -145,7 +160,9 @@ def execute_transport_plan(
     config = getattr(model, "config", None)
     config_hash = getattr(config, "fingerprint", None)
     if not isinstance(config_hash, str) or config_hash != plan.iq_config_hash:
-        raise ExecutionError("recipient model config fingerprint does not match the transport plan")
+        raise ExecutionError(
+            "recipient model config fingerprint does not match the transport plan"
+        )
 
     runtime_by_id: dict[str, DonorRuntime] = {}
     for runtime in donors:
@@ -165,7 +182,10 @@ def execute_transport_plan(
                 f"donor fingerprint mismatch for {donor_id}: expected {expected_fingerprint}, got {actual}"
             )
 
-    operator_indexes = {donor_id: _operator_index(runtime) for donor_id, runtime in runtime_by_id.items()}
+    operator_indexes = {
+        donor_id: _operator_index(runtime)
+        for donor_id, runtime in runtime_by_id.items()
+    }
     updates: list[ParameterUpdate] = []
     provenance: list[ParameterProvenance] = []
     deferred_functional: list[str] = []
@@ -198,20 +218,30 @@ def execute_transport_plan(
             map_ids: tuple[str, ...] = ()
         elif assignment.transfer_method is TransferMethod.OPERATOR_TRANSPORT:
             if assignment.target_slot is TargetSlot.EMBEDDING:
-                output_map = _require_map(coordinate_maps, assignment.output_map_id, "embedding output")
+                output_map = _require_map(
+                    coordinate_maps, assignment.output_map_id, "embedding output"
+                )
                 value = _transport_embedding(source_value, output_map)
                 map_ids = (assignment.output_map_id,)  # type: ignore[arg-type]
             elif assignment.target_slot is TargetSlot.LM_HEAD:
-                input_map = _require_map(coordinate_maps, assignment.input_map_id, "LM-head input")
+                input_map = _require_map(
+                    coordinate_maps, assignment.input_map_id, "LM-head input"
+                )
                 value = _transport_lm_head(source_value, input_map)
                 map_ids = (assignment.input_map_id,)  # type: ignore[arg-type]
             else:
-                input_map = _require_map(coordinate_maps, assignment.input_map_id, "operator input")
-                output_map = _require_map(coordinate_maps, assignment.output_map_id, "operator output")
+                input_map = _require_map(
+                    coordinate_maps, assignment.input_map_id, "operator input"
+                )
+                output_map = _require_map(
+                    coordinate_maps, assignment.output_map_id, "operator output"
+                )
                 value = transport_linear(source_value, input_map, output_map)
                 map_ids = (assignment.input_map_id, assignment.output_map_id)  # type: ignore[arg-type]
         else:
-            raise ExecutionError(f"unsupported transfer method: {assignment.transfer_method.value}")
+            raise ExecutionError(
+                f"unsupported transfer method: {assignment.transfer_method.value}"
+            )
 
         if tuple(value.shape) != tuple(assignment.target_shape):
             raise ExecutionError(

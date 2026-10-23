@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import json
+from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, Iterable, Mapping
-import json
+from typing import Any
 
 from .donor import DonorConfig, TensorSource
 
@@ -59,11 +60,12 @@ class DonorManifest:
         Path(path).write_text(self.to_json() + "\n", encoding="utf-8")
 
     @classmethod
-    def from_json(cls, path: str | Path) -> "DonorManifest":
+    def from_json(cls, path: str | Path) -> DonorManifest:
         data = json.loads(Path(path).read_text(encoding="utf-8"))
         data["files"] = tuple(CheckpointFile(**item) for item in data["files"])
         data["tensors"] = tuple(
-            TensorInventoryItem(key=item["key"], shape=tuple(item["shape"])) for item in data["tensors"]
+            TensorInventoryItem(key=item["key"], shape=tuple(item["shape"]))
+            for item in data["tensors"]
         )
         return cls(**data)
 
@@ -80,14 +82,21 @@ def _hash_file(path: Path, chunk_size: int = 8 * 1024 * 1024) -> str:
 
 
 def _stable_hash_mapping(data: Mapping[str, Any]) -> str:
-    payload = json.dumps(data, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    payload = json.dumps(
+        data, sort_keys=True, separators=(",", ":"), default=str
+    ).encode("utf-8")
     return sha256(payload).hexdigest()
 
 
-def _checkpoint_hash(files: Iterable[CheckpointFile], tensors: tuple[TensorInventoryItem, ...]) -> str:
+def _checkpoint_hash(
+    files: Iterable[CheckpointFile], tensors: tuple[TensorInventoryItem, ...]
+) -> str:
     file_list = tuple(files)
     if file_list:
-        data = [{"name": x.name, "size_bytes": x.size_bytes, "sha256": x.sha256} for x in file_list]
+        data = [
+            {"name": x.name, "size_bytes": x.size_bytes, "sha256": x.sha256}
+            for x in file_list
+        ]
     else:
         data = [{"key": x.key, "shape": list(x.shape)} for x in tensors]
     return _stable_hash_mapping({"inventory": data})
@@ -132,10 +141,14 @@ def build_donor_manifest(
             path = Path(path_like)
             if not path.is_file():
                 raise ManifestError(f"checkpoint file does not exist: {path}")
-            records.append(CheckpointFile(path.name, path.stat().st_size, _hash_file(path)))
+            records.append(
+                CheckpointFile(path.name, path.stat().st_size, _hash_file(path))
+            )
         files = tuple(sorted(records, key=lambda x: x.name))
     elif not allow_metadata_only:
-        raise ManifestError("production donor manifests require a source exposing checkpoint_files()")
+        raise ManifestError(
+            "production donor manifests require a source exposing checkpoint_files()"
+        )
 
     config_hash = _stable_hash_mapping(config.to_mapping())
     return DonorManifest(

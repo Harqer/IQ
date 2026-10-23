@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any
+
 import numpy as np
 
 
@@ -29,7 +31,9 @@ class MeasurementPlan:
         if self.sample_count <= 0 or self.measurements <= 0:
             raise ShadowError("sample_count and measurements must be positive")
         rng = np.random.default_rng(self.seed)
-        signs = rng.integers(0, 2, size=(self.measurements, self.sample_count), dtype=np.int8)
+        signs = rng.integers(
+            0, 2, size=(self.measurements, self.sample_count), dtype=np.int8
+        )
         return (2.0 * signs.astype(np.float64) - 1.0) / np.sqrt(self.sample_count)
 
 
@@ -41,7 +45,9 @@ class FunctionalShadow:
     feature_count: int
 
 
-def extract_shadow(activations: Any, plan: MeasurementPlan, *, layer: int) -> FunctionalShadow:
+def extract_shadow(
+    activations: Any, plan: MeasurementPlan, *, layer: int
+) -> FunctionalShadow:
     x = _numpy(activations)
     if x.ndim < 2:
         raise ShadowError("activations must have shape [samples, ..., features]")
@@ -63,7 +69,9 @@ def shadow_distance(a: FunctionalShadow, b: FunctionalShadow) -> float:
         raise ShadowError("shadows must use the same measurement plan")
     diff = a.observables - b.observables
     scale = np.linalg.norm(a.observables) * np.linalg.norm(b.observables)
-    cosine_penalty = 1.0 if scale == 0 else 1.0 - float(np.dot(a.observables, b.observables) / scale)
+    cosine_penalty = (
+        1.0 if scale == 0 else 1.0 - float(np.dot(a.observables, b.observables) / scale)
+    )
     mse = float(np.mean(diff * diff))
     return mse + cosine_penalty
 
@@ -82,7 +90,9 @@ def match_layers_monotonic(
     s_layers = sorted(source)
     t_layers = sorted(target)
     if len(s_layers) < len(t_layers):
-        raise ShadowError("monotonic matcher requires at least as many source layers as target layers")
+        raise ShadowError(
+            "monotonic matcher requires at least as many source layers as target layers"
+        )
     ns, nt = len(s_layers), len(t_layers)
     costs = np.empty((nt, ns), dtype=np.float64)
     for ti, t in enumerate(t_layers):
@@ -93,7 +103,9 @@ def match_layers_monotonic(
             if allowed is not None and s not in allowed:
                 costs[ti, si] = float("inf")
             else:
-                costs[ti, si] = shadow_distance(target[t], source[s]) + depth_prior * abs(t_depth - s_depth)
+                costs[ti, si] = shadow_distance(
+                    target[t], source[s]
+                ) + depth_prior * abs(t_depth - s_depth)
 
     inf = float("inf")
     dp = np.full((nt, ns), inf, dtype=np.float64)

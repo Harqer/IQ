@@ -1,21 +1,37 @@
 from __future__ import annotations
 
+import json
+import math
+from collections.abc import Mapping
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, Mapping
-import json
-import math
+from typing import Any
 
 import torch
 
-
 GPT_OSS_20B_REPO = "openai/gpt-oss-20b"
 GPT_OSS_20B_REVISION = "0d1f28dce7d3a8794b20345f496dfabb28d51e70"
-GPT_OSS_20B_ORIGINAL_SHA256 = "3340a61d1a0391e8c5b5d3463d18d4c48129a84bbc04a554c762c99020aa06ed"
+GPT_OSS_20B_ORIGINAL_SHA256 = (
+    "3340a61d1a0391e8c5b5d3463d18d4c48129a84bbc04a554c762c99020aa06ed"
+)
 FP4_VALUES = (
-    +0.0, +0.5, +1.0, +1.5, +2.0, +3.0, +4.0, +6.0,
-    -0.0, -0.5, -1.0, -1.5, -2.0, -3.0, -4.0, -6.0,
+    +0.0,
+    +0.5,
+    +1.0,
+    +1.5,
+    +2.0,
+    +3.0,
+    +4.0,
+    +6.0,
+    -0.0,
+    -0.5,
+    -1.0,
+    -1.5,
+    -2.0,
+    -3.0,
+    -4.0,
+    -6.0,
 )
 
 
@@ -43,7 +59,7 @@ class GptOss20BConfig:
     rope_ntk_beta: float
 
     @classmethod
-    def from_mapping(cls, data: Mapping[str, Any]) -> "GptOss20BConfig":
+    def from_mapping(cls, data: Mapping[str, Any]) -> GptOss20BConfig:
         try:
             result = cls(
                 num_hidden_layers=int(data["num_hidden_layers"]),
@@ -69,7 +85,7 @@ class GptOss20BConfig:
         return result
 
     @classmethod
-    def from_json(cls, path: str | Path) -> "GptOss20BConfig":
+    def from_json(cls, path: str | Path) -> GptOss20BConfig:
         try:
             data = json.loads(Path(path).read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
@@ -190,9 +206,7 @@ class GptOss20BOriginalCheckpoint:
         blocks_name = base_name + ".blocks"
         scales_name = base_name + ".scales"
         if blocks_name not in self._keys or scales_name not in self._keys:
-            raise GptOss20BError(
-                f"missing MXFP4 blocks/scales for {base_name}"
-            )
+            raise GptOss20BError(f"missing MXFP4 blocks/scales for {base_name}")
         blocks = self.tensor(blocks_name)
         scales = self.tensor(scales_name).to(torch.int32) - 127
         if blocks.shape[:-1] != scales.shape:
@@ -270,13 +284,9 @@ class GptOss20BOriginalCheckpoint:
             self.config.intermediate_size,
         )
         if tuple(mlp1.shape) != expected_mlp1:
-            raise GptOss20BError(
-                f"unexpected mlp1 shape {tuple(mlp1.shape)}"
-            )
+            raise GptOss20BError(f"unexpected mlp1 shape {tuple(mlp1.shape)}")
         if tuple(mlp2.shape) != expected_mlp2:
-            raise GptOss20BError(
-                f"unexpected mlp2 shape {tuple(mlp2.shape)}"
-            )
+            raise GptOss20BError(f"unexpected mlp2 shape {tuple(mlp2.shape)}")
         return {
             "norm": self.tensor(f"{prefix}.norm.scale"),
             "router_weight": self.tensor(f"{prefix}.gate.weight"),

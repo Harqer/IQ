@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
-from hashlib import sha256
-import json
 
 from .checkpoint import SafetensorsSource
 from .donor import DonorError

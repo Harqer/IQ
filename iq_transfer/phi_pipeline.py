@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any
 
 from .manifest import DonorManifest
 from .plan import TransportPlan
@@ -23,9 +24,13 @@ class PhiLayerMapIds:
     mlp_out: str
 
     def __post_init__(self) -> None:
-        empty = [name for name, value in self.__dict__.items() if not str(value).strip()]
+        empty = [
+            name for name, value in self.__dict__.items() if not str(value).strip()
+        ]
         if empty:
-            raise PhiPipelineError(f"Phi layer map ids must be non-empty: {', '.join(empty)}")
+            raise PhiPipelineError(
+                f"Phi layer map ids must be non-empty: {', '.join(empty)}"
+            )
 
 
 @dataclass(frozen=True)
@@ -56,9 +61,13 @@ class PhiDensePlanSpec:
             "final_residual_map_id": self.final_residual_map_id,
             "plan_id": self.plan_id,
         }
-        empty = [name for name, value in required_text.items() if not str(value).strip()]
+        empty = [
+            name for name, value in required_text.items() if not str(value).strip()
+        ]
         if empty:
-            raise PhiPipelineError(f"Phi plan fields must be non-empty: {', '.join(empty)}")
+            raise PhiPipelineError(
+                f"Phi plan fields must be non-empty: {', '.join(empty)}"
+            )
         ints = {
             "recipient_vocab_size": self.recipient_vocab_size,
             "recipient_hidden_size": self.recipient_hidden_size,
@@ -69,29 +78,45 @@ class PhiDensePlanSpec:
         }
         bad = [name for name, value in ints.items() if int(value) <= 0]
         if bad:
-            raise PhiPipelineError(f"positive recipient dimensions required: {', '.join(bad)}")
-        if self.recipient_num_attention_heads * self.recipient_head_dim != self.recipient_hidden_size:
-            raise PhiPipelineError("recipient Q projection width must equal hidden_size")
+            raise PhiPipelineError(
+                f"positive recipient dimensions required: {', '.join(bad)}"
+            )
+        if (
+            self.recipient_num_attention_heads * self.recipient_head_dim
+            != self.recipient_hidden_size
+        ):
+            raise PhiPipelineError(
+                "recipient Q projection width must equal hidden_size"
+            )
         if self.recipient_num_attention_heads % self.recipient_num_key_value_heads != 0:
             raise PhiPipelineError("recipient Q heads must be divisible by KV heads")
 
         mapping = dict(self.layer_mapping)
         maps = dict(self.layer_maps)
         if len(mapping) != len(self.layer_mapping):
-            raise PhiPipelineError("target layer mapping contains duplicate target layers")
+            raise PhiPipelineError(
+                "target layer mapping contains duplicate target layers"
+            )
         if len(maps) != len(self.layer_maps):
-            raise PhiPipelineError("target layer map ids contain duplicate target layers")
+            raise PhiPipelineError(
+                "target layer map ids contain duplicate target layers"
+            )
         if set(mapping) != set(maps):
-            raise PhiPipelineError("every mapped target layer must have exactly one PhiLayerMapIds record")
+            raise PhiPipelineError(
+                "every mapped target layer must have exactly one PhiLayerMapIds record"
+            )
         source_layers = [source for _, source in self.layer_mapping]
         if len(source_layers) != len(set(source_layers)):
-            raise PhiPipelineError("Phi proof requires unique donor layers per target layer")
+            raise PhiPipelineError(
+                "Phi proof requires unique donor layers per target layer"
+            )
         ordered_targets = sorted(mapping)
         ordered_sources = [mapping[target] for target in ordered_targets]
         if ordered_sources != sorted(ordered_sources):
             raise PhiPipelineError("Phi layer mapping must be monotonic")
         if ordered_sources and (
-            ordered_sources[0] < 0 or ordered_sources[-1] >= self.donor_manifest.num_layers
+            ordered_sources[0] < 0
+            or ordered_sources[-1] >= self.donor_manifest.num_layers
         ):
             raise PhiPipelineError("source layer mapping is outside donor layer range")
 
@@ -108,7 +133,9 @@ def _recipient_config_fields(config: Any) -> dict[str, int | str]:
     )
     missing = [name for name in fields if not hasattr(config, name)]
     if missing:
-        raise PhiPipelineError(f"recipient config is missing fields: {', '.join(missing)}")
+        raise PhiPipelineError(
+            f"recipient config is missing fields: {', '.join(missing)}"
+        )
     return {name: getattr(config, name) for name in fields}
 
 

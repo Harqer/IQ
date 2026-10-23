@@ -1,12 +1,21 @@
 from __future__ import annotations
 
-from .donor import DonorConfig, DonorError, LayerRef, OperatorRef, TensorSource, ValidationReport
+from typing import ClassVar
+
+from .donor import (
+    DonorConfig,
+    DonorError,
+    LayerRef,
+    OperatorRef,
+    TensorSource,
+    ValidationReport,
+)
 
 
 class Phi4Inspector:
     """Inspector for Phi-4 / Phi-4-mini checkpoints using the Phi3 fused tensor layout."""
 
-    SUPPORTED_MODEL_TYPES = {"phi3"}
+    SUPPORTED_MODEL_TYPES: ClassVar[set[str]] = {"phi3"}
 
     def __init__(self, config: DonorConfig) -> None:
         if config.model_type not in self.SUPPORTED_MODEL_TYPES:
@@ -22,7 +31,10 @@ class Phi4Inspector:
         return cls(DonorConfig.from_mapping(data))
 
     def layers(self) -> tuple[LayerRef, ...]:
-        return tuple(LayerRef(i, f"model.layers.{i}") for i in range(self.config.num_hidden_layers))
+        return tuple(
+            LayerRef(i, f"model.layers.{i}")
+            for i in range(self.config.num_hidden_layers)
+        )
 
     def validate_checkpoint(self, source: TensorSource) -> ValidationReport:
         try:
@@ -47,18 +59,64 @@ class Phi4Inspector:
 
             self._expect_matrix(source, qkv_key, expected_qkv, self.config.hidden_size)
             self._expect_matrix(source, o_key, self.config.hidden_size, q_rows)
-            self._expect_matrix(source, gate_up_key, expected_gate_up, self.config.hidden_size)
-            self._expect_matrix(source, down_key, self.config.hidden_size, self.config.intermediate_size)
+            self._expect_matrix(
+                source, gate_up_key, expected_gate_up, self.config.hidden_size
+            )
+            self._expect_matrix(
+                source, down_key, self.config.hidden_size, self.config.intermediate_size
+            )
 
             refs.extend(
                 [
-                    OperatorRef(layer, "attn.q", qkv_key, (q_rows, self.config.hidden_size), 0, q_rows),
-                    OperatorRef(layer, "attn.k", qkv_key, (kv_rows, self.config.hidden_size), q_rows, q_rows + kv_rows),
-                    OperatorRef(layer, "attn.v", qkv_key, (kv_rows, self.config.hidden_size), q_rows + kv_rows, expected_qkv),
-                    OperatorRef(layer, "attn.o", o_key, (self.config.hidden_size, q_rows)),
-                    OperatorRef(layer, "mlp.gate", gate_up_key, (self.config.intermediate_size, self.config.hidden_size), 0, self.config.intermediate_size),
-                    OperatorRef(layer, "mlp.up", gate_up_key, (self.config.intermediate_size, self.config.hidden_size), self.config.intermediate_size, expected_gate_up),
-                    OperatorRef(layer, "mlp.down", down_key, (self.config.hidden_size, self.config.intermediate_size)),
+                    OperatorRef(
+                        layer,
+                        "attn.q",
+                        qkv_key,
+                        (q_rows, self.config.hidden_size),
+                        0,
+                        q_rows,
+                    ),
+                    OperatorRef(
+                        layer,
+                        "attn.k",
+                        qkv_key,
+                        (kv_rows, self.config.hidden_size),
+                        q_rows,
+                        q_rows + kv_rows,
+                    ),
+                    OperatorRef(
+                        layer,
+                        "attn.v",
+                        qkv_key,
+                        (kv_rows, self.config.hidden_size),
+                        q_rows + kv_rows,
+                        expected_qkv,
+                    ),
+                    OperatorRef(
+                        layer, "attn.o", o_key, (self.config.hidden_size, q_rows)
+                    ),
+                    OperatorRef(
+                        layer,
+                        "mlp.gate",
+                        gate_up_key,
+                        (self.config.intermediate_size, self.config.hidden_size),
+                        0,
+                        self.config.intermediate_size,
+                    ),
+                    OperatorRef(
+                        layer,
+                        "mlp.up",
+                        gate_up_key,
+                        (self.config.intermediate_size, self.config.hidden_size),
+                        self.config.intermediate_size,
+                        expected_gate_up,
+                    ),
+                    OperatorRef(
+                        layer,
+                        "mlp.down",
+                        down_key,
+                        (self.config.hidden_size, self.config.intermediate_size),
+                    ),
                 ]
             )
         return tuple(refs)
@@ -70,4 +128,6 @@ class Phi4Inspector:
             raise DonorError(f"missing Phi-4 checkpoint tensor: {key}")
         shape = source.shape(key)
         if shape != (rows, cols):
-            raise DonorError(f"unexpected shape for {key}: got {shape}, expected {(rows, cols)}")
+            raise DonorError(
+                f"unexpected shape for {key}: got {shape}, expected {(rows, cols)}"
+            )

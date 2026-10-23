@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, Mapping
-import json
+from typing import Any
 
 from .slots import TargetAssignment, TargetRegistry, TargetSlot, TransferMethod
 
@@ -26,7 +27,9 @@ def _assignment_to_mapping(assignment: TargetAssignment) -> dict[str, Any]:
         "output_map_id": assignment.output_map_id,
         "initialization_version": assignment.initialization_version,
         "artifact_hashes": list(assignment.artifact_hashes),
-        "verification_metrics": [[name, value] for name, value in assignment.verification_metrics],
+        "verification_metrics": [
+            [name, value] for name, value in assignment.verification_metrics
+        ],
     }
 
 
@@ -37,13 +40,18 @@ def _assignment_from_mapping(data: Mapping[str, Any]) -> TargetAssignment:
         target_shape=tuple(int(x) for x in data["target_shape"]),
         transfer_method=TransferMethod(str(data["transfer_method"])),
         source_donor_id=data.get("source_donor_id"),
-        source_layer=int(data["source_layer"]) if data.get("source_layer") is not None else None,
+        source_layer=int(data["source_layer"])
+        if data.get("source_layer") is not None
+        else None,
         source_operator=data.get("source_operator"),
         input_map_id=data.get("input_map_id"),
         output_map_id=data.get("output_map_id"),
         initialization_version=str(data.get("initialization_version", "1")),
         artifact_hashes=tuple(str(x) for x in data.get("artifact_hashes", ())),
-        verification_metrics=tuple((str(name), float(value)) for name, value in data.get("verification_metrics", ())),
+        verification_metrics=tuple(
+            (str(name), float(value))
+            for name, value in data.get("verification_metrics", ())
+        ),
     )
 
 
@@ -66,7 +74,9 @@ class TransportPlan:
         }
         empty = [name for name, value in required.items() if not str(value).strip()]
         if empty:
-            raise PlanError(f"transport-plan fields must be non-empty: {', '.join(empty)}")
+            raise PlanError(
+                f"transport-plan fields must be non-empty: {', '.join(empty)}"
+            )
         donor_ids = [donor_id for donor_id, _ in self.donor_fingerprints]
         if len(donor_ids) != len(set(donor_ids)):
             raise PlanError("donor ids must be unique")
@@ -77,7 +87,10 @@ class TransportPlan:
         registry = TargetRegistry(list(self.assignments))
         known = set(donor_ids)
         for assignment in registry.assignments():
-            if assignment.source_donor_id is not None and assignment.source_donor_id not in known:
+            if (
+                assignment.source_donor_id is not None
+                and assignment.source_donor_id not in known
+            ):
                 raise PlanError(
                     f"assignment {assignment.target_module_path}:{assignment.target_slot.value} "
                     f"references unknown donor {assignment.source_donor_id!r}"
@@ -90,7 +103,9 @@ class TransportPlan:
         return {
             "schema_version": self.schema_version,
             "plan_id": self.plan_id,
-            "donor_fingerprints": [[donor, fingerprint] for donor, fingerprint in self.donor_fingerprints],
+            "donor_fingerprints": [
+                [donor, fingerprint] for donor, fingerprint in self.donor_fingerprints
+            ],
             "assignments": [_assignment_to_mapping(x) for x in self.assignments],
             "calibration_manifest_hash": self.calibration_manifest_hash,
             "iq_config_hash": self.iq_config_hash,
@@ -107,12 +122,14 @@ class TransportPlan:
         Path(path).write_text(self.to_json() + "\n", encoding="utf-8")
 
     @classmethod
-    def from_json(cls, path: str | Path) -> "TransportPlan":
+    def from_json(cls, path: str | Path) -> TransportPlan:
         data = json.loads(Path(path).read_text(encoding="utf-8"))
         return cls(
             schema_version=int(data["schema_version"]),
             plan_id=str(data["plan_id"]),
-            donor_fingerprints=tuple((str(a), str(b)) for a, b in data["donor_fingerprints"]),
+            donor_fingerprints=tuple(
+                (str(a), str(b)) for a, b in data["donor_fingerprints"]
+            ),
             assignments=tuple(_assignment_from_mapping(x) for x in data["assignments"]),
             calibration_manifest_hash=str(data["calibration_manifest_hash"]),
             iq_config_hash=str(data["iq_config_hash"]),

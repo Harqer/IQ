@@ -24,9 +24,7 @@ class SiTUAndMul(nn.Module):
         if linear_beta is not None and linear_beta <= 0:
             raise ValueError("linear_beta must be positive when configured")
         self.beta = float(beta)
-        self.linear_beta = (
-            float(linear_beta) if linear_beta is not None else None
-        )
+        self.linear_beta = float(linear_beta) if linear_beta is not None else None
 
     def forward(
         self,
@@ -39,13 +37,8 @@ class SiTUAndMul(nn.Module):
         gate_f = gate.float()
         up_f = up.float()
         bounded_gate = (
-            self.beta
-            * torch.tanh(gate_f / self.beta)
-            * torch.sigmoid(gate_f)
+            self.beta * torch.tanh(gate_f / self.beta) * torch.sigmoid(gate_f)
         )
         if self.linear_beta is not None:
-            up_f = (
-                self.linear_beta
-                * torch.tanh(up_f / self.linear_beta)
-            )
+            up_f = self.linear_beta * torch.tanh(up_f / self.linear_beta)
         return (bounded_gate * up_f).to(dtype)

@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+import json
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from enum import Enum
 from hashlib import sha256
-from typing import Iterable, Mapping
-import json
 
 
 class ArchitectureError(ValueError):
@@ -52,7 +52,7 @@ class HybridSchedule:
             )
 
     @classmethod
-    def from_tokens(cls, tokens: Iterable[str | HybridLayerType]) -> "HybridSchedule":
+    def from_tokens(cls, tokens: Iterable[str | HybridLayerType]) -> HybridSchedule:
         parsed: list[HybridLayerType] = []
         aliases = {
             "m": HybridLayerType.MAMBA3,
@@ -80,11 +80,13 @@ class HybridSchedule:
             try:
                 parsed.append(aliases[key])
             except KeyError as exc:
-                raise ArchitectureError(f"unknown hybrid layer token: {token!r}") from exc
+                raise ArchitectureError(
+                    f"unknown hybrid layer token: {token!r}"
+                ) from exc
         return cls(tuple(parsed))
 
     @classmethod
-    def parse(cls, pattern: str) -> "HybridSchedule":
+    def parse(cls, pattern: str) -> HybridSchedule:
         normalized = pattern.replace(",", " ").replace("->", " ")
         return cls.from_tokens(part for part in normalized.split() if part)
 
@@ -92,11 +94,15 @@ class HybridSchedule:
         return sum(layer is layer_type for layer in self.layers)
 
     def positions(self, layer_type: HybridLayerType) -> tuple[int, ...]:
-        return tuple(index for index, layer in enumerate(self.layers) if layer is layer_type)
+        return tuple(
+            index for index, layer in enumerate(self.layers) if layer is layer_type
+        )
 
     @property
     def attention_positions(self) -> tuple[int, ...]:
-        return tuple(index for index, layer in enumerate(self.layers) if layer.is_attention)
+        return tuple(
+            index for index, layer in enumerate(self.layers) if layer.is_attention
+        )
 
     def to_tokens(self) -> tuple[str, ...]:
         return tuple(layer.value for layer in self.layers)
@@ -108,7 +114,7 @@ class HybridSchedule:
         }
 
     @classmethod
-    def from_dict(cls, data: Mapping[str, object]) -> "HybridSchedule":
+    def from_dict(cls, data: Mapping[str, object]) -> HybridSchedule:
         if int(data.get("schema_version", -1)) != 1:
             raise ArchitectureError(
                 f"unsupported hybrid-schedule schema: {data.get('schema_version')!r}"

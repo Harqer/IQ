@@ -87,9 +87,7 @@ class ManifoldHyperConnection(nn.Module):
             self.config.streams,
             self.config.hidden_size,
         ):
-            raise ValueError(
-                "mHC hidden_streams final dimensions do not match config"
-            )
+            raise ValueError("mHC hidden_streams final dimensions do not match config")
 
         batch, sequence = hidden_streams.shape[:2]
         n = self.config.streams
@@ -105,9 +103,7 @@ class ManifoldHyperConnection(nn.Module):
             [n, n, n * n],
             dim=-1,
         )
-        pre_b, post_b, comb_b = self.base.float().split(
-            [n, n, n * n]
-        )
+        pre_b, post_b, comb_b = self.base.float().split([n, n, n * n])
         pre_scale, post_scale, comb_scale = self.scale.float().unbind(0)
 
         comb_w = comb_w.view(batch, sequence, n, n)
@@ -115,10 +111,13 @@ class ManifoldHyperConnection(nn.Module):
 
         pre = torch.sigmoid(pre_w * pre_scale + pre_b) + self.config.eps
         post = 2.0 * torch.sigmoid(post_w * post_scale + post_b)
-        comb = torch.softmax(
-            comb_w * comb_scale + comb_b,
-            dim=-1,
-        ) + self.config.eps
+        comb = (
+            torch.softmax(
+                comb_w * comb_scale + comb_b,
+                dim=-1,
+            )
+            + self.config.eps
+        )
         comb = sinkhorn_doubly_stochastic(
             comb,
             iterations=self.config.sinkhorn_iters,
@@ -126,8 +125,10 @@ class ManifoldHyperConnection(nn.Module):
         )
 
         collapsed = (
-            pre.unsqueeze(-1) * hidden_streams.float()
-        ).sum(dim=2).to(hidden_streams.dtype)
+            (pre.unsqueeze(-1) * hidden_streams.float())
+            .sum(dim=2)
+            .to(hidden_streams.dtype)
+        )
         return MHCWeights(
             post=post,
             comb=comb,
@@ -140,15 +141,10 @@ class ManifoldHyperConnection(nn.Module):
         block_output: torch.Tensor,
         weights: MHCWeights,
     ) -> torch.Tensor:
-        if block_output.shape != hidden_streams.shape[:2] + (
-            self.config.hidden_size,
-        ):
+        if block_output.shape != hidden_streams.shape[:2] + (self.config.hidden_size,):
             raise ValueError("mHC block_output shape mismatch")
         dtype = hidden_streams.dtype
-        expanded = (
-            weights.post.to(dtype).unsqueeze(-1)
-            * block_output.unsqueeze(-2)
-        )
+        expanded = weights.post.to(dtype).unsqueeze(-1) * block_output.unsqueeze(-2)
         residual = torch.matmul(
             weights.comb.to(dtype).transpose(-1, -2),
             hidden_streams,
@@ -195,14 +191,14 @@ class MHCHead(nn.Module):
         flat = self.input_norm(hidden_streams.flatten(2).float())
         mixes = F.linear(flat, self.fn.float())
         pre = (
-            torch.sigmoid(
-                mixes * self.scale.float() + self.base.float()
-            )
+            torch.sigmoid(mixes * self.scale.float() + self.base.float())
             + self.config.eps
         )
         return (
-            pre.unsqueeze(-1) * hidden_streams.float()
-        ).sum(dim=2).to(hidden_streams.dtype)
+            (pre.unsqueeze(-1) * hidden_streams.float())
+            .sum(dim=2)
+            .to(hidden_streams.dtype)
+        )
 
 
 def expand_mhc_streams(
@@ -211,13 +207,7 @@ def expand_mhc_streams(
     streams: int,
 ) -> torch.Tensor:
     if hidden_states.ndim != 3:
-        raise ValueError(
-            "hidden_states must have shape [batch, sequence, hidden]"
-        )
+        raise ValueError("hidden_states must have shape [batch, sequence, hidden]")
     if streams <= 1:
         raise ValueError("streams must be > 1")
-    return (
-        hidden_states.unsqueeze(2)
-        .expand(-1, -1, streams, -1)
-        .contiguous()
-    )
+    return hidden_states.unsqueeze(2).expand(-1, -1, streams, -1).contiguous()

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any
+
 import numpy as np
 
 
@@ -38,7 +40,9 @@ class Mamba3Layout:
         }
         bad = [name for name, value in ints.items() if int(value) <= 0]
         if bad:
-            raise Mamba3InitError(f"Mamba-3 dimensions must be positive: {', '.join(bad)}")
+            raise Mamba3InitError(
+                f"Mamba-3 dimensions must be positive: {', '.join(bad)}"
+            )
         if self.expand <= 0:
             raise Mamba3InitError("Mamba-3 expand must be positive")
         if self.rope_fraction not in (0.5, 1.0):
@@ -131,7 +135,9 @@ def _copy_slice(target: Any, row_slice: slice, source: Any) -> None:
     except ImportError:
         torch = None
     if torch is not None and isinstance(target, torch.Tensor):
-        source_tensor = source if isinstance(source, torch.Tensor) else torch.as_tensor(source)
+        source_tensor = (
+            source if isinstance(source, torch.Tensor) else torch.as_tensor(source)
+        )
         source_tensor = source_tensor.to(device=target.device, dtype=target.dtype)
         with torch.no_grad():
             target[row_slice, :].copy_(source_tensor)
@@ -145,7 +151,9 @@ def _copy_full(target: Any, source: Any) -> None:
     except ImportError:
         torch = None
     if torch is not None and isinstance(target, torch.Tensor):
-        source_tensor = source if isinstance(source, torch.Tensor) else torch.as_tensor(source)
+        source_tensor = (
+            source if isinstance(source, torch.Tensor) else torch.as_tensor(source)
+        )
         source_tensor = source_tensor.to(device=target.device, dtype=target.dtype)
         with torch.no_grad():
             target.copy_(source_tensor)
@@ -181,7 +189,11 @@ def apply_mamba3_bootstrap(
         "out_proj": layout.out_proj_shape,
     }
     actual = {name: _shape(getattr(bootstrap, name)) for name in expected}
-    mismatches = [f"{name}: got {actual[name]}, expected {shape}" for name, shape in expected.items() if actual[name] != shape]
+    mismatches = [
+        f"{name}: got {actual[name]}, expected {shape}"
+        for name, shape in expected.items()
+        if actual[name] != shape
+    ]
     if mismatches:
         raise Mamba3InitError("bootstrap shape mismatch: " + "; ".join(mismatches))
 
@@ -192,7 +204,11 @@ def apply_mamba3_bootstrap(
     _copy_slice(new_in, slices["C"], bootstrap.C)
     _copy_full(new_out, bootstrap.out_proj)
 
-    return new_in, new_out, Mamba3BootstrapReport(
-        written_slices=("x", "B", "C", "out_proj"),
-        preserved_slices=("z", "dd_dt", "dd_A", "trap", "angle"),
+    return (
+        new_in,
+        new_out,
+        Mamba3BootstrapReport(
+            written_slices=("x", "B", "C", "out_proj"),
+            preserved_slices=("z", "dd_dt", "dd_A", "trap", "angle"),
+        ),
     )

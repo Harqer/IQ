@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import json
 from dataclasses import asdict, dataclass
 from hashlib import sha256
-import json
+from typing import Any, cast
 
 
 class IQConfigError(ValueError):
@@ -42,13 +43,27 @@ class IQModelConfig:
         if self.hidden_size % self.num_attention_heads != 0:
             raise IQConfigError("hidden_size must be divisible by num_attention_heads")
         if self.num_attention_heads % self.num_key_value_heads != 0:
-            raise IQConfigError("num_attention_heads must be divisible by num_key_value_heads")
+            raise IQConfigError(
+                "num_attention_heads must be divisible by num_key_value_heads"
+            )
         if not (0.0 < self.rotary_fraction <= 1.0):
             raise IQConfigError("rotary_fraction must be in (0, 1]")
-        if self.rotary_dim <= 0 or self.rotary_dim > self.head_dim or self.rotary_dim % 2 != 0:
-            raise IQConfigError("rotary dimension must be positive, even, and <= head_dim")
-        if self.rope_theta <= 0 or self.rms_norm_eps <= 0 or self.initializer_range <= 0:
-            raise IQConfigError("rope_theta, rms_norm_eps, and initializer_range must be positive")
+        if (
+            self.rotary_dim <= 0
+            or self.rotary_dim > self.head_dim
+            or self.rotary_dim % 2 != 0
+        ):
+            raise IQConfigError(
+                "rotary dimension must be positive, even, and <= head_dim"
+            )
+        if (
+            self.rope_theta <= 0
+            or self.rms_norm_eps <= 0
+            or self.initializer_range <= 0
+        ):
+            raise IQConfigError(
+                "rope_theta, rms_norm_eps, and initializer_range must be positive"
+            )
         for name in ("attention_dropout", "residual_dropout"):
             value = float(getattr(self, name))
             if not (0.0 <= value < 1.0):
@@ -71,15 +86,16 @@ class IQModelConfig:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, data: dict[str, object]) -> "IQModelConfig":
+    def from_dict(cls, data: dict[str, object]) -> IQModelConfig:
         try:
-            return cls(**data)
+            return cls(**cast(dict[str, Any], data))
         except TypeError as exc:
             raise IQConfigError(f"invalid IQ model config: {exc}") from exc
 
     @classmethod
-    def from_json(cls, path: str) -> "IQModelConfig":
+    def from_json(cls, path: str) -> IQModelConfig:
         from pathlib import Path
+
         try:
             data = json.loads(Path(path).read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
@@ -90,6 +106,7 @@ class IQModelConfig:
 
     def write_json(self, path: str) -> None:
         from pathlib import Path
+
         Path(path).write_text(
             json.dumps(self.to_dict(), sort_keys=True) + "\n",
             encoding="utf-8",
@@ -97,5 +114,7 @@ class IQModelConfig:
 
     @property
     def fingerprint(self) -> str:
-        payload = json.dumps(self.to_dict(), sort_keys=True, separators=(",", ":")).encode("utf-8")
+        payload = json.dumps(
+            self.to_dict(), sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
         return sha256(payload).hexdigest()

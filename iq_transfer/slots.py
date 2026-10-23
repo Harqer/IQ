@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
-from typing import Mapping
 
 
 class SlotError(RuntimeError):
@@ -68,23 +68,38 @@ class TargetAssignment:
             TransferMethod.OPERATOR_TRANSPORT,
             TransferMethod.FUNCTIONAL_TRANSFER,
         }
-        if self.transfer_method in donor_methods:
-            if not self.source_donor_id or not self.source_operator:
-                raise SlotError(f"{self.transfer_method.value} requires source_donor_id and source_operator")
+        if self.transfer_method in donor_methods and (
+            not self.source_donor_id or not self.source_operator
+        ):
+            raise SlotError(
+                f"{self.transfer_method.value} requires source_donor_id and source_operator"
+            )
         if self.transfer_method is TransferMethod.OPERATOR_TRANSPORT:
             if self.target_slot is TargetSlot.EMBEDDING:
                 if not self.output_map_id:
-                    raise SlotError("embedding operator_transport requires output_map_id")
+                    raise SlotError(
+                        "embedding operator_transport requires output_map_id"
+                    )
             elif self.target_slot is TargetSlot.LM_HEAD:
                 if not self.input_map_id:
                     raise SlotError("LM-head operator_transport requires input_map_id")
             elif not self.input_map_id or not self.output_map_id:
-                raise SlotError("operator_transport requires input_map_id and output_map_id")
+                raise SlotError(
+                    "operator_transport requires input_map_id and output_map_id"
+                )
         if self.transfer_method is TransferMethod.RECIPIENT_NATIVE and any(
             value is not None
-            for value in (self.source_donor_id, self.source_layer, self.source_operator, self.input_map_id, self.output_map_id)
+            for value in (
+                self.source_donor_id,
+                self.source_layer,
+                self.source_operator,
+                self.input_map_id,
+                self.output_map_id,
+            )
         ):
-            raise SlotError("recipient_native assignments cannot name donor tensors or coordinate maps")
+            raise SlotError(
+                "recipient_native assignments cannot name donor tensors or coordinate maps"
+            )
 
         names = [name for name, _ in self.verification_metrics]
         if len(names) != len(set(names)):
@@ -99,7 +114,9 @@ class TargetAssignment:
 
 
 class TargetRegistry:
-    def __init__(self, assignments: tuple[TargetAssignment, ...] | list[TargetAssignment] = ()) -> None:
+    def __init__(
+        self, assignments: tuple[TargetAssignment, ...] | list[TargetAssignment] = ()
+    ) -> None:
         self._assignments: dict[tuple[str, TargetSlot], TargetAssignment] = {}
         for assignment in assignments:
             self.add(assignment)
@@ -114,10 +131,15 @@ class TargetRegistry:
         try:
             return self._assignments[(module_path, slot)]
         except KeyError as exc:
-            raise SlotError(f"unassigned target slot: {module_path}:{slot.value}") from exc
+            raise SlotError(
+                f"unassigned target slot: {module_path}:{slot.value}"
+            ) from exc
 
     def assignments(self) -> tuple[TargetAssignment, ...]:
-        return tuple(self._assignments[key] for key in sorted(self._assignments, key=lambda x: (x[0], x[1].value)))
+        return tuple(
+            self._assignments[key]
+            for key in sorted(self._assignments, key=lambda x: (x[0], x[1].value))
+        )
 
     def require_paths(self, required: Mapping[str, tuple[TargetSlot, ...]]) -> None:
         missing: list[str] = []

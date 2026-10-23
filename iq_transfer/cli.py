@@ -3,20 +3,22 @@ from __future__ import annotations
 import argparse
 import json
 
-from .job import run_phi_dense_transfer
-from .glm53_job import validate_glm53_donor, validate_glm53_streaming_donor
+from .batches import load_token_batches
+from .capture_runner import load_activation_bundle, save_activation_bundle
+from .checkpoint import SafetensorsSource
+from .complete_transplant import canonical_glm53_config, compile_complete_iq_checkpoint
 from .glm53 import GLM53Inspector
 from .glm53_calibration import bootstrap_glm53_calibration
 from .glm53_compile import compile_glm53_iq_checkpoint
+from .glm53_job import validate_glm53_donor, validate_glm53_streaming_donor
 from .glm53_shards import plan_glm53_bootstrap_shards, plan_glm53_compile_shards
-from .capture_runner import load_activation_bundle, save_activation_bundle
-from .checkpoint import SafetensorsSource
-from .batches import load_token_batches
-from .glm53_stream_capture import HubSafetensorsSource, capture_glm53_bootstrap_streaming
-from .complete_transplant import canonical_glm53_config
-from .mamba3_direct import compile_official_mamba3_mimo_15b_transplant
-from .complete_transplant import compile_complete_iq_checkpoint
+from .glm53_stream_capture import (
+    HubSafetensorsSource,
+    capture_glm53_bootstrap_streaming,
+)
 from .gpt_oss20b import GPT_OSS_20B_REVISION
+from .job import run_phi_dense_transfer
+from .mamba3_direct import compile_official_mamba3_mimo_15b_transplant
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -150,7 +152,10 @@ def _parser() -> argparse.ArgumentParser:
         help="skip donor SHA-256 verification (not recommended)",
     )
 
-    phi = sub.add_parser("phi-dense", help="build a transported dense IQ artifact from a local Phi checkpoint")
+    phi = sub.add_parser(
+        "phi-dense",
+        help="build a transported dense IQ artifact from a local Phi checkpoint",
+    )
     phi.add_argument("--checkpoint", required=True)
     phi.add_argument("--recipient-config", required=True)
     phi.add_argument("--fit-batches", required=True)
@@ -285,8 +290,7 @@ def main(argv: list[str] | None = None) -> int:
                     "donor_fingerprint": artifact.manifest.fingerprint,
                     "target_fingerprint": solution.target_config_fingerprint,
                     "source_layer_map": {
-                        str(k): int(v)
-                        for k, v in solution.source_layer_map.items()
+                        str(k): int(v) for k, v in solution.source_layer_map.items()
                     },
                 },
                 sort_keys=True,
@@ -391,7 +395,9 @@ def main(argv: list[str] | None = None) -> int:
                     "output_dir": str(result.output_dir),
                     "plan_fingerprint": result.transport_plan.fingerprint,
                     "donor_fingerprint": result.donor_manifest.fingerprint,
-                    "layer_mapping": {str(k): int(v) for k, v in sorted(result.layer_mapping.items())},
+                    "layer_mapping": {
+                        str(k): int(v) for k, v in sorted(result.layer_mapping.items())
+                    },
                     "dora_paths": list(result.dora_paths),
                 },
                 sort_keys=True,

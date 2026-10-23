@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import json
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, Mapping
-import json
+from typing import Any, cast
 
 import torch
 
@@ -12,10 +13,11 @@ from iq_model import HybridLayerType, Mamba3MIMOConfig
 
 from .mamba3_init import Mamba3Layout
 
-
 MAMBA3_MIMO_15B_REPO = "state-spaces/mamba3-mimo-1.5b"
 MAMBA3_MIMO_15B_REVISION = "bc6b5d0f7994fe4cb3478242e92da8daf9ee29ec"
-MAMBA3_MIMO_15B_BIN_SHA256 = "139c09e9728d1f10ac7f4354d2ae29aaca41851a954aedd8f6728c05aeb6c744"
+MAMBA3_MIMO_15B_BIN_SHA256 = (
+    "139c09e9728d1f10ac7f4354d2ae29aaca41851a954aedd8f6728c05aeb6c744"
+)
 
 
 class Mamba3DirectTransferError(RuntimeError):
@@ -41,10 +43,11 @@ class Mamba3DonorConfig:
     tie_embeddings: bool
 
     @classmethod
-    def from_mapping(cls, data: Mapping[str, Any]) -> "Mamba3DonorConfig":
+    def from_mapping(cls, data: Mapping[str, Any]) -> Mamba3DonorConfig:
         ssm = data.get("ssm_cfg")
         if not isinstance(ssm, Mapping):
             raise Mamba3DirectTransferError("Mamba-3 donor config is missing ssm_cfg")
+        ssm = cast(Mapping[str, Any], ssm)
         if str(ssm.get("layer")) != "Mamba3":
             raise Mamba3DirectTransferError(
                 f"expected Mamba3 donor layer, got {ssm.get('layer')!r}"
@@ -75,7 +78,7 @@ class Mamba3DonorConfig:
         return config
 
     @classmethod
-    def from_json(cls, path: str | Path) -> "Mamba3DonorConfig":
+    def from_json(cls, path: str | Path) -> Mamba3DonorConfig:
         try:
             data = json.loads(Path(path).read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
@@ -83,7 +86,9 @@ class Mamba3DonorConfig:
                 f"cannot read Mamba-3 donor config: {path}"
             ) from exc
         if not isinstance(data, dict):
-            raise Mamba3DirectTransferError("Mamba-3 donor config must be a JSON object")
+            raise Mamba3DirectTransferError(
+                "Mamba-3 donor config must be a JSON object"
+            )
         return cls.from_mapping(data)
 
     def validate(self) -> None:
@@ -169,7 +174,9 @@ def _load_official_state_dict(path: Path) -> dict[str, torch.Tensor]:
             f"failed to load donor PyTorch checkpoint: {path}"
         ) from exc
     if not isinstance(raw, dict) or not raw:
-        raise Mamba3DirectTransferError("donor checkpoint is not a non-empty state_dict")
+        raise Mamba3DirectTransferError(
+            "donor checkpoint is not a non-empty state_dict"
+        )
     result: dict[str, torch.Tensor] = {}
     for key, value in raw.items():
         if not isinstance(key, str) or not isinstance(value, torch.Tensor):
@@ -204,9 +211,7 @@ def _require_tensor(
 def _physical_mlp_hidden_size(config: Mamba3DonorConfig) -> int:
     """Match upstream GatedMLP(hidden_features, multiple_of=128) padding."""
     multiple = 128
-    return (
-        (int(config.d_intermediate) + multiple - 1) // multiple
-    ) * multiple
+    return ((int(config.d_intermediate) + multiple - 1) // multiple) * multiple
 
 
 def validate_official_mamba3_mimo_state(
@@ -296,7 +301,6 @@ def validate_official_mamba3_mimo_15b_config(config: Mamba3DonorConfig) -> None:
         )
 
 
-
 def expand_mamba3_foundation_globals(
     *,
     source_config: Mamba3DonorConfig,
@@ -329,9 +333,7 @@ def expand_mamba3_foundation_globals(
     return {
         "embed_tokens.weight": embedding.repeat((1, factor)).contiguous(),
         "norm.weight": final_norm.repeat(factor).contiguous(),
-        "lm_head.weight": (
-            lm_head.repeat((1, factor)) / float(factor)
-        ).contiguous(),
+        "lm_head.weight": (lm_head.repeat((1, factor)) / float(factor)).contiguous(),
     }
 
 
@@ -382,6 +384,7 @@ def load_official_mamba3_foundation_globals(
         target_hidden_size=target_hidden_size,
     )
 
+
 def evenly_spaced_layer_placements(
     source_layers: int,
     target_layers: int,
@@ -418,9 +421,7 @@ def _replication_factor(source: Mamba3Layout, target: Mamba3Layout) -> int:
         "effective_mimo_rank",
     )
     mismatches = [
-        name
-        for name in fixed_fields
-        if getattr(source, name) != getattr(target, name)
+        name for name in fixed_fields if getattr(source, name) != getattr(target, name)
     ]
     if mismatches:
         raise Mamba3DirectTransferError(
@@ -616,9 +617,7 @@ def _overlay_key_to_recipient(
 ) -> str:
     parts = key.split(".", 2)
     if len(parts) != 3 or parts[0] != "mamba_layers":
-        raise Mamba3DirectTransferError(
-            f"invalid canonical Mamba overlay key: {key}"
-        )
+        raise Mamba3DirectTransferError(f"invalid canonical Mamba overlay key: {key}")
     try:
         ordinal = int(parts[1])
     except ValueError as exc:
@@ -679,13 +678,17 @@ def apply_mamba3_transplant_overlay(
 
     target = manifest.get("target")
     if not isinstance(target, dict) or not isinstance(target.get("mamba3"), dict):
-        raise Mamba3DirectTransferError("transplant manifest is missing target Mamba config")
+        raise Mamba3DirectTransferError(
+            "transplant manifest is missing target Mamba config"
+        )
     expected_target = Mamba3MIMOConfig(**target["mamba3"])
     if asdict(mamba_config) != asdict(expected_target):
         raise Mamba3DirectTransferError(
             "recipient Mamba-3 config does not match compiled transplant target"
         )
-    model_rms_eps = float(getattr(getattr(model, "model_config", None), "rms_norm_eps", -1))
+    model_rms_eps = float(
+        getattr(getattr(model, "model_config", None), "rms_norm_eps", -1)
+    )
     if abs(model_rms_eps - float(target.get("rms_norm_eps", 1e-5))) > 1e-12:
         raise Mamba3DirectTransferError(
             "recipient RMSNorm epsilon does not match transplant target"
@@ -818,10 +821,7 @@ def compile_official_mamba3_mimo_15b_transplant(
     )
     _save_safetensors(
         output / "model-global.safetensors",
-        {
-            key: value.to(torch.bfloat16)
-            for key, value in foundation_globals.items()
-        },
+        {key: value.to(torch.bfloat16) for key, value in foundation_globals.items()},
     )
     del foundation_globals
 
@@ -879,7 +879,7 @@ def compile_official_mamba3_mimo_15b_transplant(
                 "final_norm",
                 "lm_head",
                 "mamba3_mixer",
-                "mamba_pre_norm"
+                "mamba_pre_norm",
             ],
             "global_shard": "model-global.safetensors",
             "not_transferred": [

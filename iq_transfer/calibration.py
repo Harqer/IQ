@@ -1,16 +1,23 @@
 from __future__ import annotations
 
+import json
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from enum import Enum
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, Mapping
-import json
+from typing import Any
+
 import numpy as np
 
 from .gqa_transport import GQAProjection, fit_gqa_group_projection
 from .phi_pipeline import PhiLayerMapIds
-from .shadows import FunctionalShadow, MeasurementPlan, extract_shadow, match_layers_monotonic
+from .shadows import (
+    FunctionalShadow,
+    MeasurementPlan,
+    extract_shadow,
+    match_layers_monotonic,
+)
 from .transport import CoordinateMap, fit_ridge_coordinate_map
 
 
@@ -52,7 +59,9 @@ class CalibrationManifest:
 
     def __post_init__(self) -> None:
         if self.schema_version != 1:
-            raise CalibrationError(f"unsupported calibration schema: {self.schema_version}")
+            raise CalibrationError(
+                f"unsupported calibration schema: {self.schema_version}"
+            )
         if not self.tokenizer_hash.strip():
             raise CalibrationError("tokenizer_hash must be non-empty")
         if not self.records:
@@ -68,7 +77,9 @@ class CalibrationManifest:
         }
         missing = sorted(split.value for split in required - present)
         if missing:
-            raise CalibrationError(f"calibration manifest is missing splits: {', '.join(missing)}")
+            raise CalibrationError(
+                f"calibration manifest is missing splits: {', '.join(missing)}"
+            )
 
     def to_mapping(self) -> dict[str, Any]:
         return {
@@ -94,10 +105,12 @@ class CalibrationManifest:
         Path(path).write_text(self.to_json() + "\n", encoding="utf-8")
 
     @classmethod
-    def from_json(cls, path: str | Path) -> "CalibrationManifest":
+    def from_json(cls, path: str | Path) -> CalibrationManifest:
         raw = json.loads(Path(path).read_text(encoding="utf-8"))
         if int(raw.get("schema_version", -1)) != 1:
-            raise CalibrationError(f"unsupported calibration schema: {raw.get('schema_version')}")
+            raise CalibrationError(
+                f"unsupported calibration schema: {raw.get('schema_version')}"
+            )
         records = tuple(
             CalibrationRecord(
                 record_id=str(item["record_id"]),
@@ -106,11 +119,15 @@ class CalibrationManifest:
                 content_sha256=str(item["content_sha256"]),
                 source_id=str(item["source_id"]),
                 byte_start=int(item.get("byte_start", 0)),
-                byte_end=int(item["byte_end"]) if item.get("byte_end") is not None else None,
+                byte_end=int(item["byte_end"])
+                if item.get("byte_end") is not None
+                else None,
             )
             for item in raw["records"]
         )
-        return cls(tokenizer_hash=str(raw["tokenizer_hash"]), records=records, schema_version=1)
+        return cls(
+            tokenizer_hash=str(raw["tokenizer_hash"]), records=records, schema_version=1
+        )
 
 
 @dataclass(frozen=True)
@@ -151,7 +168,9 @@ class LayerCorrespondence:
     target_shadows: Mapping[int, FunctionalShadow]
 
 
-def solve_activation_pair(pair: ActivationPair, *, ridge: float = 1e-3) -> CoordinateMap:
+def solve_activation_pair(
+    pair: ActivationPair, *, ridge: float = 1e-3
+) -> CoordinateMap:
     return fit_ridge_coordinate_map(
         pair.source_fit,
         pair.target_fit,
@@ -176,29 +195,43 @@ def solve_layer_correspondence(
     source_layers = sorted(source_activations)
     target_layers = sorted(target_activations)
     if len(source_layers) < len(target_layers):
-        raise CalibrationError("donor must expose at least as many calibration layers as the recipient")
+        raise CalibrationError(
+            "donor must expose at least as many calibration layers as the recipient"
+        )
 
     sample_count: int | None = None
     for collection in (source_activations, target_activations):
         for layer, activations in collection.items():
             array = np.asarray(activations)
             if array.ndim < 2:
-                raise CalibrationError(f"layer {layer} activations must be at least rank-2")
+                raise CalibrationError(
+                    f"layer {layer} activations must be at least rank-2"
+                )
             flattened_samples = int(np.prod(array.shape[:-1]))
             if sample_count is None:
                 sample_count = flattened_samples
             elif flattened_samples != sample_count:
-                raise CalibrationError("all layer activations must have the same flattened sample count")
+                raise CalibrationError(
+                    "all layer activations must have the same flattened sample count"
+                )
     assert sample_count is not None
-    plan = MeasurementPlan(sample_count=sample_count, measurements=measurements, seed=seed)
+    plan = MeasurementPlan(
+        sample_count=sample_count, measurements=measurements, seed=seed
+    )
     source_shadows = {
-        layer: extract_shadow(source_activations[layer], plan, layer=layer) for layer in source_layers
+        layer: extract_shadow(source_activations[layer], plan, layer=layer)
+        for layer in source_layers
     }
     target_shadows = {
-        layer: extract_shadow(target_activations[layer], plan, layer=layer) for layer in target_layers
+        layer: extract_shadow(target_activations[layer], plan, layer=layer)
+        for layer in target_layers
     }
-    mapping = match_layers_monotonic(source_shadows, target_shadows, depth_prior=depth_prior)
-    return LayerCorrespondence(mapping=mapping, source_shadows=source_shadows, target_shadows=target_shadows)
+    mapping = match_layers_monotonic(
+        source_shadows, target_shadows, depth_prior=depth_prior
+    )
+    return LayerCorrespondence(
+        mapping=mapping, source_shadows=source_shadows, target_shadows=target_shadows
+    )
 
 
 def solve_phi_layer_maps(
@@ -253,7 +286,9 @@ def solve_phi_layer_maps(
     return PhiLayerMapSolution(map_ids=ids, maps=maps, gqa_projection=gqa)
 
 
-def merge_coordinate_maps(*collections: Mapping[str, CoordinateMap]) -> dict[str, CoordinateMap]:
+def merge_coordinate_maps(
+    *collections: Mapping[str, CoordinateMap],
+) -> dict[str, CoordinateMap]:
     result: dict[str, CoordinateMap] = {}
     for collection in collections:
         for map_id, coordinate_map in collection.items():
