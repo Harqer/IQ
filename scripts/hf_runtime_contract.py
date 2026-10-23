@@ -9,12 +9,12 @@ from __future__ import annotations
 import argparse
 import json
 import os
-from pathlib import Path
 import re
 import shutil
 import subprocess
 import sys
 from importlib import metadata
+from pathlib import Path
 
 
 class RuntimeContractError(RuntimeError):
