@@ -89,6 +89,35 @@ class CompressedContextConfig:
             raise ValueError("attention_dropout must be in [0, 1)")
 
 
+@dataclass
+class CompressedAttentionCache:
+    """One causal segment of one attention layer (inference only).
+
+    Buffers grow geometrically: appending a token never recopies the entire
+    historical index or compressed KV buffer. Do not share between documents.
+    """
+
+    length: int
+    hidden_tail: torch.Tensor
+    positions_tail: torch.Tensor
+    local_kv: torch.Tensor
+    compressed: torch.Tensor
+    compressed_count: int
+    index_keys: torch.Tensor
+    index_count: int
+
+
+def _append_cache_row(buffer: torch.Tensor, count: int, row: torch.Tensor) -> torch.Tensor:
+    if row.ndim != 1 or row.shape[0] != buffer.shape[1]:
+        raise ValueError("attention cache row has incorrect dimensions")
+    if count == buffer.shape[0]:
+        larger = buffer.new_empty((max(16, 2 * buffer.shape[0]), buffer.shape[1]))
+        larger[:count].copy_(buffer[:count])
+        buffer = larger
+    buffer[count].copy_(row)
+    return buffer
+
+
 class GroupedLowRankOutput(nn.Module):
     def __init__(
         self,
@@ -650,72 +679,283 @@ class _V4CompressedContextAttention(nn.Module):
             candidates,
         )
 
+    def _index_keys(self, hidden: torch.Tensor, positions: torch.Tensor) -> torch.Tensor:
+        """Preproject keys once for streamed CSA indexing."""
+        assert self.mode == "csa"
+        assert self.index_kv_proj is not None and self.index_kv_norm is not None
+        if self.config.direct_token_indexer:
+            values = self.index_kv_norm(self.index_kv_proj(hidden))
+            return self._rope(values.unsqueeze(1), positions).squeeze(1)
+        assert self.index_gate_proj is not None
+        assert self.index_position_bias is not None
+        assert isinstance(self.index_kv_norm, HeadRMSNorm)
+        return self._compress_overlap(
+            hidden,
+            positions,
+            kv_proj=self.index_kv_proj,
+            gate_proj=self.index_gate_proj,
+            position_bias=self.index_position_bias,
+            norm=self.index_kv_norm,
+            head_dim=self.config.index_head_dim,
+        )
+
+    def _streaming_index_selection(
+        self,
+        query_hidden: torch.Tensor,
+        query_residual: torch.Tensor,
+        query_positions: torch.Tensor,
+        query_offsets: torch.Tensor,
+        index_keys: torch.Tensor,
+        *,
+        key_chunk_size: int = 1024,
+    ) -> torch.Tensor:
+        """Exact full-key top-k, bounded to query_chunk x key_chunk scores.
+
+        Excludes future/incomplete entries before top-k. This intentionally
+        preserves the hard-selection, nondifferentiable index semantics.
+        """
+        assert self.mode == "csa"
+        assert self.index_q_proj is not None and self.index_weight_proj is not None
+        query_count = query_hidden.shape[0]
+        total = index_keys.shape[0]
+        if total == 0:
+            return torch.empty((query_count, 0), dtype=torch.long, device=query_hidden.device)
+        k = min(self.config.index_topk, total)
+        q = self.index_q_proj(query_residual).view(
+            query_count, self.config.index_n_heads, self.config.index_head_dim
+        )
+        q = self._rope(q, query_positions).float()
+        w = self.index_weight_proj(query_hidden).float() * (
+            self.config.index_n_heads ** -0.5
+        )
+        best_scores = q.new_empty((query_count, 0))
+        best_indices = torch.empty((query_count, 0), dtype=torch.long, device=q.device)
+        for lo in range(0, total, key_chunk_size):
+            hi = min(total, lo + key_chunk_size)
+            scores = torch.einsum("qhd,kd->qhk", q, index_keys[lo:hi].float())
+            scores = F.relu(scores) * (self.config.index_head_dim ** -0.5)
+            scores = (scores * w.unsqueeze(-1)).sum(dim=1)
+            positions = torch.arange(lo, hi, device=q.device)
+            if self.config.direct_token_indexer:
+                valid = positions.unsqueeze(0) <= query_offsets.unsqueeze(1)
+            else:
+                visible = (query_offsets + 1) // self.config.csa_compress_rate
+                valid = positions.unsqueeze(0) < visible.unsqueeze(1)
+            scores = scores.masked_fill(~valid, float("-inf"))
+            indices = positions.unsqueeze(0).expand(query_count, -1)
+            candidates = torch.cat((best_scores, scores), dim=1)
+            candidate_indices = torch.cat((best_indices, indices), dim=1)
+            keep = min(k, candidates.shape[1])
+            best_scores, selected = candidates.topk(keep, dim=1)
+            best_indices = candidate_indices.gather(1, selected)
+        return best_indices.masked_fill(~torch.isfinite(best_scores), -1)
+
+    def _attend_chunk(
+        self,
+        q: torch.Tensor,
+        local_kv: torch.Tensor,
+        compressed: torch.Tensor,
+        *,
+        start: int,
+        selected: torch.Tensor | None,
+    ) -> torch.Tensor:
+        """Vectorize all query heads and tokens in a bounded query chunk."""
+        count = q.shape[0]
+        offsets = torch.arange(start, start + count, device=q.device)
+        window_start = max(0, start - self.config.sliding_window + 1)
+        local = local_kv[window_start : start + count]
+        local_offsets = torch.arange(window_start, start + count, device=q.device)
+        local_valid = (
+            (local_offsets.unsqueeze(0) <= offsets.unsqueeze(1))
+            & (local_offsets.unsqueeze(0) + self.config.sliding_window > offsets.unsqueeze(1))
+        )
+        local_scores = torch.einsum("qhd,kd->qhk", q.float(), local.float()) * self.scale
+        local_scores = local_scores.masked_fill(~local_valid.unsqueeze(1), float("-inf"))
+
+        if self.mode == "hca":
+            long_kv = compressed
+            long_scores = torch.einsum("qhd,kd->qhk", q.float(), long_kv.float()) * self.scale
+            visible = (offsets + 1) // self.config.hca_compress_rate
+            long_valid = (
+                torch.arange(long_kv.shape[0], device=q.device).unsqueeze(0)
+                < visible.unsqueeze(1)
+            )
+        else:
+            assert selected is not None
+            source = local_kv if self.config.direct_token_indexer else compressed
+            if selected.shape[1]:
+                long_kv = source.index_select(0, selected.clamp_min(0).reshape(-1)).view(
+                    count, selected.shape[1], self.config.head_dim
+                )
+                long_scores = torch.einsum("qhd,qkd->qhk", q.float(), long_kv.float()) * self.scale
+            else:
+                long_kv = q.new_empty((count, 0, self.config.head_dim))
+                long_scores = q.new_empty((count, q.shape[1], 0), dtype=torch.float32)
+            long_valid = selected >= 0
+        long_scores = long_scores.masked_fill(~long_valid.unsqueeze(1), float("-inf"))
+        sink = self.sinks.float().view(1, -1, 1)
+        # Treat the sink as an extra softmax entry (without an associated value).
+        max_score = torch.maximum(
+            torch.maximum(local_scores.max(dim=-1, keepdim=True).values,
+                          long_scores.max(dim=-1, keepdim=True).values
+                          if long_scores.shape[-1] else sink),
+            sink,
+        )
+        local_exp = torch.exp(local_scores - max_score)
+        long_exp = torch.exp(long_scores - max_score)
+        denom = (
+            local_exp.sum(dim=-1, keepdim=True)
+            + long_exp.sum(dim=-1, keepdim=True)
+            + torch.exp(sink - max_score)
+        ).clamp_min(torch.finfo(local_exp.dtype).tiny)
+        local_weight = local_exp / denom
+        long_weight = long_exp / denom
+        if self.training and self.config.attention_dropout:
+            local_weight = F.dropout(local_weight, p=self.config.attention_dropout, training=True)
+            long_weight = F.dropout(long_weight, p=self.config.attention_dropout, training=True)
+        local_out = torch.einsum("qhk,kd->qhd", local_weight.to(local.dtype), local)
+        if self.mode == "hca":
+            long_out = torch.einsum("qhk,kd->qhd", long_weight.to(long_kv.dtype), long_kv)
+        else:
+            long_out = torch.einsum("qhk,qkd->qhd", long_weight.to(long_kv.dtype), long_kv)
+        return local_out + long_out
+
     def _forward_segment(
         self,
         hidden: torch.Tensor,
         positions: torch.Tensor,
     ) -> torch.Tensor:
+        """Bound peak attention/index scores; remove per-token Python loop."""
         length = hidden.shape[0]
         q_residual = self.q_a_norm(self.q_a_proj(hidden))
         q = self.q_b_proj(q_residual).view(
-            length,
-            self.config.num_attention_heads,
-            self.config.head_dim,
+            length, self.config.num_attention_heads, self.config.head_dim
         )
         if self.config.normalize_query_output:
             q = self.q_b_norm(q)
         q = self._rope(q, positions)
-
-        local_kv = self._normalize_main_candidate(
-            self.kv_proj(hidden),
-            self.kv_norm,
-        )
-        local_kv = self._rope(
-            local_kv.unsqueeze(1),
-            positions,
-        ).squeeze(1)
+        local_kv = self._normalize_main_candidate(self.kv_proj(hidden), self.kv_norm)
+        local_kv = self._rope(local_kv.unsqueeze(1), positions).squeeze(1)
         compressed = self._compress_main(hidden, positions)
-        selected = (
-            self._index_selection(hidden, q_residual, positions)
-            if self.mode == "csa"
-            else None
-        )
+        index_keys = self._index_keys(hidden, positions) if self.mode == "csa" else None
 
-        outputs: list[torch.Tensor] = []
-        for token in range(length):
-            start = max(0, token - self.config.sliding_window + 1)
-            local = local_kv[start : token + 1]
-
-            if self.mode == "hca":
-                visible_count = (token + 1) // self.config.hca_compress_rate
-                long_range = compressed[:visible_count]
-            else:
-                assert selected is not None
-                indices = selected[token]
-                valid = indices[indices >= 0]
-                if self.config.direct_token_indexer:
-                    long_range = (
-                        local_kv.index_select(0, valid)
-                        if valid.numel()
-                        else local_kv[:0]
-                    )
-                else:
-                    long_range = (
-                        compressed.index_select(0, valid)
-                        if valid.numel()
-                        else compressed[:0]
-                    )
-
-            candidates = (
-                torch.cat([local, long_range], dim=0)
-                if long_range.shape[0]
-                else local
+        pieces: list[torch.Tensor] = []
+        # 32 queries x 1024 index keys bounds the largest selection workspace.
+        for start in range(0, length, 32):
+            end = min(start + 32, length)
+            selected = (
+                self._streaming_index_selection(
+                    hidden[start:end], q_residual[start:end], positions[start:end],
+                    torch.arange(start, end, device=hidden.device), index_keys,
+                )
+                if index_keys is not None else None
             )
-            outputs.append(self._attend_candidates(q[token], candidates))
-
-        attended = torch.stack(outputs, dim=0)
+            pieces.append(self._attend_chunk(
+                q[start:end], local_kv, compressed, start=start, selected=selected,
+            ))
+        attended = torch.cat(pieces, dim=0)
         attended = self._rope(attended, positions, inverse=True)
         return self.output(attended)
+
+    def new_cache(self, *, device: torch.device, dtype: torch.dtype) -> CompressedAttentionCache:
+        """Allocate an empty inference cache for one sequence/document and layer."""
+        if self.training:
+            raise ValueError("set eval() before using compressed-attention inference cache")
+        return CompressedAttentionCache(
+            length=0,
+            hidden_tail=torch.empty((0, self.config.hidden_size), device=device, dtype=dtype),
+            positions_tail=torch.empty((0,), device=device, dtype=torch.long),
+            local_kv=torch.empty((0, self.config.head_dim), device=device, dtype=dtype),
+            compressed=torch.empty((16, self.config.head_dim), device=device, dtype=dtype),
+            compressed_count=0,
+            index_keys=torch.empty((16, self.config.index_head_dim), device=device, dtype=dtype),
+            index_count=0,
+        )
+
+    @torch.no_grad()
+    def forward_step(
+        self,
+        x: torch.Tensor,
+        cache: CompressedAttentionCache,
+        *,
+        position: int | None = None,
+    ) -> torch.Tensor:
+        """Decode one token while incrementally updating compressed/index KVs.
+
+        Returns [1,1,hidden]. Not yet wired into IQHybridForCausalLM.decode().
+        Each layer and independent document must have its own cache.
+        """
+        if self.training or x.shape != (1, 1, self.config.hidden_size):
+            raise ValueError("forward_step requires eval() and [1,1,hidden] input")
+        if x.device != cache.hidden_tail.device or x.dtype != cache.hidden_tail.dtype:
+            raise ValueError("cache device/dtype mismatch")
+        token = x[0]
+        offset = cache.length
+        pos = offset if position is None else int(position)
+        if pos < 0 or pos >= self.config.max_position_embeddings:
+            raise ValueError("position is outside compressed-attention RoPE range")
+        pos_t = torch.tensor([pos], device=x.device, dtype=torch.long)
+        q_residual = self.q_a_norm(self.q_a_proj(token))
+        q = self.q_b_proj(q_residual).view(
+            1, self.config.num_attention_heads, self.config.head_dim
+        )
+        if self.config.normalize_query_output:
+            q = self.q_b_norm(q)
+        q = self._rope(q, pos_t)
+        local_new = self._normalize_main_candidate(self.kv_proj(token), self.kv_norm)
+        local_new = self._rope(local_new.unsqueeze(1), pos_t).squeeze(1)
+        cache.local_kv = torch.cat((cache.local_kv, local_new), dim=0)[
+            -self.config.sliding_window:
+        ]
+        tail_capacity = 2 * self.compress_rate
+        cache.hidden_tail = torch.cat((cache.hidden_tail, token), dim=0)[-tail_capacity:]
+        cache.positions_tail = torch.cat((cache.positions_tail, pos_t), dim=0)[-tail_capacity:]
+        cache.length += 1
+        if self.mode == "csa" and self.config.direct_token_indexer:
+            new_idx = self._index_keys(token, pos_t)[0]
+            cache.index_keys = _append_cache_row(cache.index_keys, cache.index_count, new_idx)
+            cache.index_count += 1
+        if cache.length % self.compress_rate == 0:
+            new_compressed = self._compress_main(
+                cache.hidden_tail, cache.positions_tail
+            )[-1]
+            cache.compressed = _append_cache_row(
+                cache.compressed, cache.compressed_count, new_compressed
+            )
+            cache.compressed_count += 1
+            if self.mode == "csa" and not self.config.direct_token_indexer:
+                new_idx = self._index_keys(cache.hidden_tail, cache.positions_tail)[-1]
+                cache.index_keys = _append_cache_row(cache.index_keys, cache.index_count, new_idx)
+                cache.index_count += 1
+
+        history = cache.compressed[:cache.compressed_count]
+        if self.mode == "csa":
+            selected = self._streaming_index_selection(
+                token, q_residual, pos_t,
+                torch.tensor([offset], device=x.device),
+                cache.index_keys[:cache.index_count],
+            )[0]
+            source = cache.index_keys  # selection is only an index, not attention value
+            if self.config.direct_token_indexer:
+                # CSA direct index selection attends to historical local KVs.
+                # Without retaining those values the cache cannot decode correctly.
+                if not hasattr(cache, "direct_kv"):
+                    cache.direct_kv = cache.local_kv.new_empty((16, self.config.head_dim))
+                    cache.direct_count = 0
+                cache.direct_kv = _append_cache_row(
+                    cache.direct_kv, cache.direct_count, local_new[0]
+                )
+                cache.direct_count += 1
+                source = cache.direct_kv[:cache.direct_count]
+            else:
+                source = history
+            picked = source.index_select(0, selected[selected >= 0])
+        else:
+            picked = history
+        candidates = torch.cat((cache.local_kv, picked), dim=0)
+        attended = self._attend_candidates(q[0], candidates).unsqueeze(0)
+        attended = self._rope(attended, pos_t, inverse=True)
+        return self.output(attended).unsqueeze(0)
 
     def forward(
         self,
