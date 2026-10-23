@@ -25,7 +25,9 @@ def build_model():
     root = Path(os.getenv("IQ_CHECKPOINT_DIR", "/checkpoints"))
     tokenizer_root = Path(os.getenv("IQ_TOKENIZER_DIR", "/tokenizer"))
     print(f"IQ: tokenizer={tokenizer_root} checkpoint={root}", flush=True)
-    tokenizer = AutoTokenizer.from_pretrained(str(tokenizer_root), local_files_only=True)
+    tokenizer = AutoTokenizer.from_pretrained(
+        str(tokenizer_root), local_files_only=True
+    )
     config = json.loads((root / "iq_config.json").read_text(encoding="utf-8"))
     if len(tokenizer) != config["model"]["vocab_size"]:
         raise RuntimeError(
@@ -71,7 +73,10 @@ def generate(tokenizer, model, messages: list[dict], max_new_tokens: int) -> str
             token_id = int(next_token[0, 0].item())
             generated.append(token_id)
             input_ids = torch.cat((input_ids, next_token), dim=1)
-            if tokenizer.eos_token_id is not None and token_id == tokenizer.eos_token_id:
+            if (
+                tokenizer.eos_token_id is not None
+                and token_id == tokenizer.eos_token_id
+            ):
                 break
     return tokenizer.decode(generated, skip_special_tokens=True)
 
@@ -125,7 +130,7 @@ def create_handler(tokenizer, model):
             except (ValueError, KeyError, TypeError) as exc:
                 self.respond(400, {"error": str(exc)})
                 return
-            except Exception:  # noqa: BLE001 - HTTP boundary must contain unexpected model failures
+            except Exception:  # noqa: BLE001 - HTTP inference boundary
                 traceback.print_exc(file=sys.stderr)
                 self.respond(500, {"error": "inference failed; see job logs"})
                 return
