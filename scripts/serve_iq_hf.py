@@ -50,9 +50,12 @@ def generate(tokenizer, model, messages: list[dict], max_new_tokens: int) -> str
             encoded if isinstance(encoded, torch.Tensor) else encoded["input_ids"]
         )
     except (ValueError, AttributeError, KeyError, TypeError):
-        transcript = "\n".join(
-            f"{message['role']}: {message['content']}" for message in messages
-        ) + "\nassistant:"
+        transcript = (
+            "\n".join(
+                f"{message['role']}: {message['content']}" for message in messages
+            )
+            + "\nassistant:"
+        )
         input_ids = tokenizer(transcript, return_tensors="pt")["input_ids"]
     if (
         input_ids.ndim != 2
