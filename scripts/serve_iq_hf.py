@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 import traceback
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -41,7 +42,7 @@ def build_model():
     return tokenizer, model
 
 
-def generate(tokenizer, model, messages: list[dict], max_new_tokens: int) -> str:
+def generate(tokenizer, model, messages: list[dict], max_new_tokens: int) -> tuple[str, str]:
     try:
         encoded = tokenizer.apply_chat_template(
             messages, add_generation_prompt=True, return_tensors="pt"
@@ -66,6 +67,7 @@ def generate(tokenizer, model, messages: list[dict], max_new_tokens: int) -> str
 
     input_ids = input_ids.to("cuda:0")
     generated: list[int] = []
+    finish_reason = "length"
     with torch.inference_mode():
         for _ in range(max_new_tokens):
             result = model(input_ids)
@@ -80,8 +82,9 @@ def generate(tokenizer, model, messages: list[dict], max_new_tokens: int) -> str
                 tokenizer.eos_token_id is not None
                 and token_id == tokenizer.eos_token_id
             ):
+                finish_reason = "stop"
                 break
-    return tokenizer.decode(generated, skip_special_tokens=True)
+    return tokenizer.decode(generated, skip_special_tokens=True), finish_reason
 
 
 def create_handler(tokenizer, model):
@@ -101,7 +104,7 @@ def create_handler(tokenizer, model):
                 self.respond(404, {"error": "not found"})
 
         def do_POST(self) -> None:
-            if self.path != "/chat":
+            if self.path not in ("/chat", "/v1/chat/completions", "/chat/completions"):
                 self.respond(404, {"error": "not found"})
                 return
             try:
@@ -126,10 +129,13 @@ def create_handler(tokenizer, model):
                     )
                 ):
                     raise ValueError("invalid messages: expected 1..24 chat messages")
-                tokens = data.get("max_new_tokens", 16)
+                compatible = self.path != "/chat"
+                if compatible and data.get("stream", False):
+                    raise ValueError("streaming is not supported by IQ yet")
+                tokens = data.get("max_tokens", 16) if compatible else data.get("max_new_tokens", 16)
                 if type(tokens) is not int or not 1 <= tokens <= MAX_NEW_TOKENS:
                     raise ValueError(f"max_new_tokens must be 1..{MAX_NEW_TOKENS}")
-                response = generate(tokenizer, model, messages, tokens)
+                response, finish_reason = generate(tokenizer, model, messages, tokens)
             except (ValueError, KeyError, TypeError) as exc:
                 self.respond(400, {"error": str(exc)})
                 return
@@ -137,7 +143,25 @@ def create_handler(tokenizer, model):
                 traceback.print_exc(file=sys.stderr)
                 self.respond(500, {"error": "inference failed; see job logs"})
                 return
-            self.respond(200, {"response": response})
+            if compatible:
+                self.respond(
+                    200,
+                    {
+                        "id": "chatcmpl-iq",
+                        "object": "chat.completion",
+                        "created": int(time.time()),
+                        "model": "IQ",
+                        "choices": [
+                            {
+                                "index": 0,
+                                "message": {"role": "assistant", "content": response},
+                                "finish_reason": finish_reason,
+                            }
+                        ],
+                    },
+                )
+            else:
+                self.respond(200, {"response": response})
 
     return Handler
 
