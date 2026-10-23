@@ -162,8 +162,10 @@ def main() -> int:
     try:
         base = _native_stack()
         if args.phase == "constraints":
-            print(f"torch=={base['torch']}")
-            print(f"triton=={base['triton']}")
+            # Resolver constraints use distribution metadata, not the runtime's
+            # potentially CUDA-suffixed __version__ reporting string.
+            print(f"torch=={_version('torch')}")
+            print(f"triton=={_version('triton')}")
             return 0
         extra = _cuda_toolkit_and_gpu()
         if args.phase == "before":
