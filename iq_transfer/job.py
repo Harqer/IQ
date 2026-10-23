@@ -1,14 +1,15 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from hashlib import sha256
-from pathlib import Path
-from typing import Any, Mapping, Sequence
 import json
 import math
 import os
 import shutil
 import tempfile
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from hashlib import sha256
+from pathlib import Path
+from typing import Any
 
 import torch
 from safetensors.torch import load_model, save_model
@@ -98,7 +99,10 @@ def hash_tokenizer_files(checkpoint_dir: str | Path) -> str:
 
 
 def _flatten_residuals(bundle: ActivationBundle, num_layers: int) -> dict[int, Any]:
-    return {layer: bundle.require(f"layer.{layer}.residual_out") for layer in range(num_layers)}
+    return {
+        layer: bundle.require(f"layer.{layer}.residual_out")
+        for layer in range(num_layers)
+    }
 
 
 def _dora_paths(plan: TransportPlan) -> tuple[str, ...]:
@@ -127,7 +131,9 @@ def _final_parameter_provenance(
     *,
     training_phase: str,
 ) -> ProvenanceLedger:
-    original = {record.target_parameter: record for record in execution.provenance.records()}
+    original = {
+        record.target_parameter: record for record in execution.provenance.records()
+    }
     assignment_by_parameter = {
         (
             a.target_module_path
@@ -140,14 +146,18 @@ def _final_parameter_provenance(
     records: list[ParameterProvenance] = []
 
     for name, _parameter in model.named_parameters():
-        matched_dora = next((path for path in dora if name.startswith(path + ".")), None)
+        matched_dora = next(
+            (path for path in dora if name.startswith(path + ".")), None
+        )
         if matched_dora is not None:
             original_name = matched_dora + ".weight"
             assignment = assignment_by_parameter[original_name]
             if name == matched_dora + ".base.weight":
                 source = original.get(original_name)
                 if source is None:
-                    raise TransferJobError(f"missing transported provenance for {original_name}")
+                    raise TransferJobError(
+                        f"missing transported provenance for {original_name}"
+                    )
                 records.append(
                     ParameterProvenance(
                         target_parameter=name,
@@ -186,7 +196,10 @@ def _final_parameter_provenance(
             continue
 
         assignment = assignment_by_parameter.get(name)
-        if assignment is not None and assignment.transfer_method is TransferMethod.RECIPIENT_NATIVE:
+        if (
+            assignment is not None
+            and assignment.transfer_method is TransferMethod.RECIPIENT_NATIVE
+        ):
             records.append(
                 ParameterProvenance(
                     target_parameter=name,
@@ -204,7 +217,7 @@ def _final_parameter_provenance(
     if current != recorded:
         raise TransferJobError(
             "final provenance coverage mismatch: "
-            f"missing={sorted(current-recorded)}, extra={sorted(recorded-current)}"
+            f"missing={sorted(current - recorded)}, extra={sorted(recorded - current)}"
         )
     return ledger
 
@@ -231,7 +244,9 @@ def _write_bundle(
     report: dict[str, Any],
 ) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
-    temp = Path(tempfile.mkdtemp(prefix=f".{destination.name}.tmp-", dir=destination.parent))
+    temp = Path(
+        tempfile.mkdtemp(prefix=f".{destination.name}.tmp-", dir=destination.parent)
+    )
     try:
         save_model(model, str(temp / "model.safetensors"), force_contiguous=True)
         config.write_json(str(temp / "config.json"))
@@ -262,7 +277,9 @@ def _write_bundle(
         for map_id in sorted(maps):
             filename = map_id.replace("/", "__").replace(".", "__")
             if filename in map_index.values():
-                raise TransferJobError(f"coordinate-map filename collision for {map_id}")
+                raise TransferJobError(
+                    f"coordinate-map filename collision for {map_id}"
+                )
             map_index[map_id] = filename
             save_coordinate_map(maps[map_id], maps_dir / filename)
         (maps_dir / "index.json").write_text(
@@ -286,7 +303,8 @@ def _write_bundle(
                 }
             )
         (temp / "bundle_manifest.json").write_text(
-            json.dumps({"schema_version": 1, "files": files}, sort_keys=True, indent=2) + "\n",
+            json.dumps({"schema_version": 1, "files": files}, sort_keys=True, indent=2)
+            + "\n",
             encoding="utf-8",
         )
         (temp / "COMPLETE").write_text("ok\n", encoding="utf-8")
@@ -365,7 +383,9 @@ def run_phi_dense_transfer_loaded(
     if dora_rank <= 0:
         raise TransferJobError("dora_rank must be positive")
     if calibration_manifest.tokenizer_hash != donor_runtime.manifest.tokenizer_hash:
-        raise TransferJobError("calibration tokenizer hash does not match donor manifest")
+        raise TransferJobError(
+            "calibration tokenizer hash does not match donor manifest"
+        )
     if donor_runtime.manifest.vocab_size != iq_model.config.vocab_size:
         raise TransferJobError("Phi proof requires donor and IQ vocab sizes to match")
 

@@ -6,11 +6,12 @@ Stage 2 operates on byte-aligned, target-basis residual states. Stage 3
 requires a verified identical output vocabulary; GLM-5.3 and Mamba-3 use
 different tokenizers, so raw cross-model logit KL is intentionally rejected.
 """
+
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from enum import Enum
-import math
 
 import torch
 from torch import Tensor
@@ -53,7 +54,9 @@ def matrix_orientation_loss(
 ) -> Tensor:
     """Stage 1: squared Frobenius distance for comparable [*, T, T] operators."""
     if teacher_mixer.ndim < 2 or teacher_mixer.shape != student_mixer.shape:
-        raise ValueError("teacher/student mixer operators must have identical [*, T, T] shapes")
+        raise ValueError(
+            "teacher/student mixer operators must have identical [*, T, T] shapes"
+        )
     if teacher_mixer.shape[-1] != teacher_mixer.shape[-2]:
         raise ValueError("token-mixing matrices must be square")
     _require_finite("teacher_mixer", teacher_mixer)
@@ -119,7 +122,9 @@ def logits_distillation_loss(
         or len(student_tokenizer_sha256) != 64
         or teacher_tokenizer_sha256 != student_tokenizer_sha256
     ):
-        raise ValueError("MOHAWK logits KL requires identical verified tokenizer SHA-256")
+        raise ValueError(
+            "MOHAWK logits KL requires identical verified tokenizer SHA-256"
+        )
     if teacher_logits.ndim != 3 or teacher_logits.shape != student_logits.shape:
         raise ValueError("logits must match [batch, IQ-token, shared-vocabulary]")
     if not math.isfinite(temperature) or temperature <= 0:
@@ -130,7 +135,9 @@ def logits_distillation_loss(
     with torch.no_grad():
         teacher_prob = F.softmax(teacher_logits.float() / t, dim=-1)
     student_log_prob = F.log_softmax(student_logits.float() / t, dim=-1)
-    per_token = F.kl_div(student_log_prob, teacher_prob, reduction="none").sum(-1) * t * t
+    per_token = (
+        F.kl_div(student_log_prob, teacher_prob, reduction="none").sum(-1) * t * t
+    )
     if token_mask is None:
         return per_token.mean()
     if token_mask.dtype != torch.bool or token_mask.shape != per_token.shape:
@@ -159,21 +166,29 @@ def mohawk_loss(
         if teacher_mixer is None or student_mixer is None:
             raise ValueError("Stage 1 requires real teacher_mixer and student_mixer")
         return config.matrix_weight * matrix_orientation_loss(
-            teacher_mixer, student_mixer, mask=matrix_mask,
+            teacher_mixer,
+            student_mixer,
+            mask=matrix_mask,
         )
     if config.stage is MohawkStage.HIDDEN_ALIGNMENT:
         if teacher_hidden is None or student_hidden is None:
-            raise ValueError("Stage 2 requires byte-aligned teacher_hidden and student_hidden")
+            raise ValueError(
+                "Stage 2 requires byte-aligned teacher_hidden and student_hidden"
+            )
         return config.hidden_weight * hidden_alignment_loss(
-            teacher_hidden, student_hidden, token_mask=token_mask,
+            teacher_hidden,
+            student_hidden,
+            token_mask=token_mask,
         )
     if config.stage is MohawkStage.END_TO_END_DISTILLATION:
         if teacher_logits is None or student_logits is None:
             raise ValueError("Stage 3 requires teacher_logits and student_logits")
         return config.logits_weight * logits_distillation_loss(
-            teacher_logits, student_logits,
+            teacher_logits,
+            student_logits,
             teacher_tokenizer_sha256=teacher_tokenizer_sha256,
             student_tokenizer_sha256=student_tokenizer_sha256,
-            temperature=config.temperature, token_mask=token_mask,
+            temperature=config.temperature,
+            token_mask=token_mask,
         )
     raise ValueError(f"unsupported MOHAWK stage: {config.stage}")

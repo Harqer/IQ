@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
-import json
 
 from .donor import DonorError
 
@@ -29,20 +29,24 @@ class SafetensorsSource:
         elif single_path.exists():
             self._weight_map = self._scan_single(single_path)
         else:
-            raise DonorError("no model.safetensors or model.safetensors.index.json found")
+            raise DonorError(
+                "no model.safetensors or model.safetensors.index.json found"
+            )
 
     @staticmethod
     def _safe_open():
         try:
             from safetensors import safe_open
         except ImportError as exc:
-            raise DonorError("safetensors is required to read donor checkpoints") from exc
+            raise DonorError(
+                "safetensors is required to read donor checkpoints"
+            ) from exc
         return safe_open
 
     def _scan_single(self, path: Path) -> dict[str, str]:
         safe_open = self._safe_open()
         with safe_open(path, framework="pt", device="cpu") as handle:
-            return {key: path.name for key in handle.keys()}
+            return {key: path.name for key in handle}
 
     def keys(self) -> tuple[str, ...]:
         return tuple(self._weight_map)
@@ -75,8 +79,12 @@ class SafetensorsSource:
         try:
             import torch
         except ImportError as exc:
-            raise DonorError("PyTorch is required for row-sliced checkpoint reads") from exc
-        indices = torch.as_tensor(row_indices, dtype=torch.long, device="cpu").reshape(-1)
+            raise DonorError(
+                "PyTorch is required for row-sliced checkpoint reads"
+            ) from exc
+        indices = torch.as_tensor(row_indices, dtype=torch.long, device="cpu").reshape(
+            -1
+        )
         if indices.numel() == 0:
             shape = self.shape(key)
             if len(shape) != 2:

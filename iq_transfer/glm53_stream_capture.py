@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from pathlib import Path
-from typing import Any, Iterable, Mapping
 import gc
 import json
+from collections.abc import Iterable, Mapping
+from pathlib import Path
+from typing import Any
 
 from .batches import TokenBatchArtifact
 from .capture_runner import ActivationBundle
@@ -88,6 +89,8 @@ class HubSafetensorsSource(SafetensorsSource):
                 path.unlink(missing_ok=True)
             finally:
                 self._ephemeral_shards.discard(path)
+
+
 def _require_runtime():
     try:
         import torch
@@ -120,6 +123,8 @@ def _rms_norm(hidden: Any, weight: Any, eps: float) -> Any:
     variance = normalized.pow(2).mean(-1, keepdim=True)
     normalized = normalized * (variance + eps).rsqrt()
     return weight * normalized.to(input_dtype)
+
+
 def _load_attention(
     source: SafetensorsSource,
     *,
@@ -157,6 +162,8 @@ def _load_vector(
     if value.ndim != 1:
         raise GLM53StreamingCaptureError(f"expected vector tensor: {key}")
     return value.to(device)
+
+
 def _route_sparse_moe(
     hidden: Any,
     *,
@@ -192,11 +199,15 @@ def _route_sparse_moe(
     )[1]
     group_mask = torch.zeros_like(group_scores)
     group_mask.scatter_(1, group_idx, 1)
-    score_mask = group_mask.unsqueeze(-1).expand(
-        -1,
-        num_group,
-        group_width,
-    ).reshape(-1, experts)
+    score_mask = (
+        group_mask.unsqueeze(-1)
+        .expand(
+            -1,
+            num_group,
+            group_width,
+        )
+        .reshape(-1, experts)
+    )
     scores_for_choice = scores_for_choice.masked_fill(
         ~score_mask.bool(),
         float("-inf"),
@@ -209,9 +220,7 @@ def _route_sparse_moe(
     )[1]
     topk_weights = scores.gather(1, topk_indices)
     if normalize:
-        topk_weights = topk_weights / (
-            topk_weights.sum(dim=-1, keepdim=True) + 1e-20
-        )
+        topk_weights = topk_weights / (topk_weights.sum(dim=-1, keepdim=True) + 1e-20)
     topk_weights = topk_weights * scaling
     return topk_weights, topk_indices
 
@@ -232,6 +241,8 @@ def _dense_mlp(
     intermediate = F.silu(gate) * up
     output = F.linear(intermediate, down_w)
     return output, intermediate
+
+
 def _sparse_moe(
     source: SafetensorsSource,
     *,
@@ -242,9 +253,7 @@ def _sparse_moe(
 ) -> tuple[Any, Any]:
     torch, F, *_ = _require_runtime()
     router_weight = source.get(f"{prefix}.gate.weight").to(device)
-    correction_bias = source.get(
-        f"{prefix}.gate.e_score_correction_bias"
-    ).to(device)
+    correction_bias = source.get(f"{prefix}.gate.e_score_correction_bias").to(device)
     topk_weights, topk_indices = _route_sparse_moe(
         hidden,
         router_weight=router_weight,
@@ -291,9 +300,7 @@ def _append_valid(
 ) -> None:
     flat = value.reshape(-1, *value.shape[2:])
     selected = flat[valid_mask.reshape(-1)]
-    captures.setdefault(key, []).append(
-        selected.detach().contiguous().cpu()
-    )
+    captures.setdefault(key, []).append(selected.detach().contiguous().cpu())
 
 
 def _prepare_batch(
@@ -310,11 +317,15 @@ def _prepare_batch(
         attention_mask = attention_mask.to(device=device).bool()
     position_ids = batch.get("position_ids")
     if position_ids is None:
-        position_ids = torch.arange(
-            input_ids.shape[1],
-            device=device,
-            dtype=torch.long,
-        ).unsqueeze(0).expand(input_ids.shape[0], -1)
+        position_ids = (
+            torch.arange(
+                input_ids.shape[1],
+                device=device,
+                dtype=torch.long,
+            )
+            .unsqueeze(0)
+            .expand(input_ids.shape[0], -1)
+        )
     else:
         position_ids = position_ids.to(device=device, dtype=torch.long)
     return input_ids, attention_mask, position_ids
@@ -376,9 +387,7 @@ def capture_glm53_bootstrap_streaming(
         else tuple(dict(batch) for batch in batches)
     )
     if not batch_tuple:
-        raise GLM53StreamingCaptureError(
-            "at least one token batch is required"
-        )
+        raise GLM53StreamingCaptureError("at least one token batch is required")
 
     captures: dict[str, list[Any]] = {}
     total_samples = 0
@@ -433,9 +442,7 @@ def capture_glm53_bootstrap_streaming(
                 )
                 compressed_kv = None
                 if layer in capture_layers:
-                    compressed_kv = attention.kv_a_proj_with_mqa(
-                        attention_input
-                    )
+                    compressed_kv = attention.kv_a_proj_with_mqa(attention_input)
                 attention_output, _, attention_topk = attention(
                     hidden_states=attention_input,
                     attention_mask=causal,
@@ -532,8 +539,7 @@ def capture_glm53_bootstrap_streaming(
             "streaming capture produced no mapped calibration spaces"
         )
     spaces = {
-        key: torch.cat(parts, dim=0).contiguous()
-        for key, parts in captures.items()
+        key: torch.cat(parts, dim=0).contiguous() for key, parts in captures.items()
     }
     for key, value in spaces.items():
         if int(value.shape[0]) != total_samples:

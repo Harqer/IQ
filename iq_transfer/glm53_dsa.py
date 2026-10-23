@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any, Sequence
+from typing import Any
 
 import numpy as np
 
@@ -28,7 +29,6 @@ def _array(value: Any) -> np.ndarray:
 def _rotary_last_permutation(head_dim: int, rope_dim: int) -> np.ndarray:
     if head_dim <= 0 or rope_dim <= 0 or rope_dim > head_dim:
         raise GLM53DSATransformError("invalid DSA head/rope dimensions")
-    pass_dim = head_dim - rope_dim
     # GLM indexer storage: [rotary, pass-through].
     # IQ partial-RoPE storage: [pass-through, rotary].
     return np.concatenate(
@@ -59,15 +59,11 @@ def resolve_indexer_source_layer(
     if kind == "full":
         return source_layer
     if kind != "shared":
-        raise GLM53DSATransformError(
-            f"unsupported GLM indexer type {kind!r}"
-        )
+        raise GLM53DSATransformError(f"unsupported GLM indexer type {kind!r}")
     for layer in range(source_layer - 1, -1, -1):
         if str(indexer_types[layer]) == "full":
             return layer
-    raise GLM53DSATransformError(
-        "shared GLM indexer has no preceding full indexer"
-    )
+    raise GLM53DSATransformError("shared GLM indexer has no preceding full indexer")
 
 
 def transform_glm53_dsa_indexer(

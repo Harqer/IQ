@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+
 import torch
 from torch import nn
 from torch.nn import functional as F
@@ -23,7 +24,9 @@ class DoRALinear(nn.Module):
         if rank <= 0:
             raise ValueError("DoRA rank must be positive")
         if base.bias is not None:
-            raise ValueError("DoRALinear currently requires a bias-free base linear layer")
+            raise ValueError(
+                "DoRALinear currently requires a bias-free base linear layer"
+            )
         if not (0.0 <= dropout < 1.0):
             raise ValueError("DoRA dropout must be in [0, 1)")
         self.base = base
@@ -37,7 +40,9 @@ class DoRALinear(nn.Module):
         nn.init.kaiming_uniform_(self.lora_A, a=math.sqrt(5))
         with torch.no_grad():
             magnitude = base.weight.float().norm(dim=1).clamp_min(self.eps)
-        self.magnitude = nn.Parameter(magnitude.to(dtype=base.weight.dtype, device=base.weight.device))
+        self.magnitude = nn.Parameter(
+            magnitude.to(dtype=base.weight.dtype, device=base.weight.device)
+        )
         if freeze_base:
             self.base.weight.requires_grad_(False)
 
@@ -54,7 +59,10 @@ class DoRALinear(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if self.training and self.dropout.p > 0:
             base_out = F.linear(x, self.base.weight)
-            low_rank = F.linear(F.linear(self.dropout(x), self.lora_A), self.lora_B) * self.scaling
+            low_rank = (
+                F.linear(F.linear(self.dropout(x), self.lora_A), self.lora_B)
+                * self.scaling
+            )
             direction_out = base_out + low_rank
             direction = self.direction_weight()
             norm = direction.float().norm(dim=1).clamp_min(self.eps).to(direction.dtype)
@@ -104,7 +112,7 @@ def install_dora(
         parent, name = _resolve_parent_module(model, path)
         child = getattr(parent, name, None)
         if not isinstance(child, nn.Linear):
-            raise ValueError(f"DoRA target is not nn.Linear: {path!r}")
+            raise TypeError(f"DoRA target is not nn.Linear: {path!r}")
         staged.append(
             (
                 parent,

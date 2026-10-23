@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 import math
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -86,7 +86,9 @@ def fit_weight_importance_subcloning_map(
     if len(gate_shape) != 2 or up_shape != gate_shape or len(down_shape) != 2:
         raise GLM53DirectTransformError("dense MLP weights have incompatible shapes")
     if down_shape != (gate_shape[1], gate_shape[0]):
-        raise GLM53DirectTransformError("dense MLP down projection shape is incompatible")
+        raise GLM53DirectTransformError(
+            "dense MLP down projection shape is incompatible"
+        )
     if target_features <= 0 or target_features > gate_shape[0]:
         raise GLM53DirectTransformError(
             "target_features must be in [1, donor_intermediate_size]"
@@ -99,23 +101,18 @@ def fit_weight_importance_subcloning_map(
     if hasattr(gate_weight, "detach"):
         # Keep the 12,288x6,144 GLM dense matrices in their source dtype and
         # promote only small blocks to FP32; never materialize three FP64 copies.
-        import torch
 
         for weight in (gate_weight, up_weight):
             source = weight.detach().cpu()
             for start in range(0, intermediate, chunk_size):
                 stop = min(start + chunk_size, intermediate)
                 block = source[start:stop].float()
-                energy[start:stop] += (
-                    block.square().mean(dim=1).double().numpy()
-                )
+                energy[start:stop] += block.square().mean(dim=1).double().numpy()
         source_down = down_weight.detach().cpu()
         for start in range(0, intermediate, chunk_size):
             stop = min(start + chunk_size, intermediate)
             block = source_down[:, start:stop].float()
-            energy[start:stop] += (
-                block.square().mean(dim=0).double().numpy()
-            )
+            energy[start:stop] += block.square().mean(dim=0).double().numpy()
         if not np.isfinite(energy).all():
             raise GLM53DirectTransformError("source tensor contains non-finite values")
     else:
@@ -153,9 +150,7 @@ def transport_embedding_and_lm_head(
     embedding = _array(embedding_weight)
     lm_head = _array(lm_head_weight)
     if embedding.ndim != 2 or lm_head.ndim != 2:
-        raise GLM53DirectTransformError(
-            "embedding and LM-head weights must be rank-2"
-        )
+        raise GLM53DirectTransformError("embedding and LM-head weights must be rank-2")
     if embedding.shape != lm_head.shape:
         raise GLM53DirectTransformError(
             "GLM embedding and LM-head shapes must match for lexical transport"
@@ -169,15 +164,13 @@ def transport_embedding_and_lm_head(
     target_embedding = embedding @ residual_map.matrix
     target_lm = lm_head @ np.linalg.pinv(residual_map.matrix).T
     if not np.isfinite(target_embedding).all() or not np.isfinite(target_lm).all():
-        raise GLM53DirectTransformError(
-            "lexical transport produced non-finite weights"
-        )
+        raise GLM53DirectTransformError("lexical transport produced non-finite weights")
     return target_embedding, target_lm
-
 
 
 # Backward-compatible public name used by the GLM transfer API/tests.
 transform_embedding_and_lm_head = transport_embedding_and_lm_head
+
 
 def fit_orthogonal_subspace(
     activations: Any,
@@ -423,21 +416,11 @@ def transform_glm53_mla(
     kv_stride = layout.qk_nope_head_dim + layout.v_head_dim
     for head in range(layout.num_heads):
         q_start = head * layout.qk_head_dim
-        q_nope = q_b[
-            q_start : q_start + layout.qk_nope_head_dim
-        ]
-        q_rope = q_b[
-            q_start + layout.qk_nope_head_dim :
-            q_start + layout.qk_head_dim
-        ]
+        q_nope = q_b[q_start : q_start + layout.qk_nope_head_dim]
+        q_rope = q_b[q_start + layout.qk_nope_head_dim : q_start + layout.qk_head_dim]
         kv_start = head * kv_stride
-        k_expand = kv_b[
-            kv_start : kv_start + layout.qk_nope_head_dim
-        ]
-        v_expand = kv_b[
-            kv_start + layout.qk_nope_head_dim :
-            kv_start + kv_stride
-        ]
+        k_expand = kv_b[kv_start : kv_start + layout.qk_nope_head_dim]
+        v_expand = kv_b[kv_start + layout.qk_nope_head_dim : kv_start + kv_stride]
 
         effective_query = np.concatenate(
             (k_expand.T @ q_nope, q_rope),
@@ -447,12 +430,8 @@ def transform_glm53_mla(
         # scales attention by the original qk_head_dim. Compensate in Q so
         # scaled logits are preserved:
         #   (q_t·k_t)/sqrt(d_t) ~= (q_s·k_s)/sqrt(d_s).
-        scale_compensation = math.sqrt(
-            layout.target_head_dim / layout.qk_head_dim
-        )
-        q_heads.append(
-            scale_compensation * (projection.T @ effective_query)
-        )
+        scale_compensation = math.sqrt(layout.target_head_dim / layout.qk_head_dim)
+        q_heads.append(scale_compensation * (projection.T @ effective_query))
 
         o_start = head * layout.v_head_dim
         o_head = o[:, o_start : o_start + layout.v_head_dim]
@@ -460,14 +439,10 @@ def transform_glm53_mla(
             (layout.source_hidden_size, layout.compressed_kv_dim),
             dtype=np.float64,
         )
-        effective_value_output[:, : layout.kv_lora_rank] = (
-            o_head @ v_expand
-        )
+        effective_value_output[:, : layout.kv_lora_rank] = o_head @ v_expand
         # z_target = z_source @ projection. Decode only the represented
         # subspace before applying the donor V+O composite.
-        decoded_output = (
-            effective_value_output @ np.linalg.pinv(projection).T
-        )
+        decoded_output = effective_value_output @ np.linalg.pinv(projection).T
         output_heads.append(decoded_output)
 
     target_q_b = np.concatenate(q_heads, axis=0)
@@ -517,5 +492,3 @@ def transform_glm53_mla(
         output_group_weight=grouped_output_identity(layout),
         output_weight=target_output,
     )
-
-

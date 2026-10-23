@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import json
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Mapping, Protocol, Sequence
-import json
+from typing import Any, Protocol
 
 
 class DonorError(RuntimeError):
@@ -32,7 +33,7 @@ class DonorConfig:
         return asdict(self)
 
     @classmethod
-    def from_mapping(cls, data: Mapping[str, Any]) -> "DonorConfig":
+    def from_mapping(cls, data: Mapping[str, Any]) -> DonorConfig:
         required = (
             "hidden_size",
             "intermediate_size",
@@ -44,23 +45,29 @@ class DonorConfig:
         if missing:
             raise DonorError(f"missing donor config fields: {', '.join(missing)}")
         return cls(
-            model_name=str(data.get("_name_or_path") or data.get("name_or_path") or "unknown"),
+            model_name=str(
+                data.get("_name_or_path") or data.get("name_or_path") or "unknown"
+            ),
             model_type=str(data.get("model_type") or "unknown"),
             hidden_size=int(data["hidden_size"]),
             intermediate_size=int(data["intermediate_size"]),
             num_hidden_layers=int(data["num_hidden_layers"]),
             num_attention_heads=int(data["num_attention_heads"]),
             num_key_value_heads=int(data["num_key_value_heads"]),
-            vocab_size=int(data["vocab_size"]) if data.get("vocab_size") is not None else None,
+            vocab_size=int(data["vocab_size"])
+            if data.get("vocab_size") is not None
+            else None,
             dtype=(
                 str(data.get("dtype") or data.get("torch_dtype"))
-                if (data.get("dtype") is not None or data.get("torch_dtype") is not None)
+                if (
+                    data.get("dtype") is not None or data.get("torch_dtype") is not None
+                )
                 else None
             ),
         )
 
     @classmethod
-    def from_json(cls, path: str | Path) -> "DonorConfig":
+    def from_json(cls, path: str | Path) -> DonorConfig:
         with Path(path).open("r", encoding="utf-8") as handle:
             return cls.from_mapping(json.load(handle))
 
@@ -94,22 +101,19 @@ class OperatorRef:
     row_start: int | None = None
     row_stop: int | None = None
 
-    def materialize(self, source: "TensorSource") -> Any:
+    def materialize(self, source: TensorSource) -> Any:
         tensor = source.get(self.source_key)
         if self.row_start is None:
             return tensor
-        return tensor[self.row_start:self.row_stop]
+        return tensor[self.row_start : self.row_stop]
 
 
 class TensorSource(Protocol):
-    def keys(self) -> Sequence[str]:
-        ...
+    def keys(self) -> Sequence[str]: ...
 
-    def shape(self, key: str) -> tuple[int, ...]:
-        ...
+    def shape(self, key: str) -> tuple[int, ...]: ...
 
-    def get(self, key: str) -> Any:
-        ...
+    def get(self, key: str) -> Any: ...
 
 
 class MappingTensorSource:
@@ -130,11 +134,8 @@ class MappingTensorSource:
 class DonorInspector(Protocol):
     config: DonorConfig
 
-    def layers(self) -> tuple[LayerRef, ...]:
-        ...
+    def layers(self) -> tuple[LayerRef, ...]: ...
 
-    def operators(self, source: TensorSource) -> tuple[OperatorRef, ...]:
-        ...
+    def operators(self, source: TensorSource) -> tuple[OperatorRef, ...]: ...
 
-    def validate_checkpoint(self, source: TensorSource) -> ValidationReport:
-        ...
+    def validate_checkpoint(self, source: TensorSource) -> ValidationReport: ...

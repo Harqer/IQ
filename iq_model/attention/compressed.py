@@ -115,9 +115,7 @@ class GroupedLowRankOutput(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if x.ndim != 3 or x.shape[1:] != (self.num_heads, self.head_dim):
-            raise ValueError(
-                "grouped output expects [tokens, num_heads, head_dim]"
-            )
+            raise ValueError("grouped output expects [tokens, num_heads, head_dim]")
         grouped = x.reshape(
             x.shape[0],
             self.groups,
@@ -144,9 +142,8 @@ def _segments(
             previous_doc = None
             continue
         doc = int(document_ids[col]) if document_ids is not None else 0
-        boundary = (
-            previous_col is not None
-            and (col != previous_col + 1 or doc != previous_doc)
+        boundary = previous_col is not None and (
+            col != previous_col + 1 or doc != previous_doc
         )
         if boundary and current:
             result.append(current)
@@ -497,9 +494,8 @@ class _V4CompressedContextAttention(nn.Module):
             compressed.float(),
         )
         scores = F.relu(scores) * (self.config.index_head_dim**-0.5)
-        weights = (
-            self.index_weight_proj(hidden).float()
-            * (self.config.index_n_heads**-0.5)
+        weights = self.index_weight_proj(hidden).float() * (
+            self.config.index_n_heads**-0.5
         )
         index_scores = (scores * weights.unsqueeze(-1)).sum(dim=1)
 
@@ -570,11 +566,7 @@ class _V4CompressedContextAttention(nn.Module):
             attention_mask=attention_mask,
             document_ids=document_ids,
         )
-        docs = (
-            document_ids.to(x.device)
-            if document_ids is not None
-            else None
-        )
+        docs = document_ids.to(x.device) if document_ids is not None else None
         result: list[IndexerSegmentScores] = []
         for row in range(batch):
             row_docs = docs[row] if docs is not None else None
@@ -631,13 +623,8 @@ class _V4CompressedContextAttention(nn.Module):
             sink,
         )
         numerator = torch.exp(scores - max_score)
-        denominator = (
-            numerator.sum(dim=-1, keepdim=True)
-            + torch.exp(sink - max_score)
-        )
-        weights = numerator / denominator.clamp_min(
-            torch.finfo(numerator.dtype).tiny
-        )
+        denominator = numerator.sum(dim=-1, keepdim=True) + torch.exp(sink - max_score)
+        weights = numerator / denominator.clamp_min(torch.finfo(numerator.dtype).tiny)
         if self.training and self.config.attention_dropout:
             weights = F.dropout(
                 weights,
@@ -707,9 +694,7 @@ class _V4CompressedContextAttention(nn.Module):
                     )
 
             candidates = (
-                torch.cat([local, long_range], dim=0)
-                if long_range.shape[0]
-                else local
+                torch.cat([local, long_range], dim=0) if long_range.shape[0] else local
             )
             outputs.append(self._attend_candidates(q[token], candidates))
 
@@ -738,11 +723,7 @@ class _V4CompressedContextAttention(nn.Module):
             attention_mask=attention_mask,
             document_ids=document_ids,
         )
-        docs = (
-            document_ids.to(x.device)
-            if document_ids is not None
-            else None
-        )
+        docs = document_ids.to(x.device) if document_ids is not None else None
         output = torch.zeros_like(x)
         for row in range(batch):
             row_docs = docs[row] if docs is not None else None

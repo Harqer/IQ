@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping
-import json
 
 import numpy as np
 
@@ -19,16 +19,16 @@ from .glm53_direct import (
     fit_weight_importance_subcloning_map,
 )
 from .glm53_moe import router_usage_from_topk, router_weight_prior
-from .warm import (
-    WarmWeightOperator,
-    align_to_mamba_replication_frame,
-    fit_weight_orthogonal_remap,
-)
 from .transport import (
     CoordinateMap,
     fit_ridge_coordinate_map,
     load_coordinate_map,
     save_coordinate_map,
+)
+from .warm import (
+    WarmWeightOperator,
+    align_to_mamba_replication_frame,
+    fit_weight_orthogonal_remap,
 )
 
 
@@ -51,7 +51,15 @@ class GLM53StageCalibration:
     dense_intermediate_map: CoordinateMap | None = None
 
     def __post_init__(self) -> None:
-        if min(self.stage, self.source_layer, self.context_physical_layer, self.moe_physical_layer) < 0:
+        if (
+            min(
+                self.stage,
+                self.source_layer,
+                self.context_physical_layer,
+                self.moe_physical_layer,
+            )
+            < 0
+        ):
             raise GLM53CalibrationError("stage/layer ids must be non-negative")
         if (self.expert_usage is None) == (self.dense_intermediate_map is None):
             raise GLM53CalibrationError(
@@ -60,9 +68,13 @@ class GLM53StageCalibration:
         if self.expert_usage is not None:
             usage = np.asarray(self.expert_usage, dtype=np.float64)
             if usage.ndim != 1 or not np.isfinite(usage).all():
-                raise GLM53CalibrationError("expert_usage must be a finite rank-1 vector")
+                raise GLM53CalibrationError(
+                    "expert_usage must be a finite rank-1 vector"
+                )
             if np.any(usage < 0) or float(usage.sum()) <= 0:
-                raise GLM53CalibrationError("expert_usage must be non-negative and non-empty")
+                raise GLM53CalibrationError(
+                    "expert_usage must be non-negative and non-empty"
+                )
 
 
 @dataclass(frozen=True)
@@ -86,7 +98,9 @@ class GLM53CalibrationSolution:
         stage_ids = [stage.stage for stage in self.stages]
         source_ids = [stage.source_layer for stage in self.stages]
         if stage_ids != list(range(len(self.stages))):
-            raise GLM53CalibrationError("calibration stages must be contiguous from zero")
+            raise GLM53CalibrationError(
+                "calibration stages must be contiguous from zero"
+            )
         if source_ids != sorted(source_ids) or len(source_ids) != len(set(source_ids)):
             raise GLM53CalibrationError(
                 "source layer correspondence must be monotonic and unique"
@@ -109,9 +123,13 @@ class GLM53CalibrationSolution:
                 "latent_map": f"stage-{stage.stage:02d}-latent",
             }
             save_coordinate_map(stage.residual_map, root / names["residual_map"])
-            save_coordinate_map(stage.attention_input_map, root / names["attention_input_map"])
+            save_coordinate_map(
+                stage.attention_input_map, root / names["attention_input_map"]
+            )
             save_coordinate_map(stage.moe_input_map, root / names["moe_input_map"])
-            save_coordinate_map(stage.compressed_kv_map, root / names["compressed_kv_map"])
+            save_coordinate_map(
+                stage.compressed_kv_map, root / names["compressed_kv_map"]
+            )
             save_coordinate_map(stage.latent_map, root / names["latent_map"])
             dense_name: str | None = None
             if stage.dense_intermediate_map is not None:
@@ -120,7 +138,9 @@ class GLM53CalibrationSolution:
             usage_name: str | None = None
             if stage.expert_usage is not None:
                 usage_name = f"stage-{stage.stage:02d}-expert-usage.npy"
-                np.save(root / usage_name, np.asarray(stage.expert_usage, dtype=np.float64))
+                np.save(
+                    root / usage_name, np.asarray(stage.expert_usage, dtype=np.float64)
+                )
             records.append(
                 {
                     "stage": stage.stage,
@@ -144,17 +164,21 @@ class GLM53CalibrationSolution:
             "stages": records,
         }
         path = root / "glm53_calibration.json"
-        path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        path.write_text(
+            json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
         return path
 
     @classmethod
-    def load(cls, directory: str | Path) -> "GLM53CalibrationSolution":
+    def load(cls, directory: str | Path) -> GLM53CalibrationSolution:
         root = Path(directory)
         path = root / "glm53_calibration.json"
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
-            raise GLM53CalibrationError(f"invalid GLM calibration manifest: {path}") from exc
+            raise GLM53CalibrationError(
+                f"invalid GLM calibration manifest: {path}"
+            ) from exc
         if raw.get("schema_version") != 2:
             raise GLM53CalibrationError(
                 f"unsupported GLM calibration schema: {raw.get('schema_version')}"
@@ -178,9 +202,13 @@ class GLM53CalibrationSolution:
                     context_physical_layer=int(record["context_physical_layer"]),
                     moe_physical_layer=int(record["moe_physical_layer"]),
                     residual_map=load_coordinate_map(root / record["residual_map"]),
-                    attention_input_map=load_coordinate_map(root / record["attention_input_map"]),
+                    attention_input_map=load_coordinate_map(
+                        root / record["attention_input_map"]
+                    ),
                     moe_input_map=load_coordinate_map(root / record["moe_input_map"]),
-                    compressed_kv_map=load_coordinate_map(root / record["compressed_kv_map"]),
+                    compressed_kv_map=load_coordinate_map(
+                        root / record["compressed_kv_map"]
+                    ),
                     latent_map=load_coordinate_map(root / record["latent_map"]),
                     expert_usage=usage,
                     dense_intermediate_map=dense,
@@ -206,11 +234,15 @@ def _allowed_source_layers(
     if source_indexer_types is None:
         return None
     if len(source_indexer_types) < source_layers:
-        raise GLM53CalibrationError("source_indexer_types must cover every GLM source layer")
+        raise GLM53CalibrationError(
+            "source_indexer_types must cover every GLM source layer"
+        )
     unknown = sorted(set(source_indexer_types[:source_layers]) - {"full", "shared"})
     if unknown:
         raise GLM53CalibrationError(f"unsupported GLM indexer types: {unknown}")
-    full = frozenset(i for i in range(source_layers) if source_indexer_types[i] == "full")
+    full = frozenset(
+        i for i in range(source_layers) if source_indexer_types[i] == "full"
+    )
     allowed: dict[int, frozenset[int]] = {}
     for stage, (context_physical, _) in enumerate(stage_positions):
         if target_config.schedule.layers[context_physical] is HybridLayerType.CSA:
@@ -314,8 +346,12 @@ def solve_glm53_calibration(
             ridge=ridge,
             source_space=f"glm53.layer.{source_layer}.attn_in",
             target_space=f"iq.layer.{context_physical}.norm_out",
-            validation_source=source_validation.require(f"layer.{source_layer}.attn_in"),
-            validation_target=target_validation.require(f"layer.{context_physical}.norm_out"),
+            validation_source=source_validation.require(
+                f"layer.{source_layer}.attn_in"
+            ),
+            validation_target=target_validation.require(
+                f"layer.{context_physical}.norm_out"
+            ),
         )
         moe_input_map = fit_ridge_coordinate_map(
             source_fit.require(f"layer.{source_layer}.mlp_in"),
@@ -324,7 +360,9 @@ def solve_glm53_calibration(
             source_space=f"glm53.layer.{source_layer}.mlp_in",
             target_space=f"iq.layer.{moe_physical}.norm_out",
             validation_source=source_validation.require(f"layer.{source_layer}.mlp_in"),
-            validation_target=target_validation.require(f"layer.{moe_physical}.norm_out"),
+            validation_target=target_validation.require(
+                f"layer.{moe_physical}.norm_out"
+            ),
         )
         kv_map = fit_mla_compressed_subspace(
             source_fit.require(f"layer.{source_layer}.compressed_kv"),
@@ -346,7 +384,12 @@ def solve_glm53_calibration(
             ).coordinate_map
         else:
             usage = router_usage_from_topk(
-                [source_fit.require(f"layer.{source_layer}.router_topk").detach().cpu().numpy()],
+                [
+                    source_fit.require(f"layer.{source_layer}.router_topk")
+                    .detach()
+                    .cpu()
+                    .numpy()
+                ],
                 num_experts=source_num_experts,
             )
         stages.append(
@@ -396,12 +439,15 @@ def _bootstrap_source_mapping(
     target_config: IQHybridConfig,
     source_indexer_types: tuple[str, ...],
 ) -> dict[int, int]:
-    allowed = _allowed_source_layers(
-        source_layers=source_layers,
-        stage_positions=stage_positions,
-        target_config=target_config,
-        source_indexer_types=source_indexer_types,
-    ) or {}
+    allowed = (
+        _allowed_source_layers(
+            source_layers=source_layers,
+            stage_positions=stage_positions,
+            target_config=target_config,
+            source_indexer_types=source_indexer_types,
+        )
+        or {}
+    )
     nt, ns = len(stage_positions), source_layers
     inf = float("inf")
     costs = np.full((nt, ns), inf, dtype=np.float64)
@@ -648,9 +694,7 @@ def bootstrap_glm53_calibration(
             device=warm_device,
         )
         if source_fit is not None:
-            kv_basis_samples = source_fit.require(
-                f"layer.{source_layer}.compressed_kv"
-            )
+            kv_basis_samples = source_fit.require(f"layer.{source_layer}.compressed_kv")
         else:
             # Under an isotropic residual basis, W.T has exactly the output
             # covariance W W.T used by activation PCA, without a forward pass.
@@ -685,9 +729,10 @@ def bootstrap_glm53_calibration(
             if source_fit is not None:
                 usage = router_usage_from_topk(
                     [
-                        source_fit.require(
-                            f"layer.{source_layer}.router_topk"
-                        ).detach().cpu().numpy()
+                        source_fit.require(f"layer.{source_layer}.router_topk")
+                        .detach()
+                        .cpu()
+                        .numpy()
                     ],
                     num_experts=source_num_experts,
                 )

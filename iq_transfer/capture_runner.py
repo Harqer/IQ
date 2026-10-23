@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any
 
 from .calibration import ActivationPair, PhiLayerCalibration
 from .capture import ActivationTap, TorchActivationCapture
@@ -36,13 +37,17 @@ class ActivationBundle:
             if not str(name).strip():
                 raise CaptureRunnerError("activation space names must be non-empty")
             if not isinstance(value, torch.Tensor) or value.ndim != 2:
-                raise CaptureRunnerError(f"activation space {name!r} must be a rank-2 tensor")
+                raise CaptureRunnerError(
+                    f"activation space {name!r} must be a rank-2 tensor"
+                )
             if value.shape[0] != self.sample_count:
                 raise CaptureRunnerError(
                     f"activation space {name!r} has {value.shape[0]} samples, expected {self.sample_count}"
                 )
             if not bool(torch.isfinite(value).all()):
-                raise CaptureRunnerError(f"activation space {name!r} contains non-finite values")
+                raise CaptureRunnerError(
+                    f"activation space {name!r} contains non-finite values"
+                )
 
     def require(self, name: str):
         try:
@@ -61,16 +66,20 @@ class PhiCaptureLayout:
     head_dim: int
 
     @classmethod
-    def from_model(cls, model: Any) -> "PhiCaptureLayout":
+    def from_model(cls, model: Any) -> PhiCaptureLayout:
         config = getattr(model, "config", None)
         if config is None or getattr(config, "model_type", None) != "phi3":
-            raise CaptureRunnerError("Phi capture requires a Phi3ForCausalLM-style model")
+            raise CaptureRunnerError(
+                "Phi capture requires a Phi3ForCausalLM-style model"
+            )
         hidden = int(config.hidden_size)
         q_heads = int(config.num_attention_heads)
         kv_heads = int(config.num_key_value_heads)
         head_dim = int(getattr(config, "head_dim", hidden // q_heads))
         if q_heads * head_dim != hidden:
-            raise CaptureRunnerError("Phi Q projection width does not equal hidden_size")
+            raise CaptureRunnerError(
+                "Phi Q projection width does not equal hidden_size"
+            )
         return cls(
             num_layers=int(config.num_hidden_layers),
             hidden_size=hidden,
@@ -99,15 +108,13 @@ class GLM53CaptureLayout:
     mlp_layer_types: tuple[str, ...]
 
     @classmethod
-    def from_model(cls, model: Any) -> "GLM53CaptureLayout":
+    def from_model(cls, model: Any) -> GLM53CaptureLayout:
         config = getattr(model, "config", None)
         if config is None or getattr(config, "model_type", None) != "glm_moe_dsa":
             raise CaptureRunnerError(
                 "GLM-5.3 capture requires a GlmMoeDsaForCausalLM-style model"
             )
-        layer_types = tuple(
-            str(x) for x in getattr(config, "mlp_layer_types", ())
-        )
+        layer_types = tuple(str(x) for x in getattr(config, "mlp_layer_types", ()))
         if len(layer_types) != int(config.num_hidden_layers):
             first_dense = int(getattr(config, "first_k_dense_replace", 3))
             layer_types = tuple(
@@ -125,9 +132,7 @@ class GLM53CaptureLayout:
 
 
 def glm53_capture_taps(layout: GLM53CaptureLayout) -> tuple[ActivationTap, ...]:
-    taps: list[ActivationTap] = [
-        ActivationTap("embedding", "model.embed_tokens")
-    ]
+    taps: list[ActivationTap] = [ActivationTap("embedding", "model.embed_tokens")]
     for layer in range(layout.num_layers):
         prefix = f"model.layers.{layer}"
         name = f"layer.{layer}"
@@ -206,9 +211,7 @@ def glm53_capture_taps(layout: GLM53CaptureLayout) -> tuple[ActivationTap, ...]:
 def iq_hybrid_residual_taps(num_layers: int) -> tuple[ActivationTap, ...]:
     if num_layers <= 0:
         raise CaptureRunnerError("num_layers must be positive")
-    taps: list[ActivationTap] = [
-        ActivationTap("embedding", "embed_tokens")
-    ]
+    taps: list[ActivationTap] = [ActivationTap("embedding", "embed_tokens")]
     for layer in range(num_layers):
         taps.extend(
             [
@@ -223,9 +226,7 @@ def iq_hybrid_residual_taps(num_layers: int) -> tuple[ActivationTap, ...]:
                 ),
             ]
         )
-    taps.append(
-        ActivationTap("final_in", "norm", capture="input")
-    )
+    taps.append(ActivationTap("final_in", "norm", capture="input"))
     taps.append(ActivationTap("final", "norm"))
     return tuple(taps)
 
@@ -241,7 +242,9 @@ def phi_capture_taps(num_layers: int) -> tuple[ActivationTap, ...]:
             [
                 ActivationTap(f"{name}.attn_in", f"{prefix}.input_layernorm"),
                 ActivationTap(f"{name}.qkv", f"{prefix}.self_attn.qkv_proj"),
-                ActivationTap(f"{name}.attn_out", f"{prefix}.self_attn", tensor_index=0),
+                ActivationTap(
+                    f"{name}.attn_out", f"{prefix}.self_attn", tensor_index=0
+                ),
                 ActivationTap(f"{name}.mlp_in", f"{prefix}.post_attention_layernorm"),
                 ActivationTap(f"{name}.gate_up", f"{prefix}.mlp.gate_up_proj"),
                 ActivationTap(f"{name}.mlp_out", f"{prefix}.mlp"),
@@ -304,12 +307,19 @@ def _prepare_batch(
     attention_mask = batch.get("attention_mask")
     if attention_mask is None:
         attention_mask = torch.ones_like(input_ids, dtype=torch.bool)
-    elif not isinstance(attention_mask, torch.Tensor) or attention_mask.shape != input_ids.shape:
-        raise CaptureRunnerError("attention_mask must be a tensor with the same shape as input_ids")
+    elif (
+        not isinstance(attention_mask, torch.Tensor)
+        or attention_mask.shape != input_ids.shape
+    ):
+        raise CaptureRunnerError(
+            "attention_mask must be a tensor with the same shape as input_ids"
+        )
 
     mask = attention_mask.to(dtype=torch.bool, device="cpu")
     if not allow_padding and not bool(mask.all()):
-        raise CaptureRunnerError("IQ capture currently requires padding-free/packed batches")
+        raise CaptureRunnerError(
+            "IQ capture currently requires padding-free/packed batches"
+        )
 
     kwargs: dict[str, Any] = {
         "input_ids": input_ids.to(device),
@@ -317,12 +327,18 @@ def _prepare_batch(
     }
     if "position_ids" in batch:
         position_ids = batch["position_ids"]
-        if not isinstance(position_ids, torch.Tensor) or position_ids.shape != input_ids.shape:
+        if (
+            not isinstance(position_ids, torch.Tensor)
+            or position_ids.shape != input_ids.shape
+        ):
             raise CaptureRunnerError("position_ids must match input_ids shape")
         kwargs["position_ids"] = position_ids.to(device)
     if "document_ids" in batch:
         document_ids = batch["document_ids"]
-        if not isinstance(document_ids, torch.Tensor) or document_ids.shape != input_ids.shape:
+        if (
+            not isinstance(document_ids, torch.Tensor)
+            or document_ids.shape != input_ids.shape
+        ):
             raise CaptureRunnerError("document_ids must match input_ids shape")
         kwargs["document_ids"] = document_ids.to(device)
     return kwargs, mask
@@ -342,9 +358,13 @@ def _masked_concat(records: Mapping[str, tuple[Any, ...]], name: str, masks: lis
     selected: list[Any] = []
     for value, mask in zip(values, masks):
         if not isinstance(value, torch.Tensor) or value.ndim != 3:
-            raise CaptureRunnerError(f"captured {name!r} must have shape [batch, sequence, features]")
+            raise CaptureRunnerError(
+                f"captured {name!r} must have shape [batch, sequence, features]"
+            )
         if tuple(value.shape[:2]) != tuple(mask.shape):
-            raise CaptureRunnerError(f"captured {name!r} batch/sequence shape does not match attention mask")
+            raise CaptureRunnerError(
+                f"captured {name!r} batch/sequence shape does not match attention mask"
+            )
         flat = value.float().reshape(-1, value.shape[-1])
         selected.append(flat[mask.reshape(-1)])
     result = torch.cat(selected, dim=0).contiguous()
@@ -384,7 +404,9 @@ def _masked_concat_router(
     if result.numel() == 0:
         raise CaptureRunnerError(f"capture record {name!r} has no valid tokens")
     if result.dtype not in (torch.int32, torch.int64):
-        raise CaptureRunnerError(f"captured {name!r} router indices must be integer typed")
+        raise CaptureRunnerError(
+            f"captured {name!r} router indices must be integer typed"
+        )
     return result
 
 
@@ -543,7 +565,9 @@ def capture_phi_activations(
 ) -> ActivationBundle:
     torch = _require_torch()
     layout = PhiCaptureLayout.from_model(model)
-    records, masks = _run_capture(model, batches, phi_capture_taps(layout.num_layers), phi=True)
+    records, masks = _run_capture(
+        model, batches, phi_capture_taps(layout.num_layers), phi=True
+    )
     spaces: dict[str, Any] = {
         "embedding": _masked_concat(records, "embedding", masks),
         "final": _masked_concat(records, "final", masks),
@@ -571,22 +595,34 @@ def capture_phi_activations(
 
         spaces.update(
             {
-                f"{prefix}.attn_in": _masked_concat(records, f"{prefix}.attn_in", masks),
+                f"{prefix}.attn_in": _masked_concat(
+                    records, f"{prefix}.attn_in", masks
+                ),
                 f"{prefix}.q": q.contiguous(),
                 f"{prefix}.k": k.contiguous(),
                 f"{prefix}.v": v.contiguous(),
-                f"{prefix}.attn_out": _masked_concat(records, f"{prefix}.attn_out", masks),
+                f"{prefix}.attn_out": _masked_concat(
+                    records, f"{prefix}.attn_out", masks
+                ),
                 f"{prefix}.mlp_in": _masked_concat(records, f"{prefix}.mlp_in", masks),
                 f"{prefix}.mlp_gate": gate.contiguous(),
                 f"{prefix}.mlp_up": up.contiguous(),
-                f"{prefix}.mlp_hidden": (torch.nn.functional.silu(gate) * up).contiguous(),
-                f"{prefix}.mlp_out": _masked_concat(records, f"{prefix}.mlp_out", masks),
-                f"{prefix}.residual_out": _masked_concat(records, f"{prefix}.residual_out", masks),
+                f"{prefix}.mlp_hidden": (
+                    torch.nn.functional.silu(gate) * up
+                ).contiguous(),
+                f"{prefix}.mlp_out": _masked_concat(
+                    records, f"{prefix}.mlp_out", masks
+                ),
+                f"{prefix}.residual_out": _masked_concat(
+                    records, f"{prefix}.residual_out", masks
+                ),
             }
         )
 
     sample_count = int(spaces["embedding"].shape[0])
-    return ActivationBundle(spaces=spaces, sample_count=sample_count, batch_count=len(masks))
+    return ActivationBundle(
+        spaces=spaces, sample_count=sample_count, batch_count=len(masks)
+    )
 
 
 def capture_iq_activations(
@@ -596,7 +632,9 @@ def capture_iq_activations(
     torch = _require_torch()
     config = getattr(model, "config", None)
     if config is None or not hasattr(config, "num_hidden_layers"):
-        raise CaptureRunnerError("IQ capture requires a model with IQModelConfig-like config")
+        raise CaptureRunnerError(
+            "IQ capture requires a model with IQModelConfig-like config"
+        )
 
     records, masks = _run_capture(
         model,
@@ -615,22 +653,34 @@ def capture_iq_activations(
         up = _masked_concat(records, f"{prefix}.up", masks)
         spaces.update(
             {
-                f"{prefix}.attn_in": _masked_concat(records, f"{prefix}.attn_in", masks),
+                f"{prefix}.attn_in": _masked_concat(
+                    records, f"{prefix}.attn_in", masks
+                ),
                 f"{prefix}.q": _masked_concat(records, f"{prefix}.q", masks),
                 f"{prefix}.k": _masked_concat(records, f"{prefix}.k", masks),
                 f"{prefix}.v": _masked_concat(records, f"{prefix}.v", masks),
-                f"{prefix}.attn_out": _masked_concat(records, f"{prefix}.attn_out", masks),
+                f"{prefix}.attn_out": _masked_concat(
+                    records, f"{prefix}.attn_out", masks
+                ),
                 f"{prefix}.mlp_in": _masked_concat(records, f"{prefix}.mlp_in", masks),
                 f"{prefix}.mlp_gate": gate,
                 f"{prefix}.mlp_up": up,
-                f"{prefix}.mlp_hidden": (torch.nn.functional.silu(gate) * up).contiguous(),
-                f"{prefix}.mlp_out": _masked_concat(records, f"{prefix}.mlp_out", masks),
-                f"{prefix}.residual_out": _masked_concat(records, f"{prefix}.residual_out", masks),
+                f"{prefix}.mlp_hidden": (
+                    torch.nn.functional.silu(gate) * up
+                ).contiguous(),
+                f"{prefix}.mlp_out": _masked_concat(
+                    records, f"{prefix}.mlp_out", masks
+                ),
+                f"{prefix}.residual_out": _masked_concat(
+                    records, f"{prefix}.residual_out", masks
+                ),
             }
         )
 
     sample_count = int(spaces["embedding"].shape[0])
-    return ActivationBundle(spaces=spaces, sample_count=sample_count, batch_count=len(masks))
+    return ActivationBundle(
+        spaces=spaces, sample_count=sample_count, batch_count=len(masks)
+    )
 
 
 def make_activation_pair(
@@ -686,13 +736,16 @@ def build_phi_layer_calibration_from_bundles(
     )
 
 
-
-def save_activation_bundle(bundle: ActivationBundle, path: str | Path) -> tuple[Path, Path]:
+def save_activation_bundle(
+    bundle: ActivationBundle, path: str | Path
+) -> tuple[Path, Path]:
     """Persist a flattened calibration bundle without serializing a model."""
     try:
         from safetensors.torch import save_file
     except ImportError as exc:
-        raise CaptureRunnerError("safetensors is required to save activation bundles") from exc
+        raise CaptureRunnerError(
+            "safetensors is required to save activation bundles"
+        ) from exc
     base = Path(path)
     tensor_path = base.with_suffix(".safetensors")
     metadata_path = base.with_suffix(".json")
@@ -710,7 +763,8 @@ def save_activation_bundle(bundle: ActivationBundle, path: str | Path) -> tuple[
                 "spaces": sorted(tensors),
             },
             sort_keys=True,
-        ) + "\n",
+        )
+        + "\n",
         encoding="utf-8",
     )
     return tensor_path, metadata_path
@@ -720,19 +774,24 @@ def load_activation_bundle(path: str | Path) -> ActivationBundle:
     try:
         from safetensors.torch import load_file
     except ImportError as exc:
-        raise CaptureRunnerError("safetensors is required to load activation bundles") from exc
+        raise CaptureRunnerError(
+            "safetensors is required to load activation bundles"
+        ) from exc
     import json
+
     base = Path(path)
     tensor_path = base.with_suffix(".safetensors")
     metadata_path = base.with_suffix(".json")
     try:
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        raise CaptureRunnerError(f"invalid activation-bundle metadata: {metadata_path}") from exc
+        raise CaptureRunnerError(
+            f"invalid activation-bundle metadata: {metadata_path}"
+        ) from exc
     if metadata.get("schema_version") != 1:
         raise CaptureRunnerError("unsupported activation-bundle schema")
     tensors = load_file(str(tensor_path), device="cpu")
-    expected = set(str(x) for x in metadata.get("spaces", ()))
+    expected = {str(x) for x in metadata.get("spaces", ())}
     if set(tensors) != expected:
         raise CaptureRunnerError("activation-bundle tensor/index mismatch")
     return ActivationBundle(
@@ -740,6 +799,7 @@ def load_activation_bundle(path: str | Path) -> ActivationBundle:
         sample_count=int(metadata["sample_count"]),
         batch_count=int(metadata["batch_count"]),
     )
+
 
 def load_local_glm53_causal_lm(
     checkpoint: str | Path,
@@ -805,11 +865,15 @@ def load_local_phi_causal_lm(
     try:
         from transformers import AutoModelForCausalLM
     except ImportError as exc:
-        raise CaptureRunnerError("transformers is required to load Phi checkpoints") from exc
+        raise CaptureRunnerError(
+            "transformers is required to load Phi checkpoints"
+        ) from exc
 
     checkpoint = Path(checkpoint)
     if not checkpoint.is_dir():
-        raise CaptureRunnerError(f"Phi checkpoint directory does not exist: {checkpoint}")
+        raise CaptureRunnerError(
+            f"Phi checkpoint directory does not exist: {checkpoint}"
+        )
 
     resolved_dtype: Any = dtype
     if isinstance(dtype, str) and dtype != "auto":

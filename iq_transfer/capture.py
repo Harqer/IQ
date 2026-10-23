@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, Literal, Self
 
 
 class CaptureError(RuntimeError):
@@ -26,7 +26,9 @@ def _require_torch():
     try:
         import torch
     except ImportError as exc:
-        raise CaptureError("PyTorch is required for runtime activation capture") from exc
+        raise CaptureError(
+            "PyTorch is required for runtime activation capture"
+        ) from exc
     return torch
 
 
@@ -37,10 +39,14 @@ def _resolve_module(model: Any, path: str) -> Any:
             try:
                 current = current[int(part)]
             except (IndexError, KeyError, TypeError) as exc:
-                raise CaptureError(f"cannot resolve module path {path!r} at index {part}") from exc
+                raise CaptureError(
+                    f"cannot resolve module path {path!r} at index {part}"
+                ) from exc
         else:
             if not hasattr(current, part):
-                raise CaptureError(f"cannot resolve module path {path!r}: missing {part!r}")
+                raise CaptureError(
+                    f"cannot resolve module path {path!r}: missing {part!r}"
+                )
             current = getattr(current, part)
     if not hasattr(current, "register_forward_hook"):
         raise CaptureError(f"resolved object is not a torch module: {path!r}")
@@ -50,14 +56,20 @@ def _resolve_module(model: Any, path: str) -> Any:
 def _select_tensor(value: Any, index: int | None) -> Any:
     if index is not None:
         if not isinstance(value, (tuple, list)):
-            raise CaptureError("tensor_index was set but captured value is not a sequence")
+            raise CaptureError(
+                "tensor_index was set but captured value is not a sequence"
+            )
         if index >= len(value):
-            raise CaptureError(f"tensor_index {index} is out of range for captured sequence length {len(value)}")
+            raise CaptureError(
+                f"tensor_index {index} is out of range for captured sequence length {len(value)}"
+            )
         value = value[index]
     elif isinstance(value, (tuple, list)):
         tensors = [item for item in value if hasattr(item, "detach")]
         if len(tensors) != 1:
-            raise CaptureError("captured sequence has multiple tensors; set tensor_index explicitly")
+            raise CaptureError(
+                "captured sequence has multiple tensors; set tensor_index explicitly"
+            )
         value = tensors[0]
     if not hasattr(value, "detach"):
         raise CaptureError(f"captured value is not a tensor: {type(value).__name__}")
@@ -67,7 +79,13 @@ def _select_tensor(value: Any, index: int | None) -> Any:
 class TorchActivationCapture:
     """Forward-hook activation capture with explicit tap semantics and finite-value checks."""
 
-    def __init__(self, model: Any, taps: tuple[ActivationTap, ...] | list[ActivationTap], *, check_finite: bool = True) -> None:
+    def __init__(
+        self,
+        model: Any,
+        taps: tuple[ActivationTap, ...] | list[ActivationTap],
+        *,
+        check_finite: bool = True,
+    ) -> None:
         self.model = model
         self.taps = tuple(taps)
         if not self.taps:
@@ -86,7 +104,7 @@ class TorchActivationCapture:
             raise CaptureError(f"non-finite values captured at tap {tap.name!r}")
         self._records[tap.name].append(tensor.cpu())
 
-    def __enter__(self) -> "TorchActivationCapture":
+    def __enter__(self) -> Self:
         for tap in self.taps:
             module = _resolve_module(self.model, tap.module_path)
             if tap.capture == "output":
@@ -109,7 +127,9 @@ class TorchActivationCapture:
         if require_complete:
             missing = [name for name, values in self._records.items() if not values]
             if missing:
-                raise CaptureError(f"no activations captured for taps: {', '.join(missing)}")
+                raise CaptureError(
+                    f"no activations captured for taps: {', '.join(missing)}"
+                )
         return {name: tuple(values) for name, values in self._records.items()}
 
     def clear(self) -> None:
@@ -117,16 +137,20 @@ class TorchActivationCapture:
             values.clear()
 
 
-def save_capture_records(records: dict[str, tuple[Any, ...]], path: str) -> tuple[str, str]:
+def save_capture_records(
+    records: dict[str, tuple[Any, ...]], path: str
+) -> tuple[str, str]:
     """Persist captured tensors as safetensors plus a deterministic JSON index."""
-    from pathlib import Path
     import json
+    from pathlib import Path
 
     torch = _require_torch()
     try:
         from safetensors.torch import save_file
     except ImportError as exc:
-        raise CaptureError("safetensors is required to persist activation capture artifacts") from exc
+        raise CaptureError(
+            "safetensors is required to persist activation capture artifacts"
+        ) from exc
 
     base = Path(path)
     tensor_path = base.with_suffix(".safetensors")
@@ -140,9 +164,13 @@ def save_capture_records(records: dict[str, tuple[Any, ...]], path: str) -> tupl
         keys: list[str] = []
         for i, value in enumerate(values):
             if not isinstance(value, torch.Tensor):
-                raise CaptureError(f"activation record {tap_name}[{i}] is not a torch tensor")
+                raise CaptureError(
+                    f"activation record {tap_name}[{i}] is not a torch tensor"
+                )
             if not bool(torch.isfinite(value).all()):
-                raise CaptureError(f"activation record {tap_name}[{i}] contains non-finite values")
+                raise CaptureError(
+                    f"activation record {tap_name}[{i}] contains non-finite values"
+                )
             key = f"{tap_name}/{i:06d}"
             flat[key] = value.detach().contiguous().cpu()
             keys.append(key)
@@ -151,19 +179,23 @@ def save_capture_records(records: dict[str, tuple[Any, ...]], path: str) -> tupl
         raise CaptureError("cannot persist an empty capture record set")
     save_file(flat, str(tensor_path))
     metadata = {"schema_version": 1, "index": index}
-    metadata_path.write_text(json.dumps(metadata, sort_keys=True) + "\n", encoding="utf-8")
+    metadata_path.write_text(
+        json.dumps(metadata, sort_keys=True) + "\n", encoding="utf-8"
+    )
     return str(tensor_path), str(metadata_path)
 
 
 def load_capture_records(path: str) -> dict[str, tuple[Any, ...]]:
-    from pathlib import Path
     import json
+    from pathlib import Path
 
     _require_torch()
     try:
         from safetensors.torch import load_file
     except ImportError as exc:
-        raise CaptureError("safetensors is required to load activation capture artifacts") from exc
+        raise CaptureError(
+            "safetensors is required to load activation capture artifacts"
+        ) from exc
 
     base = Path(path)
     tensor_path = base.with_suffix(".safetensors")
@@ -171,7 +203,9 @@ def load_capture_records(path: str) -> dict[str, tuple[Any, ...]]:
     if not tensor_path.is_file() or not metadata_path.is_file():
         raise CaptureError(f"activation capture artifact is incomplete: {base}")
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-    if metadata.get("schema_version") != 1 or not isinstance(metadata.get("index"), dict):
+    if metadata.get("schema_version") != 1 or not isinstance(
+        metadata.get("index"), dict
+    ):
         raise CaptureError("unsupported or invalid activation capture metadata")
     tensors = load_file(str(tensor_path), device="cpu")
     expected = {key for keys in metadata["index"].values() for key in keys}

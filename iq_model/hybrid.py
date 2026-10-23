@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import json
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from hashlib import sha256
-from typing import Literal, Mapping
-import json
+from typing import Literal
 
 import torch
 from torch import nn
@@ -18,10 +19,16 @@ from .attention import (
 )
 from .config import IQModelConfig
 from .energy import ReasoningEnergyCritic, ReasoningEnergyCriticConfig
-from .mlp import MoEOutput, RoutedMoEConfig, RoutedSwiGLUMoELayer, StableLatentMoEConfig, StableLatentMoELayer, StableLatentMoEOutput
+from .mlp import (
+    MoEOutput,
+    RoutedMoEConfig,
+    RoutedSwiGLUMoELayer,
+    StableLatentMoEConfig,
+    StableLatentMoELayer,
+    StableLatentMoEOutput,
+)
 from .multimodal import IQMultimodalConfig, IQMultimodalPathway
 from .norm import RMSNorm
-from .residual import BlockAttentionResidual, BlockAttnResConfig
 from .reasoning import (
     ReasoningRecurrence,
     ReasoningRecurrenceConfig,
@@ -29,6 +36,7 @@ from .reasoning import (
     ReasoningStateInjector,
     ReasoningVerifierProtocol,
 )
+from .residual import BlockAttentionResidual, BlockAttnResConfig
 from .state import Mamba3MIMOConfig, Mamba3MIMOState
 
 
@@ -62,9 +70,7 @@ class IQHybridConfig:
                 f"MoE hidden_size={self.moe.hidden_size} does not match hidden_size={hidden}"
             )
         if self.moe_variant not in {"swiglu", "stable_latent"}:
-            raise HybridModelError(
-                "moe_variant must be 'swiglu' or 'stable_latent'"
-            )
+            raise HybridModelError("moe_variant must be 'swiglu' or 'stable_latent'")
         if self.moe_variant == "stable_latent":
             if self.stable_moe is None:
                 raise HybridModelError(
@@ -86,10 +92,9 @@ class IQHybridConfig:
             )
         if self.schedule.count(HybridLayerType.MOE) == 0:
             raise HybridModelError("hybrid schedule requires at least one MoE layer")
-        compressed_layers = (
-            self.schedule.count(HybridLayerType.CSA)
-            + self.schedule.count(HybridLayerType.HCA)
-        )
+        compressed_layers = self.schedule.count(
+            HybridLayerType.CSA
+        ) + self.schedule.count(HybridLayerType.HCA)
         if compressed_layers:
             if self.compressed_context is None:
                 raise HybridModelError(
@@ -127,9 +132,7 @@ class IQHybridConfig:
                         "energy_critic context_dim must match model hidden_size"
                     )
         elif self.energy_critic is not None:
-            raise HybridModelError(
-                "energy_critic requires reasoning recurrence"
-            )
+            raise HybridModelError("energy_critic requires reasoning recurrence")
         if self.require_verifier_stability and self.energy_critic is None:
             raise HybridModelError(
                 "require_verifier_stability requires a configured reasoning verifier"
@@ -137,7 +140,11 @@ class IQHybridConfig:
         if self.multimodal is not None:
             layer_count = len(self.schedule.layers)
             invalid = [
-                i for i in (*self.multimodal.fusion_layers, *self.multimodal.transv_layers)
+                i
+                for i in (
+                    *self.multimodal.fusion_layers,
+                    *self.multimodal.transv_layers,
+                )
                 if i < 0 or i >= layer_count
             ]
             if invalid:
@@ -158,40 +165,28 @@ class IQHybridConfig:
             "moe": asdict(self.moe),
             "moe_variant": self.moe_variant,
             "stable_moe": (
-                asdict(self.stable_moe)
-                if self.stable_moe is not None
-                else None
+                asdict(self.stable_moe) if self.stable_moe is not None else None
             ),
-            "attnres": (
-                asdict(self.attnres)
-                if self.attnres is not None
-                else None
-            ),
+            "attnres": (asdict(self.attnres) if self.attnres is not None else None),
             "compressed_context": (
                 asdict(self.compressed_context)
                 if self.compressed_context is not None
                 else None
             ),
             "reasoning": (
-                asdict(self.reasoning)
-                if self.reasoning is not None
-                else None
+                asdict(self.reasoning) if self.reasoning is not None else None
             ),
             "energy_critic": (
-                asdict(self.energy_critic)
-                if self.energy_critic is not None
-                else None
+                asdict(self.energy_critic) if self.energy_critic is not None else None
             ),
             "multimodal": (
-                self.multimodal.to_dict()
-                if self.multimodal is not None
-                else None
+                self.multimodal.to_dict() if self.multimodal is not None else None
             ),
             "require_verifier_stability": self.require_verifier_stability,
         }
 
     @classmethod
-    def from_dict(cls, data: Mapping[str, object]) -> "IQHybridConfig":
+    def from_dict(cls, data: Mapping[str, object]) -> IQHybridConfig:
         if int(data.get("schema_version", -1)) != 1:
             raise HybridModelError(
                 f"unsupported hybrid-model schema: {data.get('schema_version')!r}"
@@ -207,9 +202,7 @@ class IQHybridConfig:
         reasoning = data.get("reasoning")
         energy_critic = data.get("energy_critic")
         multimodal = data.get("multimodal")
-        require_verifier_stability = bool(
-            data.get("require_verifier_stability", False)
-        )
+        require_verifier_stability = bool(data.get("require_verifier_stability", False))
         if not isinstance(model, dict):
             raise HybridModelError("hybrid config model must be an object")
         if not isinstance(schedule, dict):
@@ -219,29 +212,21 @@ class IQHybridConfig:
         if not isinstance(moe, dict):
             raise HybridModelError("hybrid config moe must be an object")
         if stable_moe is not None and not isinstance(stable_moe, dict):
-            raise HybridModelError(
-                "hybrid config stable_moe must be an object or null"
-            )
+            raise HybridModelError("hybrid config stable_moe must be an object or null")
         if attnres is not None and not isinstance(attnres, dict):
-            raise HybridModelError(
-                "hybrid config attnres must be an object or null"
-            )
+            raise HybridModelError("hybrid config attnres must be an object or null")
         if compressed_context is not None and not isinstance(compressed_context, dict):
             raise HybridModelError(
                 "hybrid config compressed_context must be an object or null"
             )
         if reasoning is not None and not isinstance(reasoning, dict):
-            raise HybridModelError(
-                "hybrid config reasoning must be an object or null"
-            )
+            raise HybridModelError("hybrid config reasoning must be an object or null")
         if energy_critic is not None and not isinstance(energy_critic, dict):
             raise HybridModelError(
                 "hybrid config energy_critic must be an object or null"
             )
         if multimodal is not None and not isinstance(multimodal, dict):
-            raise HybridModelError(
-                "hybrid config multimodal must be an object or null"
-            )
+            raise HybridModelError("hybrid config multimodal must be an object or null")
         try:
             return cls(
                 model=IQModelConfig.from_dict(model),
@@ -255,9 +240,7 @@ class IQHybridConfig:
                     else None
                 ),
                 attnres=(
-                    BlockAttnResConfig(**attnres)
-                    if isinstance(attnres, dict)
-                    else None
+                    BlockAttnResConfig(**attnres) if isinstance(attnres, dict) else None
                 ),
                 compressed_context=(
                     CompressedContextConfig(**compressed_context)
@@ -287,20 +270,20 @@ class IQHybridConfig:
             ) from exc
 
     @classmethod
-    def from_json(cls, path: str) -> "IQHybridConfig":
+    def from_json(cls, path: str) -> IQHybridConfig:
         from pathlib import Path
+
         try:
             data = json.loads(Path(path).read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
-            raise HybridModelError(
-                f"invalid hybrid-model config file: {path}"
-            ) from exc
+            raise HybridModelError(f"invalid hybrid-model config file: {path}") from exc
         if not isinstance(data, dict):
             raise HybridModelError("hybrid-model config JSON must contain an object")
         return cls.from_dict(data)
 
     def write_json(self, path: str) -> None:
         from pathlib import Path
+
         Path(path).write_text(
             json.dumps(self.to_dict(), sort_keys=True) + "\n",
             encoding="utf-8",
@@ -321,21 +304,14 @@ def validate_canonical_hybrid_backbone(
 ) -> IQHybridConfig:
     """Fail closed unless config matches the frozen IQ production backbone."""
     if config.mamba3.mimo_rank != 4:
-        raise HybridModelError(
-            "canonical IQ backbone requires Mamba-3 MIMO rank 4"
-        )
+        raise HybridModelError("canonical IQ backbone requires Mamba-3 MIMO rank 4")
     if config.moe_variant != "stable_latent" or config.stable_moe is None:
-        raise HybridModelError(
-            "canonical IQ backbone requires Stable LatentMoE + SiTU"
-        )
+        raise HybridModelError("canonical IQ backbone requires Stable LatentMoE + SiTU")
     if config.attnres is None:
-        raise HybridModelError(
-            "canonical IQ backbone requires Block AttnRes"
-        )
-    compressed_layers = (
-        config.schedule.count(HybridLayerType.CSA)
-        + config.schedule.count(HybridLayerType.HCA)
-    )
+        raise HybridModelError("canonical IQ backbone requires Block AttnRes")
+    compressed_layers = config.schedule.count(
+        HybridLayerType.CSA
+    ) + config.schedule.count(HybridLayerType.HCA)
     if compressed_layers == 0 or config.compressed_context is None:
         raise HybridModelError(
             "canonical IQ backbone requires at least one CSA/HCA context layer"
@@ -386,9 +362,7 @@ def _reasoning_masks(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     batch, sequence = input_ids.shape
     if attention_mask is not None and attention_mask.shape != (batch, sequence):
-        raise HybridModelError(
-            f"attention_mask must have shape {(batch, sequence)}"
-        )
+        raise HybridModelError(f"attention_mask must have shape {(batch, sequence)}")
     valid = (
         torch.ones(
             (batch, sequence),
@@ -417,17 +391,13 @@ def _reasoning_masks(
                 f"reasoning_context_lengths must have shape {(batch,)}"
             )
         if reasoning_context_lengths.dtype not in (torch.int32, torch.int64):
-            raise HybridModelError(
-                "reasoning_context_lengths must be integer typed"
-            )
+            raise HybridModelError("reasoning_context_lengths must be integer typed")
         lengths = reasoning_context_lengths.to(
             device=input_ids.device,
             dtype=torch.long,
         )
         if bool((lengths <= 0).any()):
-            raise HybridModelError(
-                "reasoning_context_lengths must be positive"
-            )
+            raise HybridModelError("reasoning_context_lengths must be positive")
         if bool((lengths > valid_counts).any()):
             raise HybridModelError(
                 "reasoning_context_lengths cannot exceed valid token counts"
@@ -451,9 +421,7 @@ def _valid_tokens(
             device=hidden_states.device,
         )
     if attention_mask.shape != (batch, sequence):
-        raise HybridModelError(
-            f"attention_mask must have shape {(batch, sequence)}"
-        )
+        raise HybridModelError(f"attention_mask must have shape {(batch, sequence)}")
     return attention_mask.to(device=hidden_states.device, dtype=torch.bool)
 
 
@@ -464,9 +432,7 @@ def _validate_document_ids(
     if document_ids is None:
         return None
     if document_ids.shape != valid.shape:
-        raise HybridModelError(
-            f"document_ids must have shape {tuple(valid.shape)}"
-        )
+        raise HybridModelError(f"document_ids must have shape {tuple(valid.shape)}")
     if document_ids.dtype not in (torch.int32, torch.int64):
         raise HybridModelError("document_ids must be integer typed")
     docs = document_ids.to(valid.device)
@@ -630,9 +596,7 @@ class Mamba3ResidualLayer(nn.Module):
             dtype=dtype,
             device=device,
         )
-        self.residual_dropout = nn.Dropout(
-            model_config.residual_dropout
-        )
+        self.residual_dropout = nn.Dropout(model_config.residual_dropout)
 
     def forward(
         self,
@@ -666,9 +630,7 @@ class DenseContextResidualLayer(nn.Module):
             config.rms_norm_eps,
         )
         self.attention = DenseContextAttention(config)
-        self.residual_dropout = nn.Dropout(
-            config.residual_dropout
-        )
+        self.residual_dropout = nn.Dropout(config.residual_dropout)
 
     def forward(
         self,
@@ -708,9 +670,7 @@ class CompressedContextResidualLayer(nn.Module):
             if mode is HybridLayerType.CSA
             else HeavilyCompressedContextAttention(compressed_config)
         )
-        self.residual_dropout = nn.Dropout(
-            model_config.residual_dropout
-        )
+        self.residual_dropout = nn.Dropout(model_config.residual_dropout)
 
     def forward(
         self,
@@ -831,9 +791,9 @@ class IQHybridForCausalLM(nn.Module):
         self.reasoning_injector: ReasoningStateInjector | None = None
         self.reasoning_verifier: ReasoningVerifierProtocol | None = None
         if config.reasoning is not None:
-            self.reasoning = ReasoningRecurrence(
-                config.reasoning
-            ).to(device=device_obj, dtype=dtype)
+            self.reasoning = ReasoningRecurrence(config.reasoning).to(
+                device=device_obj, dtype=dtype
+            )
             self.reasoning_injector = ReasoningStateInjector(
                 config.model.hidden_size,
                 config.reasoning.state_dim,
@@ -952,12 +912,21 @@ class IQHybridForCausalLM(nn.Module):
             else None
         )
         if visual_memory is not None and audio_memory is not None:
-            if visual_memory.hidden_states.shape[0] != audio_memory.hidden_states.shape[0]:
+            if (
+                visual_memory.hidden_states.shape[0]
+                != audio_memory.hidden_states.shape[0]
+            ):
                 raise HybridModelError("visual and audio batch sizes must match")
             visual_memory = type(visual_memory)(
-                hidden_states=torch.cat((visual_memory.hidden_states, audio_memory.hidden_states), dim=1),
-                attention_mask=torch.cat((visual_memory.attention_mask, audio_memory.attention_mask), dim=1),
-                frame_ids=torch.cat((visual_memory.frame_ids, audio_memory.frame_ids), dim=1),
+                hidden_states=torch.cat(
+                    (visual_memory.hidden_states, audio_memory.hidden_states), dim=1
+                ),
+                attention_mask=torch.cat(
+                    (visual_memory.attention_mask, audio_memory.attention_mask), dim=1
+                ),
+                frame_ids=torch.cat(
+                    (visual_memory.frame_ids, audio_memory.frame_ids), dim=1
+                ),
                 source="multimodal",
             )
         elif audio_memory is not None:
@@ -987,27 +956,28 @@ class IQHybridForCausalLM(nn.Module):
                 if media_document_ids.dtype not in (torch.int32, torch.int64):
                     raise HybridModelError("media_document_ids must be integer typed")
                 multimodal_text_mask = valid_text & (
-                    document_ids == media_document_ids.to(document_ids.device).unsqueeze(-1)
+                    document_ids
+                    == media_document_ids.to(document_ids.device).unsqueeze(-1)
                 )
                 if bool((multimodal_text_mask.sum(dim=1) == 0).any()):
                     raise HybridModelError(
                         "media_document_ids must identify a valid document in every visual batch row"
                     )
         elif media_document_ids is not None:
-            raise HybridModelError("media_document_ids requires document_ids and visual input")
+            raise HybridModelError(
+                "media_document_ids requires document_ids and visual input"
+            )
 
         x = self.embed_tokens(input_ids)
         moe_outputs: list[MoEOutput | StableLatentMoEOutput] = []
-        attnres_state = (
-            self.attnres.init_state(x)
-            if self.attnres is not None
-            else None
-        )
-        for layer_index, (layer_type, layer) in enumerate(zip(
-            self.config.schedule.layers,
-            self.layers,
-            strict=True,
-        )):
+        attnres_state = self.attnres.init_state(x) if self.attnres is not None else None
+        for layer_index, (layer_type, layer) in enumerate(
+            zip(
+                self.config.schedule.layers,
+                self.layers,
+                strict=True,
+            )
+        ):
             layer_input = (
                 self.attnres.read(attnres_state)
                 if self.attnres is not None and attnres_state is not None
@@ -1113,8 +1083,7 @@ class IQHybridForCausalLM(nn.Module):
                 ignore_index=-100,
             )
         dense_moe_outputs = [
-            output for output in moe_outputs
-            if isinstance(output, MoEOutput)
+            output for output in moe_outputs if isinstance(output, MoEOutput)
         ]
         load_balance_loss = (
             torch.stack(
@@ -1124,9 +1093,7 @@ class IQHybridForCausalLM(nn.Module):
             else None
         )
         router_z_loss = (
-            torch.stack(
-                [output.router_z_loss for output in dense_moe_outputs]
-            ).mean()
+            torch.stack([output.router_z_loss for output in dense_moe_outputs]).mean()
             if dense_moe_outputs
             else None
         )
@@ -1136,19 +1103,13 @@ class IQHybridForCausalLM(nn.Module):
             hidden_states=hidden if return_hidden_states else None,
             load_balance_loss=load_balance_loss,
             router_z_loss=router_z_loss,
-            expert_counts=tuple(
-                output.expert_counts for output in moe_outputs
-            ),
+            expert_counts=tuple(output.expert_counts for output in moe_outputs),
             schedule_fingerprint=self.config.schedule.fingerprint,
             reasoning_state=(
-                reasoning_output.state
-                if reasoning_output is not None
-                else None
+                reasoning_output.state if reasoning_output is not None else None
             ),
             reasoning_state_trace=(
-                reasoning_output.state_trace
-                if reasoning_output is not None
-                else None
+                reasoning_output.state_trace if reasoning_output is not None else None
             ),
             halt_probabilities=(
                 reasoning_output.halt_probabilities
@@ -1156,9 +1117,7 @@ class IQHybridForCausalLM(nn.Module):
                 else None
             ),
             halt_weights=(
-                reasoning_output.halt_weights
-                if reasoning_output is not None
-                else None
+                reasoning_output.halt_weights if reasoning_output is not None else None
             ),
             relative_state_deltas=(
                 reasoning_output.relative_state_deltas
@@ -1176,14 +1135,10 @@ class IQHybridForCausalLM(nn.Module):
                 else None
             ),
             energy_trace=(
-                reasoning_output.energy_trace
-                if reasoning_output is not None
-                else None
+                reasoning_output.energy_trace if reasoning_output is not None else None
             ),
             energy_deltas=(
-                reasoning_output.energy_deltas
-                if reasoning_output is not None
-                else None
+                reasoning_output.energy_deltas if reasoning_output is not None else None
             ),
             expected_reasoning_steps=(
                 reasoning_output.expected_steps

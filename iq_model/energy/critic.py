@@ -174,6 +174,4 @@ def energy_margin_ranking_loss(
         raise ValueError("margin must be non-negative")
     if temperature <= 0:
         raise ValueError("temperature must be positive")
-    return F.softplus(
-        (positive_energy - negative_energy + margin) / temperature
-    ).mean()
+    return F.softplus((positive_energy - negative_energy + margin) / temperature).mean()

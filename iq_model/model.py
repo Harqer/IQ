@@ -38,9 +38,7 @@ class IQDecoderBlock(nn.Module):
                 document_ids=document_ids,
             )
         )
-        x = x + self.residual_dropout(
-            self.mlp(self.post_attention_norm(x))
-        )
+        x = x + self.residual_dropout(self.mlp(self.post_attention_norm(x)))
         return x
 
 
@@ -53,10 +51,7 @@ class IQForCausalLM(nn.Module):
             config.hidden_size,
         )
         self.blocks = nn.ModuleList(
-            [
-                IQDecoderBlock(config)
-                for _ in range(config.num_hidden_layers)
-            ]
+            [IQDecoderBlock(config) for _ in range(config.num_hidden_layers)]
         )
         self.norm = RMSNorm(
             config.hidden_size,
@@ -90,43 +85,25 @@ class IQForCausalLM(nn.Module):
         return_hidden_states: bool = False,
     ) -> CausalLMOutput:
         if input_ids.ndim != 2:
-            raise ValueError(
-                "input_ids must have shape [batch, sequence]"
-            )
+            raise ValueError("input_ids must have shape [batch, sequence]")
         if input_ids.dtype not in (torch.int32, torch.int64):
             raise ValueError("input_ids must be integer token ids")
         if input_ids.numel() and (
-            int(input_ids.min()) < 0
-            or int(input_ids.max()) >= self.config.vocab_size
+            int(input_ids.min()) < 0 or int(input_ids.max()) >= self.config.vocab_size
         ):
-            raise ValueError(
-                "input_ids contain token ids outside vocabulary"
-            )
-        if (
-            attention_mask is not None
-            and attention_mask.shape != input_ids.shape
-        ):
-            raise ValueError(
-                "attention_mask must have the same shape as input_ids"
-            )
+            raise ValueError("input_ids contain token ids outside vocabulary")
+        if attention_mask is not None and attention_mask.shape != input_ids.shape:
+            raise ValueError("attention_mask must have the same shape as input_ids")
         if document_ids is not None:
             if document_ids.shape != input_ids.shape:
-                raise ValueError(
-                    "document_ids must have the same shape as input_ids"
-                )
+                raise ValueError("document_ids must have the same shape as input_ids")
             if document_ids.dtype not in (torch.int32, torch.int64):
-                raise ValueError(
-                    "document_ids must be integer typed"
-                )
+                raise ValueError("document_ids must be integer typed")
         if position_ids is not None:
             if position_ids.shape != input_ids.shape:
-                raise ValueError(
-                    "position_ids must have the same shape as input_ids"
-                )
+                raise ValueError("position_ids must have the same shape as input_ids")
             if position_ids.dtype not in (torch.int32, torch.int64):
-                raise ValueError(
-                    "position_ids must be integer typed"
-                )
+                raise ValueError("position_ids must be integer typed")
 
         x = self.embed_tokens(input_ids)
         for block in self.blocks:
@@ -142,13 +119,9 @@ class IQForCausalLM(nn.Module):
         loss: torch.Tensor | None = None
         if labels is not None:
             if labels.shape != input_ids.shape:
-                raise ValueError(
-                    "labels must have the same shape as input_ids"
-                )
+                raise ValueError("labels must have the same shape as input_ids")
             if labels.dtype not in (torch.int32, torch.int64):
-                raise ValueError(
-                    "labels must be integer token ids"
-                )
+                raise ValueError("labels must be integer token ids")
             if input_ids.shape[1] < 2:
                 raise ValueError(
                     "sequence length must be at least 2 when labels are provided"

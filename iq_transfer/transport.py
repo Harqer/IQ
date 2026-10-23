@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
-import json
+
 import numpy as np
 
 
@@ -57,7 +58,6 @@ def _rmse(actual: np.ndarray, expected: np.ndarray) -> float:
     return float(np.sqrt(np.mean(diff * diff)))
 
 
-
 def _validate_activation_pair(
     source_activations: Any,
     target_activations: Any,
@@ -65,11 +65,15 @@ def _validate_activation_pair(
     xs = _numpy(source_activations)
     xt = _numpy(target_activations)
     if xs.ndim != 2 or xt.ndim != 2:
-        raise TransportError("coordinate-map activations must be rank-2 [samples, features]")
+        raise TransportError(
+            "coordinate-map activations must be rank-2 [samples, features]"
+        )
     if xs.shape[0] != xt.shape[0]:
         raise TransportError("source and target activations must use paired samples")
     if xs.shape[0] < 2 or xs.shape[1] == 0 or xt.shape[1] == 0:
-        raise TransportError("coordinate-map activations must contain samples and features")
+        raise TransportError(
+            "coordinate-map activations must contain samples and features"
+        )
     if not np.isfinite(xs).all() or not np.isfinite(xt).all():
         raise TransportError("coordinate-map activations contain non-finite values")
     return xs, xt
@@ -224,11 +228,15 @@ def fit_ot_coordinate_map(
     fit_rmse = _rmse(xs @ matrix, xt)
     validation_rmse: float | None = None
     if (validation_source is None) != (validation_target is None):
-        raise TransportError("validation_source and validation_target must be provided together")
+        raise TransportError(
+            "validation_source and validation_target must be provided together"
+        )
     if validation_source is not None:
         vs, vt = _validate_activation_pair(validation_source, validation_target)
         if vs.shape[1] != xs.shape[1] or vt.shape[1] != xt.shape[1]:
-            raise TransportError("validation feature dimensions must match fit activations")
+            raise TransportError(
+                "validation feature dimensions must match fit activations"
+            )
         validation_rmse = _rmse(vs @ matrix, vt)
 
     singular = np.linalg.svd(xs, compute_uv=False)
@@ -236,9 +244,7 @@ def fit_ot_coordinate_map(
     effective_rank = int(np.sum(singular > tolerance_rank))
     smallest = singular[-1]
     condition_number = (
-        float("inf")
-        if smallest <= tolerance_rank
-        else float(singular[0] / smallest)
+        float("inf") if smallest <= tolerance_rank else float(singular[0] / smallest)
     )
     diagnostics = MapDiagnostics(
         sample_count=xs.shape[0],
@@ -257,6 +263,7 @@ def fit_ot_coordinate_map(
         diagnostics=diagnostics,
     )
 
+
 def fit_ridge_coordinate_map(
     source_activations: Any,
     target_activations: Any,
@@ -271,7 +278,9 @@ def fit_ridge_coordinate_map(
     xs = _numpy(source_activations)
     xt = _numpy(target_activations)
     if xs.ndim != 2 or xt.ndim != 2:
-        raise TransportError("coordinate-map activations must be rank-2 [samples, features]")
+        raise TransportError(
+            "coordinate-map activations must be rank-2 [samples, features]"
+        )
     if xs.shape[0] != xt.shape[0]:
         raise TransportError("source and target activations must use paired samples")
     if xs.shape[0] == 0 or xs.shape[1] == 0 or xt.shape[1] == 0:
@@ -292,14 +301,20 @@ def fit_ridge_coordinate_map(
 
     validation_rmse: float | None = None
     if (validation_source is None) != (validation_target is None):
-        raise TransportError("validation_source and validation_target must be provided together")
+        raise TransportError(
+            "validation_source and validation_target must be provided together"
+        )
     if validation_source is not None:
         vs = _numpy(validation_source)
         vt = _numpy(validation_target)
         if vs.ndim != 2 or vt.ndim != 2 or vs.shape[0] != vt.shape[0]:
-            raise TransportError("validation activations must be paired rank-2 matrices")
+            raise TransportError(
+                "validation activations must be paired rank-2 matrices"
+            )
         if vs.shape[1] != xs.shape[1] or vt.shape[1] != xt.shape[1]:
-            raise TransportError("validation feature dimensions must match fit activations")
+            raise TransportError(
+                "validation feature dimensions must match fit activations"
+            )
         if not np.isfinite(vs).all() or not np.isfinite(vt).all():
             raise TransportError("validation activations contain non-finite values")
         validation_rmse = _rmse(vs @ matrix, vt)
@@ -310,7 +325,9 @@ def fit_ridge_coordinate_map(
     tolerance = np.finfo(np.float64).eps * max(xs.shape) * singular[0]
     effective_rank = int(np.sum(singular > tolerance))
     smallest = singular[-1]
-    condition_number = float("inf") if smallest <= tolerance else float(singular[0] / smallest)
+    condition_number = (
+        float("inf") if smallest <= tolerance else float(singular[0] / smallest)
+    )
 
     diagnostics = MapDiagnostics(
         sample_count=xs.shape[0],
@@ -324,7 +341,9 @@ def fit_ridge_coordinate_map(
     return CoordinateMap(matrix, ridge, source_space, target_space, diagnostics)
 
 
-def transport_linear(weight_source: Any, input_map: CoordinateMap, output_map: CoordinateMap) -> np.ndarray:
+def transport_linear(
+    weight_source: Any, input_map: CoordinateMap, output_map: CoordinateMap
+) -> np.ndarray:
     """Transport a source linear operator into target coordinates.
 
     Row-vector convention:
@@ -351,7 +370,9 @@ def transport_linear(weight_source: Any, input_map: CoordinateMap, output_map: C
     return transported
 
 
-def save_coordinate_map(coordinate_map: CoordinateMap, path: str | Path) -> tuple[Path, Path]:
+def save_coordinate_map(
+    coordinate_map: CoordinateMap, path: str | Path
+) -> tuple[Path, Path]:
     path = Path(path)
     tensor_path = path.with_suffix(".safetensors")
     metadata_path = path.with_suffix(".json")
@@ -360,15 +381,22 @@ def save_coordinate_map(coordinate_map: CoordinateMap, path: str | Path) -> tupl
     except ImportError as exc:
         raise TransportError("safetensors is required to save coordinate maps") from exc
 
-    save_file({"matrix": np.asarray(coordinate_map.matrix, dtype=np.float64)}, str(tensor_path))
+    save_file(
+        {"matrix": np.asarray(coordinate_map.matrix, dtype=np.float64)},
+        str(tensor_path),
+    )
     metadata = {
         "schema_version": 1,
         "ridge": coordinate_map.ridge,
         "source_space": coordinate_map.source_space,
         "target_space": coordinate_map.target_space,
-        "diagnostics": asdict(coordinate_map.diagnostics) if coordinate_map.diagnostics is not None else None,
+        "diagnostics": asdict(coordinate_map.diagnostics)
+        if coordinate_map.diagnostics is not None
+        else None,
     }
-    metadata_path.write_text(json.dumps(metadata, sort_keys=True) + "\n", encoding="utf-8")
+    metadata_path.write_text(
+        json.dumps(metadata, sort_keys=True) + "\n", encoding="utf-8"
+    )
     return tensor_path, metadata_path
 
 
@@ -384,12 +412,18 @@ def load_coordinate_map(path: str | Path) -> CoordinateMap:
         raise TransportError(f"coordinate-map artifact is incomplete: {path}")
     tensors = load_file(str(tensor_path))
     if set(tensors) != {"matrix"}:
-        raise TransportError("coordinate-map safetensors must contain exactly the 'matrix' tensor")
+        raise TransportError(
+            "coordinate-map safetensors must contain exactly the 'matrix' tensor"
+        )
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     if metadata.get("schema_version") != 1:
-        raise TransportError(f"unsupported coordinate-map schema: {metadata.get('schema_version')}")
+        raise TransportError(
+            f"unsupported coordinate-map schema: {metadata.get('schema_version')}"
+        )
     diagnostics_data = metadata.get("diagnostics")
-    diagnostics = MapDiagnostics(**diagnostics_data) if diagnostics_data is not None else None
+    diagnostics = (
+        MapDiagnostics(**diagnostics_data) if diagnostics_data is not None else None
+    )
     return CoordinateMap(
         matrix=tensors["matrix"],
         ridge=float(metadata["ridge"]),

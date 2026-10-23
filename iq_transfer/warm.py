@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Any, Iterable, Literal
+from typing import Any, Literal
 
 import numpy as np
 import torch
@@ -59,7 +60,6 @@ def orthogonality_error(matrix: Any) -> float:
     return float(np.linalg.norm(gram - np.eye(q.shape[1]), ord="fro"))
 
 
-
 def align_to_mamba_replication_frame(
     coordinate_map: CoordinateMap,
     *,
@@ -113,6 +113,7 @@ def align_to_mamba_replication_frame(
         target_space=target_space or coordinate_map.target_space,
         diagnostics=coordinate_map.diagnostics,
     )
+
 
 def fit_weight_orthogonal_remap(
     operators: Iterable[WarmWeightOperator],
@@ -196,16 +197,10 @@ def fit_weight_orthogonal_remap(
     # QR in float64 tightens the final Stiefel constraint before persistence.
     q, _ = np.linalg.qr(q, mode="reduced")
     total = float(eigenvalues.clamp_min(0).sum().item())
-    retained = (
-        float(selected_values.sum().item()) / total
-        if total > 0
-        else 0.0
-    )
+    retained = float(selected_values.sum().item()) / total if total > 0 else 0.0
     error = orthogonality_error(q)
     if not np.isfinite(error) or error > 1e-8:
-        raise WarmRemapError(
-            f"WARM remap failed orthogonality check: {error}"
-        )
+        raise WarmRemapError(f"WARM remap failed orthogonality check: {error}")
 
     coordinate_map = CoordinateMap(
         matrix=q,

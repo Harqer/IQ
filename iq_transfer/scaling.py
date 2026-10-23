@@ -21,7 +21,11 @@ class TransferMetrics:
 
     @property
     def compute_ratio(self) -> float:
-        return float("inf") if self.scratch_compute == 0 else self.adaptation_compute / self.scratch_compute
+        return (
+            float("inf")
+            if self.scratch_compute == 0
+            else self.adaptation_compute / self.scratch_compute
+        )
 
 
 @dataclass(frozen=True)

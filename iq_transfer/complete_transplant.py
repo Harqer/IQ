@@ -1,19 +1,18 @@
 from __future__ import annotations
 
-from dataclasses import asdict, replace
-from hashlib import sha256
-from pathlib import Path
-from typing import Mapping
 import json
 import math
 import shutil
 import tempfile
+from collections.abc import Mapping
+from dataclasses import replace
+from pathlib import Path
 
 import torch
 
 from iq_model import (
-    BlockAttnResConfig,
     BlockAttentionResidual,
+    BlockAttnResConfig,
     CompressedContextConfig,
     HybridLayerType,
     HybridSchedule,
@@ -61,9 +60,7 @@ def canonical_complete_schedule() -> HybridSchedule:
     for donor_layer in range(24):
         layers.append(HybridLayerType.MAMBA3)
         layers.append(
-            HybridLayerType.CSA
-            if donor_layer % 2 == 0
-            else HybridLayerType.HCA
+            HybridLayerType.CSA if donor_layer % 2 == 0 else HybridLayerType.HCA
         )
         layers.append(HybridLayerType.MOE)
         if (donor_layer + 1) % 3 == 0:
@@ -74,7 +71,9 @@ def canonical_complete_schedule() -> HybridSchedule:
     if schedule.count(HybridLayerType.MOE) != 24:
         raise CompleteTransplantError("canonical schedule must contain 24 MoE layers")
     if len(schedule.attention_positions) != 24:
-        raise CompleteTransplantError("canonical schedule must contain 24 context layers")
+        raise CompleteTransplantError(
+            "canonical schedule must contain 24 context layers"
+        )
     return schedule
 
 
@@ -175,7 +174,6 @@ def canonical_complete_config() -> IQHybridConfig:
     )
 
 
-
 def canonical_glm53_config() -> IQHybridConfig:
     """IQ geometry for a Mamba-3-founded model with GLM-5.3 capability transfer.
 
@@ -245,7 +243,7 @@ def canonical_glm53_config() -> IQHybridConfig:
 def canonical_glm53_multimodal_config() -> IQHybridConfig:
     base = canonical_glm53_config()
     context_layers = tuple(base.schedule.attention_positions)
-    fusion_layers = tuple(sorted(set((*context_layers, 39))))
+    fusion_layers = tuple(sorted({*context_layers, 39}))
     multimodal = IQMultimodalConfig(
         vision_model_name="zai-org/GLM-5.3-Flash-BF16",
         vision_backend="glm5_next",
@@ -260,10 +258,7 @@ def canonical_glm53_multimodal_config() -> IQHybridConfig:
         freeze_vision_tower=True,
         drop_cls_token=False,
     )
-    return validate_canonical_hybrid_backbone(
-        replace(base, multimodal=multimodal)
-    )
-
+    return validate_canonical_hybrid_backbone(replace(base, multimodal=multimodal))
 
 
 def canonical_multimodal_config() -> IQHybridConfig:
@@ -275,7 +270,7 @@ def canonical_multimodal_config() -> IQHybridConfig:
     """
     base = canonical_complete_config()
     context_layers = tuple(base.schedule.attention_positions)
-    fusion_layers = tuple(sorted(set((*context_layers, 39))))
+    fusion_layers = tuple(sorted({*context_layers, 39}))
     multimodal = IQMultimodalConfig(
         vision_model_name="zai-org/GLM-5.3-Flash-BF16",
         vision_backend="glm5_next",
@@ -290,9 +285,8 @@ def canonical_multimodal_config() -> IQHybridConfig:
         freeze_vision_tower=True,
         drop_cls_token=False,
     )
-    return validate_canonical_hybrid_backbone(
-        replace(base, multimodal=multimodal)
-    )
+    return validate_canonical_hybrid_backbone(replace(base, multimodal=multimodal))
+
 
 def donor_layer_positions(
     config: IQHybridConfig,
@@ -301,7 +295,9 @@ def donor_layer_positions(
     context = list(config.schedule.attention_positions)
     moe = list(config.schedule.positions(HybridLayerType.MOE))
     if len(context) != 24 or len(moe) != 24:
-        raise CompleteTransplantError("canonical donor-layer mapping requires 24 context/MoE layers")
+        raise CompleteTransplantError(
+            "canonical donor-layer mapping requires 24 context/MoE layers"
+        )
     return tuple(zip(context, moe, strict=True))
 
 
@@ -343,7 +339,9 @@ def _embed_residual_output(weight: torch.Tensor) -> torch.Tensor:
 
 def _embed_residual_bias(bias: torch.Tensor) -> torch.Tensor:
     if tuple(bias.shape) != (GPT_OSS_SOURCE_WIDTH,):
-        raise CompleteTransplantError(f"residual bias shape mismatch: {tuple(bias.shape)}")
+        raise CompleteTransplantError(
+            f"residual bias shape mismatch: {tuple(bias.shape)}"
+        )
     out = torch.zeros(IQ_TARGET_WIDTH, dtype=bias.dtype)
     out[:GPT_OSS_SOURCE_WIDTH] = bias * RESIDUAL_EMBED_SCALE
     return out
@@ -383,14 +381,20 @@ def _context_state(
     q_weight = donor["q_weight"]
     q_bias = donor["q_bias"]
     if tuple(q_weight.shape) != (4096, 2880):
-        raise CompleteTransplantError(f"unexpected donor Q shape {tuple(q_weight.shape)}")
+        raise CompleteTransplantError(
+            f"unexpected donor Q shape {tuple(q_weight.shape)}"
+        )
 
     k_heads = donor["k_weight"].reshape(8, 64, 2880)
     v_heads = donor["v_weight"].reshape(8, 64, 2880)
-    shared_kv = torch.cat((k_heads, v_heads), dim=0).float().mean(dim=0).to(k_heads.dtype)
+    shared_kv = (
+        torch.cat((k_heads, v_heads), dim=0).float().mean(dim=0).to(k_heads.dtype)
+    )
     k_bias = donor["k_bias"].reshape(8, 64)
     v_bias = donor["v_bias"].reshape(8, 64)
-    shared_kv_bias = torch.cat((k_bias, v_bias), dim=0).float().mean(dim=0).to(k_bias.dtype)
+    shared_kv_bias = (
+        torch.cat((k_bias, v_bias), dim=0).float().mean(dim=0).to(k_bias.dtype)
+    )
     target_kv = _project_residual_input(shared_kv)
 
     state: dict[str, torch.Tensor] = {
@@ -413,7 +417,9 @@ def _context_state(
             128 if mode is HybridLayerType.CSA else 64,
             dtype=q_weight.dtype,
         ),
-        f"{prefix}.attention.compressor_kv_norm.weight": torch.ones(64, dtype=q_weight.dtype),
+        f"{prefix}.attention.compressor_kv_norm.weight": torch.ones(
+            64, dtype=q_weight.dtype
+        ),
         f"{prefix}.attention.sinks": donor["sinks"].clone(),
     }
 
@@ -475,10 +481,14 @@ def _context_state(
 
     # GroupedLowRankOutput can exactly represent GPT-OSS O because each of the
     # eight groups contains 8*64 = 512 features and IQ uses rank 512.
-    state[f"{prefix}.attention.output.weight"] = torch.eye(
-        512,
-        dtype=q_weight.dtype,
-    ).unsqueeze(0).repeat(8, 1, 1)
+    state[f"{prefix}.attention.output.weight"] = (
+        torch.eye(
+            512,
+            dtype=q_weight.dtype,
+        )
+        .unsqueeze(0)
+        .repeat(8, 1, 1)
+    )
     state[f"{prefix}.attention.output.out_proj.weight"] = _embed_residual_output(
         donor["out_weight"]
     )
@@ -498,11 +508,15 @@ def _moe_state(
     up = donor["up_weight"]
     down = donor["down_weight"]
     if tuple(gate.shape) != (32, 2880, 2880):
-        raise CompleteTransplantError(f"unexpected gate expert shape {tuple(gate.shape)}")
+        raise CompleteTransplantError(
+            f"unexpected gate expert shape {tuple(gate.shape)}"
+        )
     if tuple(up.shape) != (32, 2880, 2880):
         raise CompleteTransplantError(f"unexpected up expert shape {tuple(up.shape)}")
     if tuple(down.shape) != (32, 2880, 2880):
-        raise CompleteTransplantError(f"unexpected down expert shape {tuple(down.shape)}")
+        raise CompleteTransplantError(
+            f"unexpected down expert shape {tuple(down.shape)}"
+        )
 
     dtype = gate.dtype
     state: dict[str, torch.Tensor] = {
@@ -570,8 +584,12 @@ def _identity_mamba_state(
             config.d_state,
             dtype=torch.float32,
         ),
-        f"{q}.mamba.core.B_norm.weight": torch.ones(config.d_state, dtype=torch.bfloat16),
-        f"{q}.mamba.core.C_norm.weight": torch.ones(config.d_state, dtype=torch.bfloat16),
+        f"{q}.mamba.core.B_norm.weight": torch.ones(
+            config.d_state, dtype=torch.bfloat16
+        ),
+        f"{q}.mamba.core.C_norm.weight": torch.ones(
+            config.d_state, dtype=torch.bfloat16
+        ),
         f"{q}.mamba.core.mimo_x": torch.full(
             (layout.nheads, config.mimo_rank, config.headdim),
             1.0 / config.mimo_rank,
@@ -600,9 +618,13 @@ def _global_state(donor: Mapping[str, torch.Tensor]) -> dict[str, torch.Tensor]:
     embedding = donor["embedding"]
     lm_head = donor["lm_head"]
     if tuple(embedding.shape) != (201088, 2880):
-        raise CompleteTransplantError(f"unexpected embedding shape {tuple(embedding.shape)}")
+        raise CompleteTransplantError(
+            f"unexpected embedding shape {tuple(embedding.shape)}"
+        )
     if tuple(lm_head.shape) != (201088, 2880):
-        raise CompleteTransplantError(f"unexpected LM-head shape {tuple(lm_head.shape)}")
+        raise CompleteTransplantError(
+            f"unexpected LM-head shape {tuple(lm_head.shape)}"
+        )
     target_embedding = torch.zeros(
         201088,
         4096,
@@ -624,7 +646,9 @@ def _global_state(donor: Mapping[str, torch.Tensor]) -> dict[str, torch.Tensor]:
 
 def _native_controller_state(config: IQHybridConfig) -> dict[str, torch.Tensor]:
     if config.attnres is None or config.reasoning is None:
-        raise CompleteTransplantError("canonical complete config requires AttnRes and reasoning")
+        raise CompleteTransplantError(
+            "canonical complete config requires AttnRes and reasoning"
+        )
     torch.manual_seed(260929)
     attnres = BlockAttentionResidual(config.attnres).to(dtype=torch.bfloat16)
     reasoning = ReasoningRecurrence(config.reasoning).to(dtype=torch.bfloat16)
@@ -665,6 +689,7 @@ def expected_complete_state_keys(
             CompressedContextResidualLayer,
             StableLatentMoELayer,
         )
+
         for physical, layer_type in enumerate(config.schedule.layers):
             if layer_type is HybridLayerType.MAMBA3:
                 q = f"layers.{physical}"
@@ -691,10 +716,7 @@ def expected_complete_state_keys(
                     norm_eps=config.model.rms_norm_eps,
                     residual_dropout=config.model.residual_dropout,
                 )
-                keys.update(
-                    f"layers.{physical}.{name}"
-                    for name in module.state_dict().keys()
-                )
+                keys.update(f"layers.{physical}.{name}" for name in module.state_dict())
             elif layer_type in {HybridLayerType.CSA, HybridLayerType.HCA}:
                 assert config.compressed_context is not None
                 module = CompressedContextResidualLayer(
@@ -702,10 +724,7 @@ def expected_complete_state_keys(
                     config.compressed_context,
                     mode=layer_type,
                 )
-                keys.update(
-                    f"layers.{physical}.{name}"
-                    for name in module.state_dict().keys()
-                )
+                keys.update(f"layers.{physical}.{name}" for name in module.state_dict())
             else:
                 raise CompleteTransplantError(
                     f"unsupported canonical layer type: {layer_type}"
@@ -713,18 +732,15 @@ def expected_complete_state_keys(
 
         if config.attnres is not None:
             module = BlockAttentionResidual(config.attnres)
-            keys.update(f"attnres.{name}" for name in module.state_dict().keys())
+            keys.update(f"attnres.{name}" for name in module.state_dict())
         if config.reasoning is not None:
             module = ReasoningRecurrence(config.reasoning)
-            keys.update(f"reasoning.{name}" for name in module.state_dict().keys())
+            keys.update(f"reasoning.{name}" for name in module.state_dict())
             injector = ReasoningStateInjector(
                 config.model.hidden_size,
                 config.reasoning.state_dim,
             )
-            keys.update(
-                f"reasoning_injector.{name}"
-                for name in injector.state_dict().keys()
-            )
+            keys.update(f"reasoning_injector.{name}" for name in injector.state_dict())
     return frozenset(keys)
 
 
@@ -766,8 +782,7 @@ def _translate_mamba_overlay(
         (overlay_dir / "mamba3_transplant.json").read_text(encoding="utf-8")
     )
     placements = {
-        int(item["target_mamba_ordinal"]): item
-        for item in manifest["placements"]
+        int(item["target_mamba_ordinal"]): item for item in manifest["placements"]
     }
     identity = {int(x) for x in manifest["identity_mamba_ordinals"]}
     positions = config.schedule.positions(HybridLayerType.MAMBA3)
@@ -783,10 +798,8 @@ def _translate_mamba_overlay(
             target: dict[str, torch.Tensor] = {}
             for key, value in source.items():
                 if not key.startswith(canonical_prefix):
-                    raise CompleteTransplantError(
-                        f"unexpected Mamba overlay key {key}"
-                    )
-                suffix = key[len(canonical_prefix):]
+                    raise CompleteTransplantError(f"unexpected Mamba overlay key {key}")
+                suffix = key[len(canonical_prefix) :]
                 if suffix == "norm.weight":
                     target[f"layers.{physical}.norm.weight"] = value
                 elif suffix.startswith("core."):
@@ -797,7 +810,9 @@ def _translate_mamba_overlay(
                     )
             filename = f"model-mamba-{ordinal:03d}.safetensors"
             _save_shard(output_dir, filename, target, weight_map)
-            provenance[physical] = f"{MAMBA3_MIMO_15B_REPO}:layer:{item['source_layer']}"
+            provenance[physical] = (
+                f"{MAMBA3_MIMO_15B_REPO}:layer:{item['source_layer']}"
+            )
         elif ordinal in identity:
             filename = f"model-mamba-{ordinal:03d}.safetensors"
             _save_shard(

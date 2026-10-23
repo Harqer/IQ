@@ -19,9 +19,7 @@ class BlockAttnResConfig:
 
     def __post_init__(self) -> None:
         if self.hidden_size <= 0 or self.num_layers <= 0 or self.block_size <= 0:
-            raise ValueError(
-                "hidden_size, num_layers, and block_size must be positive"
-            )
+            raise ValueError("hidden_size, num_layers, and block_size must be positive")
         if self.rms_norm_eps <= 0:
             raise ValueError("rms_norm_eps must be positive")
 
@@ -59,9 +57,7 @@ class AttentionResidualMixer(nn.Module):
             raise ValueError("block source hidden size mismatch")
         if prefix_sum is not None:
             if prefix_sum.ndim != 3:
-                raise ValueError(
-                    "prefix_sum must have shape [batch, sequence, hidden]"
-                )
+                raise ValueError("prefix_sum must have shape [batch, sequence, hidden]")
             if block_sources.shape[:2] != prefix_sum.shape[:2]:
                 raise ValueError("block source batch/sequence mismatch")
             if prefix_sum.shape[-1] != self.config.hidden_size:
@@ -81,12 +77,8 @@ class AttentionResidualMixer(nn.Module):
             dim=-1,
             keepdim=True,
         )
-        keys = values_f * torch.rsqrt(
-            variance + self.config.rms_norm_eps
-        )
-        scores = (
-            keys * self.score.float()
-        ).sum(dim=-1)
+        keys = values_f * torch.rsqrt(variance + self.config.rms_norm_eps)
+        scores = (keys * self.score.float()).sum(dim=-1)
         probs = torch.softmax(scores, dim=-1).unsqueeze(-1)
         attended = (probs * values_f).sum(dim=2)
 
@@ -115,8 +107,7 @@ class BlockAttentionResidual(nn.Module):
         super().__init__()
         self.config = config
         self.mixers = nn.ModuleList(
-            AttentionResidualMixer(config)
-            for _ in range(config.num_layers)
+            AttentionResidualMixer(config) for _ in range(config.num_layers)
         )
         self.output_mixer = AttentionResidualMixer(config)
 
@@ -125,9 +116,7 @@ class BlockAttentionResidual(nn.Module):
         embeddings: torch.Tensor,
     ) -> BlockAttnResState:
         if embeddings.ndim != 3:
-            raise ValueError(
-                "embeddings must have shape [batch, sequence, hidden]"
-            )
+            raise ValueError("embeddings must have shape [batch, sequence, hidden]")
         if embeddings.shape[-1] != self.config.hidden_size:
             raise ValueError("embedding hidden size mismatch")
         return BlockAttnResState(
@@ -157,16 +146,12 @@ class BlockAttentionResidual(nn.Module):
         layer_delta: torch.Tensor,
     ) -> BlockAttnResState:
         if state.layer_index >= self.config.num_layers:
-            raise AttnResError(
-                "cannot advance beyond the configured layer count"
-            )
+            raise AttnResError("cannot advance beyond the configured layer count")
         if layer_delta.shape != state.prefix_sum.shape:
             raise ValueError("AttnRes layer delta shape mismatch")
 
         prefix_sum = (
-            state.prefix_sum + layer_delta
-            if state.prefix_active
-            else layer_delta
+            state.prefix_sum + layer_delta if state.prefix_active else layer_delta
         )
         next_index = state.layer_index + 1
         block_sources = state.block_sources
@@ -195,9 +180,7 @@ class BlockAttentionResidual(nn.Module):
         state: BlockAttnResState,
     ) -> torch.Tensor:
         if state.layer_index != self.config.num_layers:
-            raise AttnResError(
-                "finalize requires exactly num_layers advances"
-            )
+            raise AttnResError("finalize requires exactly num_layers advances")
         return self.output_mixer(
             state.block_sources,
             state.prefix_sum if state.prefix_active else None,

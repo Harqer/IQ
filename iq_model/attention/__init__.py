@@ -2,9 +2,9 @@ from .compressed import (
     CompressedContextConfig,
     CompressedContextError,
     CompressedSparseContextAttention,
-    IndexerSegmentScores,
     GroupedLowRankOutput,
     HeavilyCompressedContextAttention,
+    IndexerSegmentScores,
 )
 from .context_dense import DenseContextAttention
 from .gqa import GroupedQueryAttention
@@ -13,9 +13,9 @@ __all__ = [
     "CompressedContextConfig",
     "CompressedContextError",
     "CompressedSparseContextAttention",
-    "IndexerSegmentScores",
     "DenseContextAttention",
     "GroupedLowRankOutput",
     "GroupedQueryAttention",
     "HeavilyCompressedContextAttention",
+    "IndexerSegmentScores",
 ]

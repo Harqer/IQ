@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import json
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping, Sequence
-import json
+from typing import Any
 
 
 class BatchArtifactError(RuntimeError):
@@ -17,9 +18,13 @@ class TokenBatchArtifact:
 
     def __post_init__(self) -> None:
         if self.schema_version != 1:
-            raise BatchArtifactError(f"unsupported token-batch schema: {self.schema_version}")
+            raise BatchArtifactError(
+                f"unsupported token-batch schema: {self.schema_version}"
+            )
         if not self.batches:
-            raise BatchArtifactError("token-batch artifact must contain at least one batch")
+            raise BatchArtifactError(
+                "token-batch artifact must contain at least one batch"
+            )
         _validate_batches(self.batches)
 
 
@@ -27,7 +32,9 @@ def _require_torch():
     try:
         import torch
     except ImportError as exc:
-        raise BatchArtifactError("PyTorch is required for token-batch artifacts") from exc
+        raise BatchArtifactError(
+            "PyTorch is required for token-batch artifacts"
+        ) from exc
     return torch
 
 
@@ -37,7 +44,9 @@ def _validate_batches(batches: Sequence[Mapping[str, Any]]) -> None:
     for index, batch in enumerate(batches):
         unknown = sorted(set(batch) - allowed)
         if unknown:
-            raise BatchArtifactError(f"batch {index} contains unsupported fields: {', '.join(unknown)}")
+            raise BatchArtifactError(
+                f"batch {index} contains unsupported fields: {', '.join(unknown)}"
+            )
         ids = batch.get("input_ids")
         if not isinstance(ids, torch.Tensor) or ids.ndim != 2:
             raise BatchArtifactError(f"batch {index} input_ids must be a rank-2 tensor")
@@ -48,19 +57,27 @@ def _validate_batches(batches: Sequence[Mapping[str, Any]]) -> None:
             if value is None:
                 continue
             if not isinstance(value, torch.Tensor) or value.shape != ids.shape:
-                raise BatchArtifactError(f"batch {index} {optional} must match input_ids shape")
+                raise BatchArtifactError(
+                    f"batch {index} {optional} must match input_ids shape"
+                )
             if value.dtype not in (torch.int32, torch.int64, torch.bool):
-                raise BatchArtifactError(f"batch {index} {optional} must be integer/bool typed")
+                raise BatchArtifactError(
+                    f"batch {index} {optional} must be integer/bool typed"
+                )
 
 
-def save_token_batches(batches: Sequence[Mapping[str, Any]], path: str | Path) -> tuple[Path, Path]:
+def save_token_batches(
+    batches: Sequence[Mapping[str, Any]], path: str | Path
+) -> tuple[Path, Path]:
     torch = _require_torch()
     batch_tuple = tuple(dict(batch) for batch in batches)
     _validate_batches(batch_tuple)
     try:
         from safetensors.torch import save_file
     except ImportError as exc:
-        raise BatchArtifactError("safetensors is required to persist token batches") from exc
+        raise BatchArtifactError(
+            "safetensors is required to persist token batches"
+        ) from exc
 
     base = Path(path)
     base.parent.mkdir(parents=True, exist_ok=True)
@@ -90,7 +107,9 @@ def load_token_batches(path: str | Path) -> TokenBatchArtifact:
     try:
         from safetensors.torch import load_file
     except ImportError as exc:
-        raise BatchArtifactError("safetensors is required to load token batches") from exc
+        raise BatchArtifactError(
+            "safetensors is required to load token batches"
+        ) from exc
 
     base = Path(path)
     tensor_path = base.with_suffix(".safetensors")
@@ -102,7 +121,9 @@ def load_token_batches(path: str | Path) -> TokenBatchArtifact:
     except (OSError, json.JSONDecodeError) as exc:
         raise BatchArtifactError("token-batch metadata is invalid") from exc
     if metadata.get("schema_version") != 1:
-        raise BatchArtifactError(f"unsupported token-batch schema: {metadata.get('schema_version')}")
+        raise BatchArtifactError(
+            f"unsupported token-batch schema: {metadata.get('schema_version')}"
+        )
     batch_count = int(metadata.get("batch_count", -1))
     fields = metadata.get("fields")
     if batch_count <= 0 or not isinstance(fields, list) or len(fields) != batch_count:
@@ -117,8 +138,15 @@ def load_token_batches(path: str | Path) -> TokenBatchArtifact:
             raise BatchArtifactError(f"batch {i} field list is invalid")
         batch: dict[str, Any] = {}
         for name in names:
-            if name not in {"input_ids", "attention_mask", "position_ids", "document_ids"}:
-                raise BatchArtifactError(f"batch {i} contains unsupported field {name!r}")
+            if name not in {
+                "input_ids",
+                "attention_mask",
+                "position_ids",
+                "document_ids",
+            }:
+                raise BatchArtifactError(
+                    f"batch {i} contains unsupported field {name!r}"
+                )
             key = f"batch/{i:06d}/{name}"
             expected.add(key)
             if key not in tensors:
