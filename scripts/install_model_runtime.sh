@@ -3,6 +3,9 @@ set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$repo_root"
+# Scripts executed by path have scripts/ (not the repository root) in sys.path.
+# Keep IQ imports available both to runtime verification and the chat server.
+export PYTHONPATH="$repo_root${PYTHONPATH:+:$PYTHONPATH}"
 MAMBA3_COMMIT="e9594ce1c732d97440f0332fdc43170a2294dbfa"
 
 # Always reuse the CUDA-enabled PyTorch and Triton packaged with the exact HF
