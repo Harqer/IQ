@@ -8,7 +8,6 @@ from torch import nn
 
 from iq_model import IQForCausalLM, IQModelConfig
 from iq_transfer import (
-    CaptureRunnerError,
     build_phi_layer_calibration_from_bundles,
     capture_iq_activations,
     capture_phi_activations,
@@ -75,7 +74,9 @@ class FakePhi(nn.Module):
             head_dim=2,
         )
 
-    def forward(self, input_ids, attention_mask=None, position_ids=None, use_cache=False):
+    def forward(
+        self, input_ids, attention_mask=None, position_ids=None, use_cache=False
+    ):
         x = self.model.embed_tokens(input_ids)
         for layer in self.model.layers:
             x = layer(x)

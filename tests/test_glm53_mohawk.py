@@ -7,14 +7,17 @@ import torch
 from torch import nn
 
 from iq_model import HybridLayerType
-from iq_training import IQGLM53MohawkStage2, MohawkTrainingError, TrainStepConfig, train_step
+from iq_training import (
+    IQGLM53MohawkStage2,
+    MohawkTrainingError,
+    TrainStepConfig,
+    train_step,
+)
 from iq_transfer.alignment import (
     AlignmentError,
     TokenByteSpan,
     align_glm_states_to_mamba_tokens,
 )
-from iq_transfer.transport import CoordinateMap, MapDiagnostics
-
 from iq_transfer.mohawk import (
     MohawkConfig,
     MohawkStage,
@@ -23,6 +26,7 @@ from iq_transfer.mohawk import (
     matrix_orientation_loss,
     mohawk_loss,
 )
+from iq_transfer.transport import CoordinateMap, MapDiagnostics
 
 
 class _ResidualExpert(nn.Module):
@@ -39,15 +43,23 @@ class _SmallAutogradBackbone(nn.Module):
 
     def __init__(self, width: int = 8) -> None:
         super().__init__()
-        self.config = SimpleNamespace(schedule=SimpleNamespace(layers=(
-            HybridLayerType.MAMBA3, HybridLayerType.CSA, HybridLayerType.MOE,
-        )))
+        self.config = SimpleNamespace(
+            schedule=SimpleNamespace(
+                layers=(
+                    HybridLayerType.MAMBA3,
+                    HybridLayerType.CSA,
+                    HybridLayerType.MOE,
+                )
+            )
+        )
         self.embed_tokens = nn.Embedding(16, width)
-        self.layers = nn.ModuleList([
-            nn.Linear(width, width),
-            nn.Linear(width, width),
-            _ResidualExpert(width),
-        ])
+        self.layers = nn.ModuleList(
+            [
+                nn.Linear(width, width),
+                nn.Linear(width, width),
+                _ResidualExpert(width),
+            ]
+        )
 
     def forward(self, input_ids, **kwargs):
         hidden = self.embed_tokens(input_ids)
@@ -80,13 +92,16 @@ class MohawkObjectivesTest(unittest.TestCase):
         loss = hidden_alignment_loss(teacher, student, token_mask=mask)
         loss.backward()
         self.assertIsNotNone(student.grad)
-        self.assertTrue(torch.equal(student.grad[:, 2], torch.zeros_like(student.grad[:, 2])))
+        self.assertTrue(
+            torch.equal(student.grad[:, 2], torch.zeros_like(student.grad[:, 2]))
+        )
 
     def test_stage3_rejects_cross_tokenizer_logits_even_if_shapes_match(self):
         logits = torch.randn(1, 3, 11)
         with self.assertRaisesRegex(ValueError, "identical verified tokenizer"):
             logits_distillation_loss(
-                logits, logits,
+                logits,
+                logits,
                 teacher_tokenizer_sha256="a" * 64,
                 student_tokenizer_sha256="b" * 64,
             )
@@ -94,7 +109,8 @@ class MohawkObjectivesTest(unittest.TestCase):
     def test_stage3_same_tokenizer_has_zero_self_kl(self):
         logits = torch.randn(1, 3, 11)
         loss = logits_distillation_loss(
-            logits, logits,
+            logits,
+            logits,
             teacher_tokenizer_sha256="a" * 64,
             student_tokenizer_sha256="a" * 64,
         )
@@ -141,8 +157,15 @@ class MohawkIQStage2TrainingTest(unittest.TestCase):
         )
         old = wrapper.student.layers[1].weight.detach().clone()
         metrics = train_step(
-            wrapper, optimizer,
-            [{"input_ids": ids, "teacher_aligned_hidden": teacher, "teacher_alignment_mask": torch.ones_like(ids, dtype=torch.bool)}],
+            wrapper,
+            optimizer,
+            [
+                {
+                    "input_ids": ids,
+                    "teacher_aligned_hidden": teacher,
+                    "teacher_alignment_mask": torch.ones_like(ids, dtype=torch.bool),
+                }
+            ],
             TrainStepConfig(precision="fp32"),
         )
         self.assertGreater(metrics.loss, 0)
@@ -168,11 +191,13 @@ class MohawkIQStage2TrainingTest(unittest.TestCase):
             )
 
 
-
 class CausalGLMMambaByteAlignmentTest(unittest.TestCase):
     @staticmethod
-    def _map(*, held_out: bool = True, source_space: str = "glm53.layer.20.residual_out"):
+    def _map(
+        *, held_out: bool = True, source_space: str = "glm53.layer.20.residual_out"
+    ):
         import numpy as np
+
         return CoordinateMap(
             matrix=np.eye(2),
             ridge=1e-3,
@@ -198,7 +223,9 @@ class CausalGLMMambaByteAlignmentTest(unittest.TestCase):
             TokenByteSpan(2, 3, 4),
         ]
         result = align_glm_states_to_mamba_tokens(
-            source, source_spans, target_spans,
+            source,
+            source_spans,
+            target_spans,
             source_document_sha256="b" * 64,
             target_document_sha256="b" * 64,
             coordinate_map=self._map(),
@@ -220,7 +247,10 @@ class CausalGLMMambaByteAlignmentTest(unittest.TestCase):
             )
 
     def test_rejects_unvalidated_or_input_only_coordinate_map(self):
-        for mapping in (self._map(held_out=False), self._map(source_space="glm53.residual_in")):
+        for mapping in (
+            self._map(held_out=False),
+            self._map(source_space="glm53.residual_in"),
+        ):
             with self.assertRaises(AlignmentError):
                 align_glm_states_to_mamba_tokens(
                     torch.ones(1, 2),
@@ -230,6 +260,7 @@ class CausalGLMMambaByteAlignmentTest(unittest.TestCase):
                     target_document_sha256="a" * 64,
                     coordinate_map=mapping,
                 )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,25 +1,25 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict
-from types import SimpleNamespace
 import tempfile
 import unittest
+from dataclasses import asdict
 from pathlib import Path
+from types import SimpleNamespace
 
 import torch
 from torch import nn
 
+from iq_model import Mamba3MIMOConfig
 from iq_transfer.mamba3_direct import (
     Mamba3DirectTransferError,
-    apply_mamba3_transplant_overlay,
     Mamba3DonorConfig,
+    apply_mamba3_transplant_overlay,
     evenly_spaced_layer_placements,
     expand_mamba3_layer,
     validate_official_mamba3_mimo_15b_config,
 )
 from iq_transfer.mamba3_init import Mamba3Layout
-from iq_model import HybridLayerType, Mamba3MIMOConfig
 
 
 class Mamba3DirectTransferTests(unittest.TestCase):
@@ -46,16 +46,12 @@ class Mamba3DirectTransferTests(unittest.TestCase):
         layout = config.layout
         p = f"backbone.layers.{layer}"
         state = {
-            f"{p}.norm.weight": torch.arange(
-                config.d_model, dtype=torch.float32
-            ) + 1,
+            f"{p}.norm.weight": torch.arange(config.d_model, dtype=torch.float32) + 1,
             f"{p}.mixer.in_proj.weight": torch.arange(
                 layout.in_proj_shape[0] * layout.in_proj_shape[1],
                 dtype=torch.float32,
             ).reshape(layout.in_proj_shape),
-            f"{p}.mixer.dt_bias": torch.arange(
-                layout.nheads, dtype=torch.float32
-            ),
+            f"{p}.mixer.dt_bias": torch.arange(layout.nheads, dtype=torch.float32),
             f"{p}.mixer.B_bias": torch.arange(
                 layout.nheads * layout.effective_mimo_rank * layout.d_state,
                 dtype=torch.float32,
@@ -71,13 +67,16 @@ class Mamba3DirectTransferTests(unittest.TestCase):
                 layout.nheads,
                 layout.effective_mimo_rank,
                 layout.d_state,
-            ) + 100,
+            )
+            + 100,
             f"{p}.mixer.B_norm.weight": torch.arange(
                 layout.d_state, dtype=torch.float32
-            ) + 1,
+            )
+            + 1,
             f"{p}.mixer.C_norm.weight": torch.arange(
                 layout.d_state, dtype=torch.float32
-            ) + 2,
+            )
+            + 2,
             f"{p}.mixer.mimo_x": torch.arange(
                 layout.nheads * layout.effective_mimo_rank * layout.headdim,
                 dtype=torch.float32,
@@ -93,7 +92,8 @@ class Mamba3DirectTransferTests(unittest.TestCase):
                 layout.nheads,
                 layout.effective_mimo_rank,
                 layout.headdim,
-            ) + 10,
+            )
+            + 10,
             f"{p}.mixer.mimo_o": torch.arange(
                 layout.nheads * layout.effective_mimo_rank * layout.headdim,
                 dtype=torch.float32,
@@ -101,7 +101,8 @@ class Mamba3DirectTransferTests(unittest.TestCase):
                 layout.nheads,
                 layout.effective_mimo_rank,
                 layout.headdim,
-            ) + 20,
+            )
+            + 20,
             f"{p}.mixer.D": torch.arange(layout.nheads, dtype=torch.float32) + 3,
             f"{p}.mixer.out_proj.weight": torch.arange(
                 layout.out_proj_shape[0] * layout.out_proj_shape[1],
@@ -294,9 +295,7 @@ class Mamba3DirectTransferTests(unittest.TestCase):
 
         model = TinyRecipient()
         self.assertNotEqual(
-            torch.count_nonzero(
-                model.layers[1].mamba.core.out_proj.weight
-            ).item(),
+            torch.count_nonzero(model.layers[1].mamba.core.out_proj.weight).item(),
             0,
         )
 
@@ -338,9 +337,7 @@ class Mamba3DirectTransferTests(unittest.TestCase):
             )
         )
         self.assertEqual(
-            torch.count_nonzero(
-                model.layers[1].mamba.core.out_proj.weight
-            ).item(),
+            torch.count_nonzero(model.layers[1].mamba.core.out_proj.weight).item(),
             0,
         )
         self.assertIn(
@@ -367,9 +364,7 @@ class Mamba3DirectTransferTests(unittest.TestCase):
             tie_embeddings=True,
         )
         validate_official_mamba3_mimo_15b_config(official)
-        bad = Mamba3DonorConfig(
-            **{**official.__dict__, "d_model": 1536}
-        )
+        bad = Mamba3DonorConfig(**{**official.__dict__, "d_model": 1536})
         with self.assertRaisesRegex(
             Mamba3DirectTransferError,
             "not the pinned official",

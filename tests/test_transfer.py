@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+
 import numpy as np
 
 from iq_transfer import (
@@ -12,40 +13,40 @@ from iq_transfer import (
     CaptureError,
     CoordinateMap,
     DonorError,
-    ManifestError,
     Mamba3BootstrapWeights,
     Mamba3InitError,
     Mamba3Layout,
+    ManifestError,
+    MappingTensorSource,
+    MeasurementPlan,
     ParameterProvenance,
+    Phi4Inspector,
     PlanError,
     ProvenanceError,
     ProvenanceLedger,
-    MappingTensorSource,
-    MeasurementPlan,
-    Phi4Inspector,
     ScaleGate,
     SlotError,
     TargetAssignment,
     TargetRegistry,
-    TokenByteSpan,
     TargetSlot,
+    TokenByteSpan,
     TorchActivationCapture,
-    TransportPlan,
     TransferMethod,
     TransferMetrics,
+    TransportPlan,
     align_token_activations_by_bytes,
     apply_mamba3_bootstrap,
     build_donor_manifest,
     extract_shadow,
     fit_ot_coordinate_map,
     fit_ridge_coordinate_map,
-    sinkhorn_transport,
     load_capture_records,
     load_coordinate_map,
     match_layers_monotonic,
     save_capture_records,
     save_coordinate_map,
     shadow_distance,
+    sinkhorn_transport,
     transport_linear,
 )
 
@@ -79,7 +80,10 @@ class TransferTests(unittest.TestCase):
         refs = inspector.operators(self.phi_source())
         self.assertEqual(len(refs), 14)
         roles = [r.role for r in refs[:7]]
-        self.assertEqual(roles, ["attn.q", "attn.k", "attn.v", "attn.o", "mlp.gate", "mlp.up", "mlp.down"])
+        self.assertEqual(
+            roles,
+            ["attn.q", "attn.k", "attn.v", "attn.o", "mlp.gate", "mlp.up", "mlp.down"],
+        )
         self.assertEqual(refs[0].shape, (8, 8))
         self.assertEqual(refs[1].shape, (4, 8))
         self.assertEqual(refs[4].shape, (12, 8))
@@ -98,18 +102,22 @@ class TransferTests(unittest.TestCase):
     def test_manifest_is_deterministic_and_fails_closed_without_checkpoint_files(self):
         inspector = Phi4Inspector.from_config_mapping(self.phi_config())
         source = self.phi_source()
-        kwargs = dict(
-            donor_id="phi-test",
-            checkpoint_revision="deadbeef",
-            tokenizer_hash="tok123",
-            license="MIT-test-only",
-            operator_layout_version="phi3-fused-v1",
-            source_uri="memory://phi-test",
-        )
+        kwargs = {
+            "donor_id": "phi-test",
+            "checkpoint_revision": "deadbeef",
+            "tokenizer_hash": "tok123",
+            "license": "MIT-test-only",
+            "operator_layout_version": "phi3-fused-v1",
+            "source_uri": "memory://phi-test",
+        }
         with self.assertRaises(ManifestError):
             build_donor_manifest(inspector.config, source, **kwargs)
-        a = build_donor_manifest(inspector.config, source, allow_metadata_only=True, **kwargs)
-        b = build_donor_manifest(inspector.config, source, allow_metadata_only=True, **kwargs)
+        a = build_donor_manifest(
+            inspector.config, source, allow_metadata_only=True, **kwargs
+        )
+        b = build_donor_manifest(
+            inspector.config, source, allow_metadata_only=True, **kwargs
+        )
         self.assertEqual(a.fingerprint, b.fingerprint)
         self.assertEqual(a.vocab_size, 32)
         self.assertEqual(len(a.tensors), 8)
@@ -127,7 +135,9 @@ class TransferTests(unittest.TestCase):
             output_map_id="q-0",
         )
         registry = TargetRegistry([assignment])
-        self.assertIs(registry.get("blocks.0.attn.q_proj", TargetSlot.ATTN_Q), assignment)
+        self.assertIs(
+            registry.get("blocks.0.attn.q_proj", TargetSlot.ATTN_Q), assignment
+        )
         with self.assertRaises(SlotError):
             registry.add(assignment)
         with self.assertRaises(SlotError):
@@ -184,10 +194,12 @@ class TransferTests(unittest.TestCase):
         self.assertLess(learned.diagnostics.validation_rmse, 1e-4)
 
     def test_sinkhorn_transport_has_uniform_marginals(self):
-        cost = np.array([
-            [0.0, 2.0, 3.0],
-            [2.0, 0.0, 3.0],
-        ])
+        cost = np.array(
+            [
+                [0.0, 2.0, 3.0],
+                [2.0, 0.0, 3.0],
+            ]
+        )
         coupling = sinkhorn_transport(
             cost,
             regularization=0.2,
@@ -338,7 +350,9 @@ class TransferTests(unittest.TestCase):
         self.assertEqual(loaded.get(record.target_parameter), record)
 
     def test_mamba3_layout_matches_upstream_packing_and_preserves_native_slices(self):
-        layout = Mamba3Layout(d_model=8, d_state=4, expand=2, headdim=4, ngroups=1, rope_fraction=0.5)
+        layout = Mamba3Layout(
+            d_model=8, d_state=4, expand=2, headdim=4, ngroups=1, rope_fraction=0.5
+        )
         self.assertEqual(layout.split_sizes, (16, 16, 4, 4, 4, 4, 4, 1))
         native_in = np.full(layout.in_proj_shape, 7.0)
         native_out = np.full(layout.out_proj_shape, 8.0)
@@ -348,7 +362,9 @@ class TransferTests(unittest.TestCase):
             C=np.full((4, 8), 3.0),
             out_proj=np.full(layout.out_proj_shape, 4.0),
         )
-        new_in, new_out, report = apply_mamba3_bootstrap(native_in, native_out, layout, bootstrap)
+        new_in, new_out, report = apply_mamba3_bootstrap(
+            native_in, native_out, layout, bootstrap
+        )
         slices = layout.slices()
         self.assertTrue(np.all(new_in[slices["z"], :] == 7.0))
         self.assertTrue(np.all(new_in[slices["x"], :] == 1.0))
@@ -377,23 +393,30 @@ class TransferTests(unittest.TestCase):
         target = np.array([[0.0], [8.0 / 3.0]])
         target_spans = [TokenByteSpan(0, 0, 1), TokenByteSpan(1, 1, 4)]
         canonical = [ByteSpan(0, 4, "statement")]
-        aligned = align_token_activations_by_bytes(source, source_spans, target, target_spans, canonical)
+        aligned = align_token_activations_by_bytes(
+            source, source_spans, target, target_spans, canonical
+        )
         self.assertTrue(np.allclose(aligned.source, [[2.0]]))
         self.assertTrue(np.allclose(aligned.target, [[2.0]]))
         with self.assertRaises(AlignmentError):
             align_token_activations_by_bytes(
-                source, source_spans, target[:1], [TokenByteSpan(0, 0, 1)], [ByteSpan(0, 4)]
+                source,
+                source_spans,
+                target[:1],
+                [TokenByteSpan(0, 0, 1)],
+                [ByteSpan(0, 4)],
             )
 
     def test_activation_capture_artifact_round_trip(self):
         try:
+            import safetensors  # noqa: F401
             import torch
             from torch import nn
-            import safetensors  # noqa: F401
         except ImportError:
             self.skipTest("PyTorch/safetensors not installed")
 
         model = nn.Linear(3, 2)
+
         # Capture from an explicit child module path.
         class Wrapper(nn.Module):
             def __init__(self):

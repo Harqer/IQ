@@ -7,9 +7,9 @@ import torch
 from iq_model import (
     CompressedContextConfig,
     CompressedSparseContextAttention,
+    ManifoldHyperConnection,
     MHCConfig,
     MHCHead,
-    ManifoldHyperConnection,
     expand_mhc_streams,
     lightning_indexer_kl_loss,
     lightning_indexer_topk_recall,
@@ -108,9 +108,7 @@ class MHCAndIndexerTrainingTests(unittest.TestCase):
 
     def test_indexer_distillation_drives_indexer_parameters(self):
         torch.manual_seed(42)
-        attention = CompressedSparseContextAttention(
-            self.compressed_config()
-        )
+        attention = CompressedSparseContextAttention(self.compressed_config())
         x = torch.randn(1, 8, 16, requires_grad=True)
         examples = attention.indexer_scores(x)
         self.assertEqual(len(examples), 1)
@@ -152,9 +150,7 @@ class MHCAndIndexerTrainingTests(unittest.TestCase):
 
     def test_indexer_scores_preserve_packed_document_segments(self):
         torch.manual_seed(43)
-        attention = CompressedSparseContextAttention(
-            self.compressed_config()
-        )
+        attention = CompressedSparseContextAttention(self.compressed_config())
         x = torch.randn(1, 8, 16)
         docs = torch.tensor([[0, 0, 0, 0, 1, 1, 1, 1]])
         examples = attention.indexer_scores(

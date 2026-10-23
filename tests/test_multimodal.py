@@ -3,9 +3,9 @@ import unittest
 import torch
 
 from iq_model.multimodal import (
+    CrossModalFusion,
     IQMultimodalConfig,
     MultimodalError,
-    CrossModalFusion,
     TransVTransfer,
     VisualMemory,
     _tome_merge,
@@ -26,14 +26,19 @@ class MultimodalTests(unittest.TestCase):
         self.assertEqual(config.temporal_dilations, (1, 2, 4))
 
         hidden = torch.arange(2 * 8 * 4, dtype=torch.float32).view(2, 8, 4)
-        mask = torch.tensor([
-            [1, 1, 1, 1, 1, 1, 1, 1],
-            [1, 1, 1, 1, 0, 0, 0, 0],
-        ], dtype=torch.bool)
-        frames = torch.tensor([
-            [0, 0, 1, 1, 2, 2, 3, 3],
-            [0, 1, 2, 3, 0, 0, 0, 0],
-        ])
+        mask = torch.tensor(
+            [
+                [1, 1, 1, 1, 1, 1, 1, 1],
+                [1, 1, 1, 1, 0, 0, 0, 0],
+            ],
+            dtype=torch.bool,
+        )
+        frames = torch.tensor(
+            [
+                [0, 0, 1, 1, 2, 2, 3, 3],
+                [0, 1, 2, 3, 0, 0, 0, 0],
+            ]
+        )
         out = TransVTransfer(config)(
             VisualMemory(hidden, mask, frames, "video"),
             relevance_scores=None,

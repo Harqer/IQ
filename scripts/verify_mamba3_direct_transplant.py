@@ -52,14 +52,13 @@ def main() -> int:
     )
     manifest_target = manifest.get("target", {}).get("mamba3")
     if not isinstance(manifest_target, dict):
-        raise RuntimeError("overlay is missing target Mamba config")
+        raise RuntimeError("overlay is missing target Mamba config")  # noqa: TRY004
     if manifest_target != target_config.__dict__:
-        raise RuntimeError("overlay target Mamba config does not match frozen production target")
+        raise RuntimeError(
+            "overlay target Mamba config does not match frozen production target"
+        )
 
-    placements = {
-        int(item["source_layer"]): item
-        for item in manifest["placements"]
-    }
+    placements = {int(item["source_layer"]): item for item in manifest["placements"]}
     requested = args.source_layer
     if not requested:
         requested = [
@@ -96,7 +95,7 @@ def main() -> int:
         )
         sp = f"backbone.layers.{source_layer}.mixer."
         source_sd = {
-            key[len(sp):]: value.to(device=device)
+            key[len(sp) :]: value.to(device=device)
             for key, value in state.items()
             if key.startswith(sp)
         }
@@ -122,7 +121,7 @@ def main() -> int:
         shard = load_file(str(overlay / placement["shard"]), device="cpu")
         tp = f"mamba_layers.{target_ordinal}.core."
         target_sd = {
-            key[len(tp):]: value.to(device=device)
+            key[len(tp) :]: value.to(device=device)
             for key, value in shard.items()
             if key.startswith(tp)
         }
@@ -139,12 +138,12 @@ def main() -> int:
         factor = target_config.d_model // donor_config.d_model
         x_target = x_source.repeat((1, 1, factor))
 
-        source_norm_weight = state[
-            f"backbone.layers.{source_layer}.norm.weight"
-        ].to(device=device)
-        target_norm_weight = shard[
-            f"mamba_layers.{target_ordinal}.norm.weight"
-        ].to(device=device)
+        source_norm_weight = state[f"backbone.layers.{source_layer}.norm.weight"].to(
+            device=device
+        )
+        target_norm_weight = shard[f"mamba_layers.{target_ordinal}.norm.weight"].to(
+            device=device
+        )
 
         def rms_norm(
             value: torch.Tensor,
@@ -173,10 +172,10 @@ def main() -> int:
             (target_residual.float() - expected_residual.float()).abs().max().item()
         )
         normalized_max_abs = float(
-            (
-                target_input.float()
-                - source_input.repeat((1, 1, factor)).float()
-            ).abs().max().item()
+            (target_input.float() - source_input.repeat((1, 1, factor)).float())
+            .abs()
+            .max()
+            .item()
         )
         parity = (
             torch.allclose(

@@ -4,6 +4,7 @@
 Does not include model weights, Mamba states, activation/scratch tensors,
 allocator capacity slack, or CUDA overhead. No GPUs or torch required.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -27,10 +28,9 @@ def estimate(config: dict, tokens: int, bytes_per_element: int = 2) -> dict:
         # Direct indexer scores every past token, and returns raw token KVs.
         csa_bytes = tokens * (iw + width) * bytes_per_element
     else:
-        csa_bytes = (
-            (tokens // csa_rate) * (iw + width) * bytes_per_element
-            + local_bytes
-        )
+        csa_bytes = (tokens // csa_rate) * (
+            iw + width
+        ) * bytes_per_element + local_bytes
     hca_bytes = (tokens // hca_rate) * width * bytes_per_element + local_bytes
     csa_layers = schedule.count("csa")
     hca_layers = schedule.count("hca")
@@ -54,7 +54,11 @@ def main() -> None:
     parser.add_argument("--bytes-per-element", type=int, default=2)
     args = parser.parse_args()
     conf = json.loads(args.config.read_text(encoding="utf-8"))
-    tokens = args.tokens if args.tokens is not None else conf["model"]["max_position_embeddings"]
+    tokens = (
+        args.tokens
+        if args.tokens is not None
+        else conf["model"]["max_position_embeddings"]
+    )
     if tokens < 1 or args.bytes_per_element < 1:
         parser.error("tokens and bytes-per-element must be positive")
     print(json.dumps(estimate(conf, tokens, args.bytes_per_element), indent=2))

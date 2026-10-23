@@ -54,14 +54,13 @@ def write_metadata(root: Path, *, drop_key: str | None = None) -> None:
         json.dumps(
             {
                 "metadata": {},
-                "weight_map": {
-                    key: "model-00001-of-00001.safetensors"
-                    for key in keys
-                },
+                "weight_map": {key: "model-00001-of-00001.safetensors" for key in keys},
             }
         ),
         encoding="utf-8",
     )
+
+
 class GLM53StreamingValidationTests(unittest.TestCase):
     def test_streaming_manifest_uses_only_metadata_files(self):
         with tempfile.TemporaryDirectory() as tmp:

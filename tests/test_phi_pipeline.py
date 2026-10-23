@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+
 import numpy as np
 
 from iq_model import IQModelConfig
@@ -66,7 +67,9 @@ class PhiPipelineTests(unittest.TestCase):
         self.assertEqual(projection.group_map.shape, (2, 1))
         self.assertEqual(projection.q_map.matrix.shape, (8, 4))
         self.assertEqual(projection.kv_map.matrix.shape, (4, 2))
-        self.assertTrue(np.allclose(projection.group_map.T @ projection.group_map, np.eye(1)))
+        self.assertTrue(
+            np.allclose(projection.group_map.T @ projection.group_map, np.eye(1))
+        )
         with self.assertRaises(GQATransportError):
             fit_gqa_group_projection(
                 x,

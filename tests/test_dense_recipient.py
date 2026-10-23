@@ -44,7 +44,9 @@ class DenseRecipientTests(unittest.TestCase):
         with torch.no_grad():
             logits_a = model(a).logits
             logits_b = model(b).logits
-        self.assertTrue(torch.allclose(logits_a[:, :4], logits_b[:, :4], atol=1e-6, rtol=1e-5))
+        self.assertTrue(
+            torch.allclose(logits_a[:, :4], logits_b[:, :4], atol=1e-6, rtol=1e-5)
+        )
 
     def test_padding_and_packed_document_attention_are_isolated(self):
         torch.manual_seed(11)
@@ -96,15 +98,15 @@ class DenseRecipientTests(unittest.TestCase):
             model(
                 padded_a,
                 attention_mask=mask,
-            ).logits[:, :1].reshape(
+            )
+            .logits[:, :1]
+            .reshape(
                 -1,
                 self.config().vocab_size,
             ),
             labels[:, 1:2].reshape(-1),
         )
-        self.assertTrue(
-            torch.allclose(loss, manual, atol=1e-6, rtol=1e-5)
-        )
+        self.assertTrue(torch.allclose(loss, manual, atol=1e-6, rtol=1e-5))
 
         bad_docs = torch.tensor([[0, 0, 1, 0, 0, 0]])
         with self.assertRaises(ValueError):
@@ -129,7 +131,9 @@ class DenseRecipientTests(unittest.TestCase):
 
     def test_install_dora_replaces_selected_linear_only(self):
         model = IQForCausalLM(self.config())
-        installed = install_dora(model, ["blocks.0.attn.q_proj", "blocks.0.mlp.up_proj"], rank=2)
+        installed = install_dora(
+            model, ["blocks.0.attn.q_proj", "blocks.0.mlp.up_proj"], rank=2
+        )
         self.assertEqual(installed, ("blocks.0.attn.q_proj", "blocks.0.mlp.up_proj"))
         self.assertIsInstance(model.blocks[0].attn.q_proj, DoRALinear)
         self.assertIsInstance(model.blocks[0].mlp.up_proj, DoRALinear)
@@ -150,7 +154,9 @@ class DenseRecipientTests(unittest.TestCase):
                 ],
             )
         self.assertTrue(torch.equal(model.blocks[0].attn.q_proj.weight, original))
-        changed = apply_parameter_updates(model, [ParameterUpdate(target, good, "transported phi q")])
+        changed = apply_parameter_updates(
+            model, [ParameterUpdate(target, good, "transported phi q")]
+        )
         self.assertEqual(changed, (target,))
         self.assertTrue(torch.equal(model.blocks[0].attn.q_proj.weight, good))
 
@@ -192,7 +198,6 @@ class DenseRecipientTests(unittest.TestCase):
             self.assertEqual(metadata.step, 1)
             self.assertEqual(extra["tag"], "unit")
             self.assertTrue(torch.equal(baseline_loss, resumed_loss))
-
 
     def test_checkpoint_supports_tied_embeddings(self):
         torch.manual_seed(4)

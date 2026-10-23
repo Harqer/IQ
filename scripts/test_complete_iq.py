@@ -13,7 +13,10 @@ def parser() -> argparse.ArgumentParser:
         description="Load the complete transplanted IQ checkpoint and run generation."
     )
     p.add_argument("--checkpoint", required=True)
-    p.add_argument("--prompt", default="Write a Python function that checks whether a string is a palindrome.")
+    p.add_argument(
+        "--prompt",
+        default="Write a Python function that checks whether a string is a palindrome.",
+    )
     p.add_argument("--max-new-tokens", type=int, default=16)
     p.add_argument("--temperature", type=float, default=0.0)
     return p
@@ -48,7 +51,9 @@ def main() -> int:
             add_generation_prompt=True,
             return_tensors="pt",
         )
-        input_ids = encoded if isinstance(encoded, torch.Tensor) else encoded["input_ids"]
+        input_ids = (
+            encoded if isinstance(encoded, torch.Tensor) else encoded["input_ids"]
+        )
     except (ValueError, AttributeError, KeyError):
         input_ids = tokenizer(args.prompt, return_tensors="pt")["input_ids"]
 

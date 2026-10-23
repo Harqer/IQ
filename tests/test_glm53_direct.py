@@ -9,9 +9,9 @@ from iq_transfer import (
     GLM53DirectTransformError,
     GLM53MLALayout,
     fit_importance_subcloning_map,
-    fit_weight_importance_subcloning_map,
     fit_mla_compressed_subspace,
     fit_orthogonal_subspace,
+    fit_weight_importance_subcloning_map,
     transform_embedding_and_lm_head,
     transform_glm53_mla,
 )
@@ -34,27 +34,33 @@ class GLM53DirectTransformTests(unittest.TestCase):
         )
 
     def test_importance_subcloning_keeps_high_energy_channels_exactly(self):
-        x = np.array([
-            [1.0, 10.0, 2.0, 8.0],
-            [1.0, 10.0, 2.0, 8.0],
-        ])
+        x = np.array(
+            [
+                [1.0, 10.0, 2.0, 8.0],
+                [1.0, 10.0, 2.0, 8.0],
+            ]
+        )
         result = fit_importance_subcloning_map(x, target_features=2)
         self.assertEqual(result.source_indices, (1, 3))
-        expected = np.array([
-            [0.0, 0.0],
-            [1.0, 0.0],
-            [0.0, 0.0],
-            [0.0, 1.0],
-        ])
+        expected = np.array(
+            [
+                [0.0, 0.0],
+                [1.0, 0.0],
+                [0.0, 0.0],
+                [0.0, 1.0],
+            ]
+        )
         self.assertTrue(np.array_equal(result.coordinate_map.matrix, expected))
 
     def test_weight_importance_subcloning_ranks_swiglu_channels_deterministically(self):
-        gate = np.array([
-            [1.0, 0.0],
-            [5.0, 0.0],
-            [2.0, 0.0],
-            [4.0, 0.0],
-        ])
+        gate = np.array(
+            [
+                [1.0, 0.0],
+                [5.0, 0.0],
+                [2.0, 0.0],
+                [4.0, 0.0],
+            ]
+        )
         up = np.zeros_like(gate)
         down = np.zeros((2, 4))
         result = fit_weight_importance_subcloning_map(
@@ -64,12 +70,14 @@ class GLM53DirectTransformTests(unittest.TestCase):
             target_features=2,
         )
         self.assertEqual(result.source_indices, (1, 3))
-        expected = np.array([
-            [0.0, 0.0],
-            [1.0, 0.0],
-            [0.0, 0.0],
-            [0.0, 1.0],
-        ])
+        expected = np.array(
+            [
+                [0.0, 0.0],
+                [1.0, 0.0],
+                [0.0, 0.0],
+                [0.0, 1.0],
+            ]
+        )
         self.assertTrue(np.array_equal(result.coordinate_map.matrix, expected))
 
     def test_weight_importance_torch_chunking_matches_numpy(self):
@@ -127,9 +135,7 @@ class GLM53DirectTransformTests(unittest.TestCase):
         a = fit_orthogonal_subspace(x, target_features=4)
         b = fit_orthogonal_subspace(x, target_features=4)
         self.assertTrue(np.allclose(a.matrix, b.matrix))
-        self.assertTrue(
-            np.allclose(a.matrix.T @ a.matrix, np.eye(4), atol=1e-8)
-        )
+        self.assertTrue(np.allclose(a.matrix.T @ a.matrix, np.eye(4), atol=1e-8))
 
     def test_mla_subspace_preserves_rotary_tail_exactly(self):
         rng = np.random.default_rng(73)
@@ -154,13 +160,10 @@ class GLM53DirectTransformTests(unittest.TestCase):
         q_b = rng.normal(
             size=(layout.num_heads * layout.qk_head_dim, layout.q_lora_rank)
         )
-        kv_a = rng.normal(
-            size=(layout.compressed_kv_dim, layout.source_hidden_size)
-        )
+        kv_a = rng.normal(size=(layout.compressed_kv_dim, layout.source_hidden_size))
         kv_b = rng.normal(
             size=(
-                layout.num_heads
-                * (layout.qk_nope_head_dim + layout.v_head_dim),
+                layout.num_heads * (layout.qk_nope_head_dim + layout.v_head_dim),
                 layout.kv_lora_rank,
             )
         )
@@ -199,16 +202,10 @@ class GLM53DirectTransformTests(unittest.TestCase):
         kv_stride = layout.qk_nope_head_dim + layout.v_head_dim
         for head in range(layout.num_heads):
             q_start = head * layout.qk_head_dim
-            q = query_residual @ q_b[
-                q_start : q_start + layout.qk_head_dim
-            ].T
+            q = query_residual @ q_b[q_start : q_start + layout.qk_head_dim].T
             kv_start = head * kv_stride
-            k_expand = kv_b[
-                kv_start : kv_start + layout.qk_nope_head_dim
-            ]
-            v_expand = kv_b[
-                kv_start + layout.qk_nope_head_dim : kv_start + kv_stride
-            ]
+            k_expand = kv_b[kv_start : kv_start + layout.qk_nope_head_dim]
+            v_expand = kv_b[kv_start + layout.qk_nope_head_dim : kv_start + kv_stride]
             key = np.concatenate(
                 (
                     compressed[:, : layout.kv_lora_rank] @ k_expand.T,
@@ -219,22 +216,19 @@ class GLM53DirectTransformTests(unittest.TestCase):
             donor_scores.append(q @ key.T)
 
             tq_start = head * layout.target_head_dim
-            target_q = query_residual @ transformed.q_b_weight[
-                tq_start : tq_start + layout.target_head_dim
-            ].T
+            target_q = (
+                query_residual
+                @ transformed.q_b_weight[tq_start : tq_start + layout.target_head_dim].T
+            )
             target_scores.append(target_q @ target_kv.T)
 
-            donor_value = (
-                compressed[:, : layout.kv_lora_rank] @ v_expand.T
-            )
+            donor_value = compressed[:, : layout.kv_lora_rank] @ v_expand.T
             donor_head_outputs.append(weights[head] @ donor_value)
             target_head_outputs.append(weights[head] @ target_kv)
 
         donor_scaled = np.stack(donor_scores) / np.sqrt(layout.qk_head_dim)
         target_scaled = np.stack(target_scores) / np.sqrt(layout.target_head_dim)
-        self.assertTrue(
-            np.allclose(donor_scaled, target_scaled, atol=1e-9)
-        )
+        self.assertTrue(np.allclose(donor_scaled, target_scaled, atol=1e-9))
 
         donor_concat = np.concatenate(donor_head_outputs, axis=-1)
         donor_output = donor_concat @ o.T
@@ -253,9 +247,7 @@ class GLM53DirectTransformTests(unittest.TestCase):
             1e-6,
         )
         identity = CoordinateMap(np.eye(4), 1e-6)
-        with self.assertRaisesRegex(
-            GLM53DirectTransformError, "orthonormal"
-        ):
+        with self.assertRaisesRegex(GLM53DirectTransformError, "orthonormal"):
             transform_glm53_mla(
                 q_b_weight=np.zeros(
                     (layout.num_heads * layout.qk_head_dim, layout.q_lora_rank)

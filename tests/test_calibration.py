@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+
 import numpy as np
 
 from iq_transfer import (
@@ -36,10 +37,20 @@ class CalibrationTests(unittest.TestCase):
 
     def test_manifest_round_trip_and_required_splits(self):
         records = (
-            CalibrationRecord("a", CalibrationSplit.MAP_FIT, "code", "h1", "repo", 0, 10),
-            CalibrationRecord("b", CalibrationSplit.MAP_VALIDATION, "code", "h2", "repo", 10, 20),
             CalibrationRecord(
-                "c", CalibrationSplit.TRANSFER_VALIDATION, "reasoning", "h3", "repo", 20, 30
+                "a", CalibrationSplit.MAP_FIT, "code", "h1", "repo", 0, 10
+            ),
+            CalibrationRecord(
+                "b", CalibrationSplit.MAP_VALIDATION, "code", "h2", "repo", 10, 20
+            ),
+            CalibrationRecord(
+                "c",
+                CalibrationSplit.TRANSFER_VALIDATION,
+                "reasoning",
+                "h3",
+                "repo",
+                20,
+                30,
             ),
         )
         manifest = CalibrationManifest("tokhash", records)
@@ -94,7 +105,9 @@ class CalibrationTests(unittest.TestCase):
                 "layer.0.mlp_out",
             },
         )
-        self.assertLess(solved.maps["layer.0.attn_in"].diagnostics.validation_rmse, 1e-4)
+        self.assertLess(
+            solved.maps["layer.0.attn_in"].diagnostics.validation_rmse, 1e-4
+        )
         merged = merge_coordinate_maps(
             solved.maps,
             {"embedding": solve_activation_pair(self.pair(8, 4, 15), ridge=1e-6)},

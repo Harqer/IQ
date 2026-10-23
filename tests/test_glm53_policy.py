@@ -3,8 +3,8 @@ from __future__ import annotations
 import unittest
 
 from iq_transfer.glm53_policy import (
-    GLM53TransferDisposition,
     IQ_RECIPIENT_NATIVE_FAMILIES,
+    GLM53TransferDisposition,
     classify_glm53_source_role,
 )
 

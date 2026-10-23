@@ -43,46 +43,84 @@ class HarnessTests(unittest.TestCase):
                 encoding="utf-8",
             )
             catalog = SkillCatalog([root])
-            model = ScriptedModel([
-                ModelTurn(tool_calls=[ToolCall("1", "skills.load", {"name": "repo-audit"})]),
-                ModelTurn(content="done"),
-            ])
-            runtime = AgentRuntime(model, [AgentSpec("main", "You are IQ.", skills=("repo-audit",))], skills=catalog)
+            model = ScriptedModel(
+                [
+                    ModelTurn(
+                        tool_calls=[
+                            ToolCall("1", "skills.load", {"name": "repo-audit"})
+                        ]
+                    ),
+                    ModelTurn(content="done"),
+                ]
+            )
+            runtime = AgentRuntime(
+                model,
+                [AgentSpec("main", "You are IQ.", skills=("repo-audit",))],
+                skills=catalog,
+            )
             result = runtime.run("main", "audit this repo")
             self.assertEqual(result.output, "done")
             self.assertIn("repo-audit", model.requests[0].system_prompt)
-            self.assertNotIn("Always inspect tests before editing.", model.requests[0].system_prompt)
-            self.assertIn("Always inspect tests before editing.", model.requests[1].system_prompt)
+            self.assertNotIn(
+                "Always inspect tests before editing.", model.requests[0].system_prompt
+            )
+            self.assertIn(
+                "Always inspect tests before editing.", model.requests[1].system_prompt
+            )
 
     def test_tool_execution_and_session_memory(self) -> None:
         registry = ToolRegistry()
-        registry.register(Tool(
-            "math.add",
-            "Add two integers.",
-            {
-                "type": "object",
-                "properties": {"a": {"type": "integer"}, "b": {"type": "integer"}},
-                "required": ["a", "b"],
-                "additionalProperties": False,
-            },
-            lambda args: str(args["a"] + args["b"]),
-        ))
-        model = ScriptedModel([
-            ModelTurn(tool_calls=[ToolCall("1", "math.add", {"a": 2, "b": 3})]),
-            ModelTurn(content="5"),
-        ])
+        registry.register(
+            Tool(
+                "math.add",
+                "Add two integers.",
+                {
+                    "type": "object",
+                    "properties": {"a": {"type": "integer"}, "b": {"type": "integer"}},
+                    "required": ["a", "b"],
+                    "additionalProperties": False,
+                },
+                lambda args: str(args["a"] + args["b"]),
+            )
+        )
+        model = ScriptedModel(
+            [
+                ModelTurn(tool_calls=[ToolCall("1", "math.add", {"a": 2, "b": 3})]),
+                ModelTurn(content="5"),
+            ]
+        )
         session = InMemorySession()
-        runtime = AgentRuntime(model, [AgentSpec("main", "Use tools.", tools=("math.add",))], tools=registry)
+        runtime = AgentRuntime(
+            model,
+            [AgentSpec("main", "Use tools.", tools=("math.add",))],
+            tools=registry,
+        )
         result = runtime.run("main", "2+3", session=session)
         self.assertEqual(result.output, "5")
-        self.assertTrue(any(message.role == "tool" and message.content == "5" for message in session.load()))
+        self.assertTrue(
+            any(
+                message.role == "tool" and message.content == "5"
+                for message in session.load()
+            )
+        )
 
     def test_manager_delegation(self) -> None:
         class RoutingModel:
             def generate(self, request: ModelRequest) -> ModelTurn:
                 if "You are the manager" in request.system_prompt:
-                    if not any(m.role == "tool" and m.name == "agent.delegate" for m in request.messages):
-                        return ModelTurn(tool_calls=[ToolCall("d1", "agent.delegate", {"agent": "researcher", "input": "research x"})])
+                    if not any(
+                        m.role == "tool" and m.name == "agent.delegate"
+                        for m in request.messages
+                    ):
+                        return ModelTurn(
+                            tool_calls=[
+                                ToolCall(
+                                    "d1",
+                                    "agent.delegate",
+                                    {"agent": "researcher", "input": "research x"},
+                                )
+                            ]
+                        )
                     return ModelTurn(content="combined")
                 return ModelTurn(content="research result")
 
@@ -101,7 +139,15 @@ class HarnessTests(unittest.TestCase):
         class HandoffModel:
             def generate(self, request: ModelRequest) -> ModelTurn:
                 if "triage" in request.system_prompt:
-                    return ModelTurn(tool_calls=[ToolCall("h1", "agent.handoff", {"agent": "coder", "reason": "coding"})])
+                    return ModelTurn(
+                        tool_calls=[
+                            ToolCall(
+                                "h1",
+                                "agent.handoff",
+                                {"agent": "coder", "reason": "coding"},
+                            )
+                        ]
+                    )
                 return ModelTurn(content="coded")
 
         runtime = AgentRuntime(
@@ -126,15 +172,35 @@ class HarnessTests(unittest.TestCase):
             )
             (skill / "references" / "checks.md").write_text("CHECKS", encoding="utf-8")
             catalog = SkillCatalog([root])
-            model = ScriptedModel([
-                ModelTurn(tool_calls=[ToolCall("1", "skills.load", {"name": "repo-audit"})]),
-                ModelTurn(tool_calls=[ToolCall("2", "skills.read", {"name": "repo-audit", "path": "references/checks.md"})]),
-                ModelTurn(content="done"),
-            ])
-            runtime = AgentRuntime(model, [AgentSpec("main", "You are IQ.", skills=("repo-audit",))], skills=catalog)
+            model = ScriptedModel(
+                [
+                    ModelTurn(
+                        tool_calls=[
+                            ToolCall("1", "skills.load", {"name": "repo-audit"})
+                        ]
+                    ),
+                    ModelTurn(
+                        tool_calls=[
+                            ToolCall(
+                                "2",
+                                "skills.read",
+                                {"name": "repo-audit", "path": "references/checks.md"},
+                            )
+                        ]
+                    ),
+                    ModelTurn(content="done"),
+                ]
+            )
+            runtime = AgentRuntime(
+                model,
+                [AgentSpec("main", "You are IQ.", skills=("repo-audit",))],
+                skills=catalog,
+            )
             result = runtime.run("main", "audit")
             self.assertEqual(result.output, "done")
-            self.assertTrue(any(m.role == "tool" and m.content == "CHECKS" for m in result.messages))
+            self.assertTrue(
+                any(m.role == "tool" and m.content == "CHECKS" for m in result.messages)
+            )
 
     def test_output_guardrail_can_block(self) -> None:
         class BlockOutput(Guardrail):
@@ -157,7 +223,15 @@ class HarnessTests(unittest.TestCase):
                 if "manager" in request.system_prompt:
                     if any(m.role == "tool" for m in request.messages):
                         return ModelTurn(content="finished")
-                    return ModelTurn(tool_calls=[ToolCall("d1", "agent.delegate", {"agent": "worker", "input": "work"})])
+                    return ModelTurn(
+                        tool_calls=[
+                            ToolCall(
+                                "d1",
+                                "agent.delegate",
+                                {"agent": "worker", "input": "work"},
+                            )
+                        ]
+                    )
                 calls["child"] += 1
                 return ModelTurn(content="child")
 
@@ -181,7 +255,14 @@ class HarnessTests(unittest.TestCase):
 
     def test_tool_result_guardrail_screens_context(self) -> None:
         registry = ToolRegistry()
-        registry.register(Tool("external.read", "Read external content.", {"type": "object"}, lambda _: "INJECTION"))
+        registry.register(
+            Tool(
+                "external.read",
+                "Read external content.",
+                {"type": "object"},
+                lambda _: "INJECTION",
+            )
+        )
 
         class ResultModel:
             def generate(self, request: ModelRequest) -> ModelTurn:
@@ -192,7 +273,9 @@ class HarnessTests(unittest.TestCase):
                 return ModelTurn(content="done")
 
         class BlockInjection(Guardrail):
-            def check_tool_result(self, agent: str, call: ToolCall, result: str) -> GuardrailDecision:
+            def check_tool_result(
+                self, agent: str, call: ToolCall, result: str
+            ) -> GuardrailDecision:
                 if "INJECTION" in result:
                     return GuardrailDecision(False, "suspect external content")
                 return GuardrailDecision(True)

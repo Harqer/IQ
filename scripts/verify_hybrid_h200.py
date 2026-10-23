@@ -32,9 +32,7 @@ def _require_h200() -> torch.device:
     device = torch.device("cuda:0")
     name = torch.cuda.get_device_name(device)
     if "H200" not in name:
-        raise SystemExit(
-            f"hybrid verification must run on H200; found {name!r}"
-        )
+        raise SystemExit(f"hybrid verification must run on H200; found {name!r}")
     return device
 
 
@@ -43,8 +41,7 @@ def _to_device(
     device: torch.device,
 ) -> dict[str, torch.Tensor]:
     return {
-        name: tensor.to(device, non_blocking=True)
-        for name, tensor in batch.items()
+        name: tensor.to(device, non_blocking=True) for name, tensor in batch.items()
     }
 
 
@@ -84,9 +81,7 @@ def _document_isolation_check(
     original = batch["input_ids"]
     modified = original.clone()
     vocab_size = model.model_config.vocab_size
-    modified[row, first_mask] = (
-        modified[row, first_mask] + 1
-    ) % vocab_size
+    modified[row, first_mask] = (modified[row, first_mask] + 1) % vocab_size
 
     model.eval()
     with torch.no_grad():
@@ -147,14 +142,12 @@ def main() -> None:
         raise AssertionError("next-token loss is missing/non-finite")
     if output.mtp_loss is None or not bool(torch.isfinite(output.mtp_loss)):
         raise AssertionError("MTP loss is missing/non-finite")
-    if (
-        output.moe_load_balance_loss is None
-        or not bool(torch.isfinite(output.moe_load_balance_loss))
+    if output.moe_load_balance_loss is None or not bool(
+        torch.isfinite(output.moe_load_balance_loss)
     ):
         raise AssertionError("MoE load-balance loss is missing/non-finite")
-    if (
-        output.moe_router_z_loss is None
-        or not bool(torch.isfinite(output.moe_router_z_loss))
+    if output.moe_router_z_loss is None or not bool(
+        torch.isfinite(output.moe_router_z_loss)
     ):
         raise AssertionError("MoE router-z loss is missing/non-finite")
 
@@ -194,12 +187,8 @@ def main() -> None:
             "loss": float(output.loss.detach()),
             "ntp_loss": float(output.ntp_loss.detach()),
             "mtp_loss": float(output.mtp_loss.detach()),
-            "moe_load_balance_loss": float(
-                output.moe_load_balance_loss.detach()
-            ),
-            "moe_router_z_loss": float(
-                output.moe_router_z_loss.detach()
-            ),
+            "moe_load_balance_loss": float(output.moe_load_balance_loss.detach()),
+            "moe_router_z_loss": float(output.moe_router_z_loss.detach()),
         },
     )
 

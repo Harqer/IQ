@@ -43,7 +43,9 @@ class TrainingTests(unittest.TestCase):
         self.assertIn("embed_tokens.weight", coverage.adamw)
         self.assertIn("lm_head.weight", coverage.adamw)
         self.assertIn("blocks.0.input_norm.weight", coverage.adamw)
-        expected = sorted(name for name, p in model.named_parameters() if p.requires_grad)
+        expected = sorted(
+            name for name, p in model.named_parameters() if p.requires_grad
+        )
         self.assertEqual(sorted(coverage.trainable), expected)
 
     def test_dora_frozen_base_is_excluded_but_factors_are_covered(self):
@@ -202,10 +204,7 @@ class TrainingTests(unittest.TestCase):
             )
         )
         self.assertIsNotNone(output.reasoning_expected_steps)
-        expected = (
-            output.ntp_loss
-            + 0.25 * output.reasoning_expected_steps
-        )
+        expected = output.ntp_loss + 0.25 * output.reasoning_expected_steps
         self.assertTrue(torch.allclose(output.loss, expected))
 
         no_ponder = IQPretrainingModel(
@@ -371,7 +370,9 @@ class TrainingTests(unittest.TestCase):
                 consumed_tokens=5,
             )
             restored = IQForCausalLM(cfg)
-            restored_optimizer = build_optimizer(restored, OptimizerConfig(lr=1e-3, weight_decay=0.0))
+            restored_optimizer = build_optimizer(
+                restored, OptimizerConfig(lr=1e-3, weight_decay=0.0)
+            )
             metadata, _ = load_checkpoint(
                 path,
                 model=restored,
@@ -379,7 +380,10 @@ class TrainingTests(unittest.TestCase):
                 expected_model_config_hash=cfg.fingerprint,
             )
         self.assertEqual(metadata.step, 1)
-        self.assertEqual(optimizer.state_dict()["coverage"], restored_optimizer.state_dict()["coverage"])
+        self.assertEqual(
+            optimizer.state_dict()["coverage"],
+            restored_optimizer.state_dict()["coverage"],
+        )
 
 
 if __name__ == "__main__":

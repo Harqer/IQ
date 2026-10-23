@@ -13,13 +13,12 @@ from __future__ import annotations
 import ast
 import difflib
 import io
-from pathlib import Path
 import shutil
 import subprocess
 import sys
 import tempfile
 import tokenize
-
+from pathlib import Path
 
 KNOWN = {
     "iq_model/__init__.py",
@@ -46,10 +45,10 @@ def semantic_key(blob: bytes) -> tuple[str, tuple[str, ...]]:
     return syntax, comments
 
 
-
 def _comment_tokens(source: str) -> tuple[str, ...]:
     return tuple(
-        tok.string for tok in tokenize.generate_tokens(io.StringIO(source).readline)
+        tok.string
+        for tok in tokenize.generate_tokens(io.StringIO(source).readline)
         if tok.type == tokenize.COMMENT
     )
 
@@ -79,7 +78,8 @@ def _inspect_init(blob: bytes) -> tuple[str, ast.Module, dict, list[str], str]:
                 exports is not None
                 or not isinstance(node.value, (ast.List, ast.Tuple))
                 or any(
-                    not isinstance(item, ast.Constant) or not isinstance(item.value, str)
+                    not isinstance(item, ast.Constant)
+                    or not isinstance(item.value, str)
                     for item in node.value.elts
                 )
             ):
@@ -89,7 +89,9 @@ def _inspect_init(blob: bytes) -> tuple[str, ast.Module, dict, list[str], str]:
             other_nodes.append(node)
     if exports is None:
         raise ValueError("no static __all__ declaration")
-    other = ast.dump(ast.Module(body=other_nodes, type_ignores=[]), include_attributes=False)
+    other = ast.dump(
+        ast.Module(body=other_nodes, type_ignores=[]), include_attributes=False
+    )
     return source, tree, imports, exports, other
 
 
@@ -111,7 +113,9 @@ def _merge_init_imports_and_exports(base: bytes, ours: bytes, theirs: bytes) -> 
     if b_imports.keys() - o_imports.keys() or b_imports.keys() - t_imports.keys():
         raise ValueError("a side removed a base import module")
     if t_imports.keys() - o_imports.keys():
-        raise ValueError("formatting side adds a new import module; ordering needs review")
+        raise ValueError(
+            "formatting side adds a new import module; ordering needs review"
+        )
     if not set(b_exports).issubset(o_exports) or not set(b_exports).issubset(t_exports):
         raise ValueError("a side removed an existing public export")
     if len(o_exports) != len(set(o_exports)) or len(t_exports) != len(set(t_exports)):
@@ -131,14 +135,18 @@ def _merge_init_imports_and_exports(base: bytes, ours: bytes, theirs: bytes) -> 
         extras = [item for item in theirs_names if item not in ours_names]
         if not extras:
             continue
-        if any("#" in line for line in lines[node.lineno - 1:node.end_lineno]):
+        if any("#" in line for line in lines[node.lineno - 1 : node.end_lineno]):
             raise ValueError(f"cannot rewrite comments within import {key}")
         merged_names = ours_names + extras
         module = "." * node.level + (node.module or "")
-        replacement = f"from {module} import (\n" + "".join(
-            f"    {name}{' as ' + alias if alias else ''},\n"
-            for name, alias in merged_names
-        ) + ")\n"
+        replacement = (
+            f"from {module} import (\n"
+            + "".join(
+                f"    {name}{' as ' + alias if alias else ''},\n"
+                for name, alias in merged_names
+            )
+            + ")\n"
+        )
         edits.append((node.lineno - 1, node.end_lineno, replacement))
 
     added_exports = [name for name in t_exports if name not in o_exports]
@@ -149,32 +157,46 @@ def _merge_init_imports_and_exports(base: bytes, ours: bytes, theirs: bytes) -> 
             for alias in names
         }
         if not set(added_exports).issubset(available):
-            raise ValueError(f"unknown exported names: {set(added_exports) - available}")
+            raise ValueError(
+                f"unknown exported names: {set(added_exports) - available}"
+            )
         export_node = next(
-            node for node in o_tree.body
+            node
+            for node in o_tree.body
             if isinstance(node, ast.Assign)
             and len(node.targets) == 1
             and isinstance(node.targets[0], ast.Name)
             and node.targets[0].id == "__all__"
         )
-        if any("#" in line for line in lines[export_node.lineno - 1:export_node.end_lineno]):
+        if any(
+            "#" in line
+            for line in lines[export_node.lineno - 1 : export_node.end_lineno]
+        ):
             raise ValueError("cannot rewrite comments in __all__")
-        replacement = "__all__ = [\n" + "".join(
-            f"    {name!r},\n" for name in o_exports + added_exports
-        ) + "]\n"
+        replacement = (
+            "__all__ = [\n"
+            + "".join(f"    {name!r},\n" for name in o_exports + added_exports)
+            + "]\n"
+        )
         edits.append((export_node.lineno - 1, export_node.end_lineno, replacement))
 
-    for start, end, replacement in sorted(edits, key=lambda item: item[0], reverse=True):
+    for start, end, replacement in sorted(
+        edits, key=lambda item: item[0], reverse=True
+    ):
         lines[start:end] = [replacement]
     merged = "".join(lines).encode("utf-8")
     _, _, merged_imports, merged_exports, merged_other = _inspect_init(merged)
     if merged_other != o_other:
         raise ValueError("merged file changes unexpected Python code")
-    if not set(o_exports).issubset(merged_exports) or not set(t_exports).issubset(merged_exports):
+    if not set(o_exports).issubset(merged_exports) or not set(t_exports).issubset(
+        merged_exports
+    ):
         raise ValueError("merged exports incomplete")
     for side in (o_imports, t_imports):
         for key, values in side.items():
-            if not set(_import_aliases(values)).issubset(_import_aliases(merged_imports[key])):
+            if not set(_import_aliases(values)).issubset(
+                _import_aliases(merged_imports[key])
+            ):
                 raise ValueError(f"merged imports incomplete: {key}")
     print("INIT: preserved all imported names and public exports from both versions")
     if added_exports:
@@ -183,12 +205,14 @@ def _merge_init_imports_and_exports(base: bytes, ours: bytes, theirs: bytes) -> 
 
 
 def run() -> int:
-    if not git("rev-parse", "--verify", "MERGE_HEAD", check=False).returncode == 0:
+    if git("rev-parse", "--verify", "MERGE_HEAD", check=False).returncode != 0:
         print("This helper requires an active git merge (MERGE_HEAD absent).")
         return 2
 
     root = Path(git("rev-parse", "--show-toplevel").stdout.decode().strip())
-    paths = git("diff", "--name-only", "--diff-filter=U", "-z").stdout.decode().split("\0")
+    paths = (
+        git("diff", "--name-only", "--diff-filter=U", "-z").stdout.decode().split("\0")
+    )
     conflicts = [p for p in paths if p]
     if not conflicts:
         print("No unresolved Git conflicts; nothing to resolve.")
@@ -196,28 +220,37 @@ def run() -> int:
 
     # Create a durable review record BEFORE making any change.
     with tempfile.NamedTemporaryFile(
-        mode="w", encoding="utf-8", prefix="IQ-merge-review-", suffix=".txt",
-        dir=Path.home(), delete=False,
+        mode="w",
+        encoding="utf-8",
+        prefix="IQ-merge-review-",
+        suffix=".txt",
+        dir=Path.home(),
+        delete=False,
     ) as report:
         report_path = Path(report.name)
         report.write("Git unresolved conflicts (before automatic reconciliation)\n\n")
         report.write("Worktree: " + str(root) + "\n")
         report.write("Conflicts: " + ", ".join(conflicts) + "\n\n")
-        report.write(git("diff", "--cc", "--", *conflicts, check=False).stdout.decode(
-            "utf-8", errors="replace"
-        ))
+        report.write(
+            git("diff", "--cc", "--", *conflicts, check=False).stdout.decode(
+                "utf-8", errors="replace"
+            )
+        )
         for path in conflicts:
             try:
                 base, ours, theirs = (stage(i, path) for i in (1, 2, 3))
             except subprocess.CalledProcessError:
-                report.write(f"\n{path}: missing merge stage, requires manual resolution\n")
+                report.write(
+                    f"\n{path}: missing merge stage, requires manual resolution\n"
+                )
                 continue
             report.write(f"\n==== {path}: common ancestor vs formatting commit ====\n")
             report.writelines(
                 difflib.unified_diff(
                     base.decode("utf-8", errors="replace").splitlines(True),
                     theirs.decode("utf-8", errors="replace").splitlines(True),
-                    fromfile=f"common-ancestor:{path}", tofile=f"formatting-side:{path}",
+                    fromfile=f"common-ancestor:{path}",
+                    tofile=f"formatting-side:{path}",
                 )
             )
             report.write(f"\n==== {path}: ancestor vs PR57 implementation ====\n")
@@ -225,7 +258,8 @@ def run() -> int:
                 difflib.unified_diff(
                     base.decode("utf-8", errors="replace").splitlines(True),
                     ours.decode("utf-8", errors="replace").splitlines(True),
-                    fromfile=f"common-ancestor:{path}", tofile=f"PR57-side:{path}",
+                    fromfile=f"common-ancestor:{path}",
+                    tofile=f"PR57-side:{path}",
                 )
             )
 
@@ -239,7 +273,12 @@ def run() -> int:
         try:
             base, ours, theirs = (stage(i, path) for i in (1, 2, 3))
             same_semantics = semantic_key(base) == semantic_key(theirs)
-        except (subprocess.CalledProcessError, UnicodeDecodeError, SyntaxError, tokenize.TokenError) as exc:
+        except (
+            subprocess.CalledProcessError,
+            UnicodeDecodeError,
+            SyntaxError,
+            tokenize.TokenError,
+        ) as exc:
             print(f"MANUAL: {path} (cannot establish formatting-only change: {exc})")
             continue
         if same_semantics:
@@ -264,7 +303,12 @@ def run() -> int:
             print(f"Saved original unresolved init file to {backup}")
         target.write_bytes(merged)
         if shutil.which("ruff") is not None:
-            fmt = subprocess.run(["ruff", "format", str(target)], capture_output=True, text=True)
+            fmt = subprocess.run(
+                ["ruff", "format", str(target)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
             if fmt.returncode:
                 target.write_bytes(ours)
                 print(f"MANUAL: {path} (ruff failed: {fmt.stderr.strip()})")
@@ -274,7 +318,10 @@ def run() -> int:
         print(f"RESOLVED: {path} ({reason})")
 
     remaining = [
-        p for p in git("diff", "--name-only", "--diff-filter=U", "-z").stdout.decode().split("\0")
+        p
+        for p in git("diff", "--name-only", "--diff-filter=U", "-z")
+        .stdout.decode()
+        .split("\0")
         if p
     ]
     if remaining:
@@ -286,8 +333,18 @@ def run() -> int:
         print("Staged whitespace errors; leaving merge uncommitted.")
         return 5
     syntax = subprocess.run(
-        [sys.executable, "-m", "compileall", "-q", "iq_model", "iq_transfer", "scripts", "tests"],
+        [
+            sys.executable,
+            "-m",
+            "compileall",
+            "-q",
+            "iq_model",
+            "iq_transfer",
+            "scripts",
+            "tests",
+        ],
         cwd=root,
+        check=False,
     )
     if syntax.returncode:
         print("Python syntax check failed; leaving merge uncommitted.")
@@ -299,13 +356,21 @@ def run() -> int:
         print("Unstaged edits detected; leaving merge uncommitted.")
         return 7
 
-    commit = git("commit", "-m", "merge: preserve PR57 optimizations and verified style corrections", check=False)
+    commit = git(
+        "commit",
+        "-m",
+        "merge: preserve PR57 optimizations and verified style corrections",
+        check=False,
+    )
     if commit.returncode:
         print(commit.stderr.decode(errors="replace"))
         print("Git could not finalize the merge; changes remain staged.")
         return 8
 
-    print("LOCAL MERGE COMMITTED:", git("rev-parse", "--short", "HEAD").stdout.decode().strip())
+    print(
+        "LOCAL MERGE COMMITTED:",
+        git("rev-parse", "--short", "HEAD").stdout.decode().strip(),
+    )
     print("REVIEW DIFFS:", report_path)
     print("No remote push performed. Fetch/merge origin/feat before updating main.")
     return 0

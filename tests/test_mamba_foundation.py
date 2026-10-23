@@ -54,19 +54,23 @@ class MambaFoundationTests(unittest.TestCase):
             state=state,
             target_hidden_size=4,
         )
-        self.assertTrue(torch.equal(
-            widened["embed_tokens.weight"],
-            torch.cat((embedding, embedding), dim=1),
-        ))
+        self.assertTrue(
+            torch.equal(
+                widened["embed_tokens.weight"],
+                torch.cat((embedding, embedding), dim=1),
+            )
+        )
         hidden = torch.tensor([[2.0, -1.0], [0.25, 3.0]])
         widened_hidden = torch.cat((hidden, hidden), dim=1)
         donor_logits = hidden @ lm_head.T
         target_logits = widened_hidden @ widened["lm_head.weight"].T
         self.assertTrue(torch.allclose(donor_logits, target_logits, atol=1e-7))
-        self.assertTrue(torch.equal(
-            widened["norm.weight"],
-            torch.tensor([1.25, 0.75, 1.25, 0.75]),
-        ))
+        self.assertTrue(
+            torch.equal(
+                widened["norm.weight"],
+                torch.tensor([1.25, 0.75, 1.25, 0.75]),
+            )
+        )
 
     def test_warm_target_rotation_is_anchored_to_mamba_replication_frame(self):
         base = CoordinateMap(

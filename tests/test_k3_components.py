@@ -6,13 +6,13 @@ import torch
 
 from iq_model import (
     AttentionResidualMixer,
+    BlockAttentionResidual,
+    BlockAttnResConfig,
     HybridSchedule,
     IQHybridConfig,
     IQModelConfig,
     Mamba3MIMOConfig,
     RoutedMoEConfig,
-    BlockAttentionResidual,
-    BlockAttnResConfig,
     SiTUAndMul,
     StableLatentMoE,
     StableLatentMoEConfig,
@@ -128,7 +128,9 @@ class K3InspiredComponentsTests(unittest.TestCase):
         # embedding + completed first block
         self.assertEqual(state.block_sources.shape[2], 2)
         self.assertFalse(state.prefix_active)
-        self.assertTrue(torch.equal(state.prefix_sum, torch.zeros_like(state.prefix_sum)))
+        self.assertTrue(
+            torch.equal(state.prefix_sum, torch.zeros_like(state.prefix_sum))
+        )
 
         final = attnres.finalize(state)
         self.assertEqual(tuple(final.shape), tuple(embeddings.shape))

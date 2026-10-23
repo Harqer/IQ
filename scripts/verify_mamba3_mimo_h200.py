@@ -1,13 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional
 
 import torch
 from torch import Tensor
 
 from iq_model import Mamba3MIMOConfig, Mamba3MIMOState, require_mamba3_mimo_runtime
-
 
 RTOL = 0.1
 ATOL = 0.1
@@ -23,7 +21,7 @@ class InferenceParams:
     batch_size_offset: int = 0
     key_value_memory_dict: dict = field(default_factory=dict)
     new_key_value_memory_dict: dict = field(default_factory=dict)
-    lengths_per_sample: Optional[Tensor] = None
+    lengths_per_sample: Tensor | None = None
 
 
 def _assert_h200() -> torch.device:

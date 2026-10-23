@@ -74,9 +74,12 @@ class RoutedMoETests(unittest.TestCase):
                 largest=True,
                 sorted=True,
             )
-            selected_probabilities = selected_probabilities / selected_probabilities.sum(
-                dim=-1,
-                keepdim=True,
+            selected_probabilities = (
+                selected_probabilities
+                / selected_probabilities.sum(
+                    dim=-1,
+                    keepdim=True,
+                )
             )
         self.assertTrue(
             torch.allclose(

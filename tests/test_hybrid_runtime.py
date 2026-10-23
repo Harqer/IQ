@@ -4,7 +4,6 @@ import unittest
 
 import torch
 
-from iq_model.hybrid import _reasoning_masks
 from iq_model import (
     BlockAttnResConfig,
     CompressedContextConfig,
@@ -19,9 +18,10 @@ from iq_model import (
     RoutedMoEConfig,
     StableLatentMoEConfig,
     pack_mamba_varlen,
-    validate_canonical_hybrid_backbone,
     unpack_mamba_varlen,
+    validate_canonical_hybrid_backbone,
 )
+from iq_model.hybrid import _reasoning_masks
 
 
 class HeterogeneousHybridRuntimeTests(unittest.TestCase):
@@ -109,7 +109,9 @@ class HeterogeneousHybridRuntimeTests(unittest.TestCase):
                 moe=config.moe,
             )
 
-    def test_canonical_backbone_requires_attnres_stable_moe_and_compressed_context(self):
+    def test_canonical_backbone_requires_attnres_stable_moe_and_compressed_context(
+        self,
+    ):
         base = self.hybrid_config()
         canonical = IQHybridConfig(
             model=base.model,
@@ -230,30 +232,40 @@ class HeterogeneousHybridRuntimeTests(unittest.TestCase):
         self.assertTrue(layout.packed)
         self.assertEqual(layout.cu_seqlens.tolist(), [0, 2, 3, 5])
         self.assertEqual(tuple(layout.packed_hidden_states.shape), (1, 5, 3))
-        self.assertTrue(torch.equal(
-            layout.packed_hidden_states.squeeze(0),
-            hidden[mask.to(dtype=torch.bool)],
-        ))
+        self.assertTrue(
+            torch.equal(
+                layout.packed_hidden_states.squeeze(0),
+                hidden[mask.to(dtype=torch.bool)],
+            )
+        )
         restored = unpack_mamba_varlen(layout.packed_hidden_states, layout)
-        self.assertTrue(torch.equal(
-            restored[mask.to(dtype=torch.bool)],
-            hidden[mask.to(dtype=torch.bool)],
-        ))
-        self.assertTrue(torch.equal(
-            restored[~mask.to(dtype=torch.bool)],
-            torch.zeros_like(restored[~mask.to(dtype=torch.bool)]),
-        ))
+        self.assertTrue(
+            torch.equal(
+                restored[mask.to(dtype=torch.bool)],
+                hidden[mask.to(dtype=torch.bool)],
+            )
+        )
+        self.assertTrue(
+            torch.equal(
+                restored[~mask.to(dtype=torch.bool)],
+                torch.zeros_like(restored[~mask.to(dtype=torch.bool)]),
+            )
+        )
 
     def test_varlen_pack_resets_across_masked_gaps_with_same_document_id(self):
         hidden = torch.randn(2, 6, 4)
-        mask = torch.tensor([
-            [1, 1, 0, 1, 1, 0],
-            [1, 0, 1, 0, 0, 0],
-        ])
-        docs = torch.tensor([
-            [7, 7, 7, 7, 7, 7],
-            [8, 8, 8, 8, 8, 8],
-        ])
+        mask = torch.tensor(
+            [
+                [1, 1, 0, 1, 1, 0],
+                [1, 0, 1, 0, 0, 0],
+            ]
+        )
+        docs = torch.tensor(
+            [
+                [7, 7, 7, 7, 7, 7],
+                [8, 8, 8, 8, 8, 8],
+            ]
+        )
         layout = pack_mamba_varlen(
             hidden,
             attention_mask=mask,

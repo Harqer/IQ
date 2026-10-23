@@ -117,7 +117,9 @@ class CompressedContextAttentionTests(unittest.TestCase):
         with torch.no_grad():
             out_a = attention(x_a, attention_mask=mask)
             out_b = attention(x_b, attention_mask=mask)
-        self.assertTrue(torch.allclose(out_a[:, :4], out_b[:, :4], atol=1e-6, rtol=1e-5))
+        self.assertTrue(
+            torch.allclose(out_a[:, :4], out_b[:, :4], atol=1e-6, rtol=1e-5)
+        )
         self.assertTrue(torch.equal(out_a[:, 4:], torch.zeros_like(out_a[:, 4:])))
 
     def test_interleaved_partial_rope_inverse_round_trip(self):

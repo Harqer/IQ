@@ -88,9 +88,7 @@ class ReasoningRecurrenceTests(unittest.TestCase):
         self.assertIsNotNone(hidden.grad)
         self.assertTrue(torch.isfinite(hidden.grad).all())
         self.assertIsNotNone(recurrence.halting.proj.weight.grad)
-        self.assertTrue(
-            torch.isfinite(recurrence.halting.proj.weight.grad).all()
-        )
+        self.assertTrue(torch.isfinite(recurrence.halting.proj.weight.grad).all())
 
     def test_ebm_does_not_change_generated_state_trajectory(self):
         torch.manual_seed(102)
@@ -132,10 +130,7 @@ class ReasoningRecurrenceTests(unittest.TestCase):
 
         self.assertIsNotNone(recurrence.halting.proj.weight.grad)
         self.assertIsNotNone(recurrence.transition.update[0].weight.grad)
-        critic_grads = [
-            parameter.grad
-            for parameter in critic.parameters()
-        ]
+        critic_grads = [parameter.grad for parameter in critic.parameters()]
         self.assertTrue(all(grad is None for grad in critic_grads))
 
     def test_inference_hard_exit_respects_minimum_steps(self):
@@ -290,9 +285,8 @@ class ReasoningRecurrenceTests(unittest.TestCase):
 
         self.assertEqual(output.shape, hidden.shape)
         relative_change = (
-            (output - hidden).float().norm()
-            / hidden.float().norm().clamp_min(1e-6)
-        )
+            output - hidden
+        ).float().norm() / hidden.float().norm().clamp_min(1e-6)
         self.assertLess(float(relative_change), 0.01)
 
 

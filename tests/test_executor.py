@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import replace
 import unittest
+from dataclasses import replace
 
 import numpy as np
 
@@ -14,8 +14,8 @@ from iq_transfer import (
     Phi4Inspector,
     TargetAssignment,
     TargetSlot,
-    TransportPlan,
     TransferMethod,
+    TransportPlan,
     build_donor_manifest,
     execute_transport_plan,
 )
@@ -133,7 +133,9 @@ class TransportExecutorTests(unittest.TestCase):
 
         dry = execute_transport_plan(model, plan, [runtime], maps, apply=False)
         self.assertEqual(dry.applied_parameters, ())
-        values = {update.target_parameter: np.asarray(update.value) for update in dry.updates}
+        values = {
+            update.target_parameter: np.asarray(update.value) for update in dry.updates
+        }
 
         e_source = source.get("model.embed_tokens.weight")
         lm_source = source.get("lm_head.weight")
@@ -142,7 +144,9 @@ class TransportExecutorTests(unittest.TestCase):
         p_q = maps["q"].matrix
 
         self.assertTrue(np.allclose(values["embed_tokens.weight"], e_source @ p_res))
-        self.assertTrue(np.allclose(values["lm_head.weight"], lm_source @ np.linalg.pinv(p_res).T))
+        self.assertTrue(
+            np.allclose(values["lm_head.weight"], lm_source @ np.linalg.pinv(p_res).T)
+        )
         self.assertTrue(
             np.allclose(
                 values["blocks.0.attn.q_proj.weight"],

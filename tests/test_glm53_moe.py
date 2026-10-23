@@ -34,12 +34,14 @@ class GLM53MoETransformTests(unittest.TestCase):
         )
 
     def test_router_weight_prior_is_normalized_and_prefers_stronger_rows(self):
-        router = np.array([
-            [1.0, 0.0],
-            [4.0, 0.0],
-            [2.0, 0.0],
-            [3.0, 0.0],
-        ])
+        router = np.array(
+            [
+                [1.0, 0.0],
+                [4.0, 0.0],
+                [2.0, 0.0],
+                [3.0, 0.0],
+            ]
+        )
         prior = router_weight_prior(router, np.zeros(4))
         self.assertAlmostEqual(float(prior.sum()), 1.0)
         self.assertEqual(
@@ -65,7 +67,9 @@ class GLM53MoETransformTests(unittest.TestCase):
         actual_latent = target_residual @ down.T
         # When the residual map has lower rank than the donor width, this is
         # the least-squares latent reconstruction from the retained residual.
-        baseline = donor @ residual_basis @ np.linalg.pinv(residual_basis) @ latent_basis
+        baseline = (
+            donor @ residual_basis @ np.linalg.pinv(residual_basis) @ latent_basis
+        )
         self.assertTrue(np.allclose(actual_latent, baseline, atol=1e-9))
         reconstructed_residual = expected_latent @ up.T
         expected_residual_projection = (
@@ -75,7 +79,9 @@ class GLM53MoETransformTests(unittest.TestCase):
             np.allclose(reconstructed_residual, expected_residual_projection, atol=1e-9)
         )
 
-    def test_dense_mlp_morph_keeps_donor_in_shared_expert_and_neutralizes_routed_path(self):
+    def test_dense_mlp_morph_keeps_donor_in_shared_expert_and_neutralizes_routed_path(
+        self,
+    ):
         rng = np.random.default_rng(83)
         hidden = 4
         intermediate = 3
@@ -103,7 +109,9 @@ class GLM53MoETransformTests(unittest.TestCase):
             self.assertFalse(np.any(expert.up))
             self.assertFalse(np.any(expert.down))
 
-    def test_direct_moe_transform_preserves_selected_linear_experts_in_full_rank_control(self):
+    def test_direct_moe_transform_preserves_selected_linear_experts_in_full_rank_control(
+        self,
+    ):
         rng = np.random.default_rng(82)
         hidden = 4
         intermediate = 3

@@ -9,9 +9,18 @@ import torch
 from torch import nn
 
 from iq_model import DoRALinear, IQForCausalLM, IQModelConfig
-from iq_transfer import DonorRuntime, MappingTensorSource, Phi4Inspector, build_donor_manifest
+from iq_transfer import (
+    DonorRuntime,
+    MappingTensorSource,
+    Phi4Inspector,
+    build_donor_manifest,
+)
 from iq_transfer.batches import load_token_batches, save_token_batches
-from iq_transfer.calibration import CalibrationManifest, CalibrationRecord, CalibrationSplit
+from iq_transfer.calibration import (
+    CalibrationManifest,
+    CalibrationRecord,
+    CalibrationSplit,
+)
 from iq_transfer.job import load_transferred_iq_artifact, run_phi_dense_transfer_loaded
 
 
@@ -76,7 +85,9 @@ class FakePhi(nn.Module):
             vocab_size=32,
         )
 
-    def forward(self, input_ids, attention_mask=None, position_ids=None, use_cache=False):
+    def forward(
+        self, input_ids, attention_mask=None, position_ids=None, use_cache=False
+    ):
         x = self.model.embed_tokens(input_ids)
         for layer in self.model.layers:
             x = layer(x)
@@ -157,19 +168,15 @@ class TransferJobTests(unittest.TestCase):
             "tok",
             (
                 CalibrationRecord("fit", CalibrationSplit.MAP_FIT, "code", "a", "x"),
-                CalibrationRecord("val", CalibrationSplit.MAP_VALIDATION, "code", "b", "x"),
+                CalibrationRecord(
+                    "val", CalibrationSplit.MAP_VALIDATION, "code", "b", "x"
+                ),
                 CalibrationRecord(
                     "test", CalibrationSplit.TRANSFER_VALIDATION, "code", "c", "x"
                 ),
             ),
         )
-        fit = [
-            {
-                "input_ids": torch.tensor(
-                    [[1, 2, 3, 4, 5, 6], [7, 8, 9, 10, 11, 12]]
-                )
-            }
-        ]
+        fit = [{"input_ids": torch.tensor([[1, 2, 3, 4, 5, 6], [7, 8, 9, 10, 11, 12]])}]
         validation = [
             {
                 "input_ids": torch.tensor(
@@ -203,7 +210,9 @@ class TransferJobTests(unittest.TestCase):
             self.assertTrue(torch.allclose(before, after, atol=1e-6, rtol=1e-5))
 
             current = {name for name, _ in restored.named_parameters()}
-            recorded = {record.target_parameter for record in result.provenance.records()}
+            recorded = {
+                record.target_parameter for record in result.provenance.records()
+            }
             self.assertEqual(current, recorded)
 
 

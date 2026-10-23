@@ -14,7 +14,6 @@ from iq_model import (
 )
 from iq_model.position import (
     InterleavedRotaryEmbedding,
-    RotaryEmbedding,
     apply_inverse_partial_rotary_at_end,
     apply_partial_rotary_at_end,
 )
@@ -34,9 +33,7 @@ class HybridArchitectureTests(unittest.TestCase):
         )
 
     def test_explicit_schedule_is_mamba_dominant(self):
-        schedule = HybridSchedule.parse(
-            "M E M C E M E M H E"
-        )
+        schedule = HybridSchedule.parse("M E M C E M E M H E")
         self.assertEqual(schedule.count(HybridLayerType.MAMBA3), 4)
         self.assertEqual(
             schedule.attention_positions,
