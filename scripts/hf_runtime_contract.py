@@ -121,12 +121,13 @@ def _cuda_toolkit_and_gpu() -> dict[str, str]:
 
 
 def _installed_mamba() -> dict[str, str]:
+    import torch
+
     from iq_model.state.mamba3 import (
         MAMBA3_UPSTREAM_COMMIT,
         inspect_mamba3_mimo_runtime,
         require_mamba3_mimo_runtime,
     )
-    import torch
 
     for name, expected in (("tilelang", "0.1.8"), ("apache-tvm-ffi", "0.1.9")):
         actual = _version(name)
