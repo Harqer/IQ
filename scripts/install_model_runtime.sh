@@ -27,6 +27,11 @@ PY
 export PIP_CONSTRAINT="$repo_root/requirements-mamba3-constraints.txt"
 python -m pip install -r requirements-model.txt
 
+# The pinned Mamba-3 pyproject.toml explicitly requires these source-build
+# prerequisites. With --no-build-isolation, they must be installed in the
+# active venv, while PyTorch remains the CUDA-enabled build target.
+python -m pip install "setuptools>=61.0.0" wheel packaging ninja
+
 MAMBA_FORCE_BUILD=TRUE python -m pip install \
   --no-build-isolation \
   --no-cache-dir \
