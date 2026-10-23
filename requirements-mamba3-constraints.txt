@@ -1,0 +1,5 @@
+# Mamba-3 MIMO at source commit e9594ce1c732d97440f0332fdc43170a2294dbfa
+# TileLang 0.1.8 JIT breaks with apache-tvm-ffi >= 0.1.10:
+# https://github.com/state-spaces/mamba/issues/986
+tilelang==0.1.8
+apache-tvm-ffi==0.1.9
