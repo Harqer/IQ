@@ -66,12 +66,18 @@ def main() -> int:
                 problems.append(f"{name}: missing required {required}")
                 continue
             try:
-                if required.specifier and Version(dep_version) not in required.specifier:
+                if (
+                    required.specifier
+                    and Version(dep_version) not in required.specifier
+                ):
                     problems.append(
-                        f"{name}: requires {required}, installed {required.name}=={dep_version}"
+                        f"{name}: requires {required}, "
+                        f"installed {required.name}=={dep_version}"
                     )
             except InvalidVersion as exc:
-                problems.append(f"{name}: invalid installed version {dep_version!r}: {exc}")
+                problems.append(
+                    f"{name}: invalid installed version {dep_version!r}: {exc}"
+                )
 
     if problems:
         for item in problems:
