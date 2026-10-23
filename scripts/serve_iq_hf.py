@@ -42,7 +42,7 @@ def build_model():
     return tokenizer, model
 
 
-def generate(tokenizer, model, messages: list[dict], max_new_tokens: int) -> str:
+def generate(tokenizer, model, messages: list[dict], max_new_tokens: int) -> tuple[str, str]:
     try:
         encoded = tokenizer.apply_chat_template(
             messages, add_generation_prompt=True, return_tensors="pt"
@@ -67,6 +67,7 @@ def generate(tokenizer, model, messages: list[dict], max_new_tokens: int) -> str
 
     input_ids = input_ids.to("cuda:0")
     generated: list[int] = []
+    finish_reason = "length"
     with torch.inference_mode():
         for _ in range(max_new_tokens):
             result = model(input_ids)
@@ -81,8 +82,9 @@ def generate(tokenizer, model, messages: list[dict], max_new_tokens: int) -> str
                 tokenizer.eos_token_id is not None
                 and token_id == tokenizer.eos_token_id
             ):
+                finish_reason = "stop"
                 break
-    return tokenizer.decode(generated, skip_special_tokens=True)
+    return tokenizer.decode(generated, skip_special_tokens=True), finish_reason
 
 
 def create_handler(tokenizer, model):
@@ -133,7 +135,7 @@ def create_handler(tokenizer, model):
                 tokens = data.get("max_tokens", 16) if compatible else data.get("max_new_tokens", 16)
                 if type(tokens) is not int or not 1 <= tokens <= MAX_NEW_TOKENS:
                     raise ValueError(f"max_new_tokens must be 1..{MAX_NEW_TOKENS}")
-                response = generate(tokenizer, model, messages, tokens)
+                response, finish_reason = generate(tokenizer, model, messages, tokens)
             except (ValueError, KeyError, TypeError) as exc:
                 self.respond(400, {"error": str(exc)})
                 return
@@ -153,7 +155,7 @@ def create_handler(tokenizer, model):
                             {
                                 "index": 0,
                                 "message": {"role": "assistant", "content": response},
-                                "finish_reason": "stop",
+                                "finish_reason": finish_reason,
                             }
                         ],
                     },
