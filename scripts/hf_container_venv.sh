@@ -15,6 +15,7 @@ fi
 # shellcheck disable=SC1090
 source "$venv_dir/bin/activate"
 
-# Fail before booting the inference server if a Mamba-3 CUDA JIT is broken.
-IQ_VERIFY_CUDA_KERNEL=1 bash scripts/install_model_runtime.sh
+# Dependency installation only. No standalone GPU test: the command
+# must load IQ and perform real inference, not just run a health check.
+bash scripts/install_model_runtime.sh
 exec "$@"
