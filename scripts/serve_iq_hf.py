@@ -42,7 +42,7 @@ def build_model():
     return tokenizer, model
 
 
-def generate(tokenizer, model, messages: list[dict], max_new_tokens: int) -> tuple[str, str]:
+def generate(tokenizer, model, messages: list[dict], max_new_tokens: int) -> tuple[str, str, int, int]:
     try:
         encoded = tokenizer.apply_chat_template(
             messages, add_generation_prompt=True, return_tensors="pt"
@@ -65,6 +65,7 @@ def generate(tokenizer, model, messages: list[dict], max_new_tokens: int) -> tup
     ):
         raise ValueError(f"prompt must contain 1..{MAX_PROMPT_TOKENS} tokens")
 
+    prompt_tokens = int(input_ids.shape[1])
     input_ids = input_ids.to("cuda:0")
     generated: list[int] = []
     finish_reason = "length"
@@ -84,7 +85,7 @@ def generate(tokenizer, model, messages: list[dict], max_new_tokens: int) -> tup
             ):
                 finish_reason = "stop"
                 break
-    return tokenizer.decode(generated, skip_special_tokens=True), finish_reason
+    return (tokenizer.decode(generated, skip_special_tokens=True), finish_reason, prompt_tokens, len(generated))
 
 
 def create_handler(tokenizer, model):
@@ -135,7 +136,7 @@ def create_handler(tokenizer, model):
                 tokens = data.get("max_tokens", 16) if compatible else data.get("max_new_tokens", 16)
                 if type(tokens) is not int or not 1 <= tokens <= MAX_NEW_TOKENS:
                     raise ValueError(f"max_new_tokens must be 1..{MAX_NEW_TOKENS}")
-                response, finish_reason = generate(tokenizer, model, messages, tokens)
+                response, finish_reason, prompt_tokens, completion_tokens = generate(tokenizer, model, messages, tokens)
             except (ValueError, KeyError, TypeError) as exc:
                 self.respond(400, {"error": str(exc)})
                 return
@@ -151,6 +152,12 @@ def create_handler(tokenizer, model):
                         "object": "chat.completion",
                         "created": int(time.time()),
                         "model": "IQ",
+                        "system_fingerprint": "iq-full-prefix-mimo",
+                        "usage": {
+                            "prompt_tokens": prompt_tokens,
+                            "completion_tokens": completion_tokens,
+                            "total_tokens": prompt_tokens + completion_tokens,
+                        },
                         "choices": [
                             {
                                 "index": 0,
