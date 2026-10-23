@@ -25,7 +25,9 @@ def _version(name: str) -> str:
     try:
         return metadata.version(name)
     except metadata.PackageNotFoundError as exc:
-        raise RuntimeContractError(f"Required package {name!r} is not installed") from exc
+        raise RuntimeContractError(
+            f"Required package {name!r} is not installed"
+        ) from exc
 
 
 def _native_stack() -> dict[str, str]:
@@ -47,7 +49,9 @@ def _native_stack() -> dict[str, str]:
             "A CPU wheel or the wrong CUDA image cannot serve IQ MIMO."
         )
     if sys.prefix == sys.base_prefix or not os.environ.get("VIRTUAL_ENV"):
-        raise RuntimeContractError("Activate a venv (with the container's native torch)")
+        raise RuntimeContractError(
+            "Activate a venv (with the container's native torch)"
+        )
     return {
         "torch": torch.__version__,
         "torch_path": str(Path(torch.__file__).resolve()),
@@ -138,7 +142,9 @@ def _installed_mamba() -> dict[str, str]:
     info = inspect_mamba3_mimo_runtime(torch.device("cuda:0"))
     require_mamba3_mimo_runtime(torch.device("cuda:0"))
     if info.source_commit != MAMBA3_UPSTREAM_COMMIT:
-        raise RuntimeContractError("Mamba-3 source commit differs from IQ's pinned source")
+        raise RuntimeContractError(
+            "Mamba-3 source commit differs from IQ's pinned source"
+        )
     # A present CuTe import is NOT proof of working recurrent decoding.
     return {
         "mamba_commit": str(info.source_commit),
