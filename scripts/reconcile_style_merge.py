@@ -1,8 +1,8 @@
 """Safely finish IQ's local PR57 + formatting-commit merge.
 
 Reads git's three conflict stages for the two known overlapping files.
-Only resolves automatically if the formatting side differs from the merge
-base solely in formatting: same Python AST and same comment tokens.
+Also resolves additive import/export differences in iq_model/__init__.py;
+never resolves arbitrary AST changes or changed comments.
 
 Run INSIDE the pending ~/IQ-integrate worktree merge. Does not push or
 change the remote main branch. Saves a full conflict review outside repo.
@@ -44,6 +44,142 @@ def semantic_key(blob: bytes) -> tuple[str, tuple[str, ...]]:
         if token.type == tokenize.COMMENT
     )
     return syntax, comments
+
+
+
+def _comment_tokens(source: str) -> tuple[str, ...]:
+    return tuple(
+        tok.string for tok in tokenize.generate_tokens(io.StringIO(source).readline)
+        if tok.type == tokenize.COMMENT
+    )
+
+
+def _inspect_init(blob: bytes) -> tuple[str, ast.Module, dict, list[str], str]:
+    source = blob.decode("utf-8")
+    tree = ast.parse(source)
+    imports = {}
+    exports = None
+    other_nodes = []
+    for node in tree.body:
+        if isinstance(node, ast.ImportFrom):
+            key = (node.level, node.module or "")
+            if key in imports or any(item.name == "*" for item in node.names):
+                raise ValueError(f"duplicate or wildcard import for {key}")
+            imports[key] = list(node.names)
+        elif isinstance(node, ast.Import):
+            # Preserve simple imports exactly; review additions manually.
+            other_nodes.append(node)
+        elif (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+            and node.targets[0].id == "__all__"
+        ):
+            if (
+                exports is not None
+                or not isinstance(node.value, (ast.List, ast.Tuple))
+                or any(
+                    not isinstance(item, ast.Constant) or not isinstance(item.value, str)
+                    for item in node.value.elts
+                )
+            ):
+                raise ValueError("dynamic or duplicate __all__ declaration")
+            exports = [item.value for item in node.value.elts]
+        else:
+            other_nodes.append(node)
+    if exports is None:
+        raise ValueError("no static __all__ declaration")
+    other = ast.dump(ast.Module(body=other_nodes, type_ignores=[]), include_attributes=False)
+    return source, tree, imports, exports, other
+
+
+def _import_aliases(items: list[ast.alias]) -> list[tuple[str, str | None]]:
+    return [(item.name, item.asname) for item in items]
+
+
+def _merge_init_imports_and_exports(base: bytes, ours: bytes, theirs: bytes) -> bytes:
+    """Combine only additive import/export edits and formatting safely."""
+    b_text, _, b_imports, b_exports, b_other = _inspect_init(base)
+    o_text, o_tree, o_imports, o_exports, o_other = _inspect_init(ours)
+    t_text, _, t_imports, t_exports, t_other = _inspect_init(theirs)
+    if b_other != o_other or b_other != t_other:
+        raise ValueError("a side changes Python code beyond imports and __all__")
+    if _comment_tokens(b_text) != _comment_tokens(t_text):
+        raise ValueError("the formatting side changes comments")
+    if _comment_tokens(b_text) != _comment_tokens(o_text):
+        raise ValueError("the PR side changes comments")
+    if b_imports.keys() - o_imports.keys() or b_imports.keys() - t_imports.keys():
+        raise ValueError("a side removed a base import module")
+    if t_imports.keys() - o_imports.keys():
+        raise ValueError("formatting side adds a new import module; ordering needs review")
+    if not set(b_exports).issubset(o_exports) or not set(b_exports).issubset(t_exports):
+        raise ValueError("a side removed an existing public export")
+    if len(o_exports) != len(set(o_exports)) or len(t_exports) != len(set(t_exports)):
+        raise ValueError("duplicate public exports require review")
+
+    edits = []
+    lines = o_text.splitlines(keepends=True)
+    for node in o_tree.body:
+        if not isinstance(node, ast.ImportFrom):
+            continue
+        key = (node.level, node.module or "")
+        base_names = set(_import_aliases(b_imports.get(key, [])))
+        ours_names = _import_aliases(o_imports[key])
+        theirs_names = _import_aliases(t_imports[key])
+        if not base_names.issubset(ours_names) or not base_names.issubset(theirs_names):
+            raise ValueError(f"a side removed existing imported names from {key}")
+        extras = [item for item in theirs_names if item not in ours_names]
+        if not extras:
+            continue
+        if any("#" in line for line in lines[node.lineno - 1:node.end_lineno]):
+            raise ValueError(f"cannot rewrite comments within import {key}")
+        merged_names = ours_names + extras
+        module = "." * node.level + (node.module or "")
+        replacement = f"from {module} import (\n" + "".join(
+            f"    {name}{' as ' + alias if alias else ''},\n"
+            for name, alias in merged_names
+        ) + ")\n"
+        edits.append((node.lineno - 1, node.end_lineno, replacement))
+
+    added_exports = [name for name in t_exports if name not in o_exports]
+    if added_exports:
+        available = {
+            alias.asname or alias.name
+            for names in list(o_imports.values()) + list(t_imports.values())
+            for alias in names
+        }
+        if not set(added_exports).issubset(available):
+            raise ValueError(f"unknown exported names: {set(added_exports) - available}")
+        export_node = next(
+            node for node in o_tree.body
+            if isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+            and node.targets[0].id == "__all__"
+        )
+        if any("#" in line for line in lines[export_node.lineno - 1:export_node.end_lineno]):
+            raise ValueError("cannot rewrite comments in __all__")
+        replacement = "__all__ = [\n" + "".join(
+            f"    {name!r},\n" for name in o_exports + added_exports
+        ) + "]\n"
+        edits.append((export_node.lineno - 1, export_node.end_lineno, replacement))
+
+    for start, end, replacement in sorted(edits, key=lambda item: item[0], reverse=True):
+        lines[start:end] = [replacement]
+    merged = "".join(lines).encode("utf-8")
+    _, _, merged_imports, merged_exports, merged_other = _inspect_init(merged)
+    if merged_other != o_other:
+        raise ValueError("merged file changes unexpected Python code")
+    if not set(o_exports).issubset(merged_exports) or not set(t_exports).issubset(merged_exports):
+        raise ValueError("merged exports incomplete")
+    for side in (o_imports, t_imports):
+        for key, values in side.items():
+            if not set(_import_aliases(values)).issubset(_import_aliases(merged_imports[key])):
+                raise ValueError(f"merged imports incomplete: {key}")
+    print("INIT: preserved all imported names and public exports from both versions")
+    if added_exports:
+        print("INIT: added exports:", ", ".join(added_exports))
+    return merged
 
 
 def run() -> int:
@@ -106,13 +242,27 @@ def run() -> int:
         except (subprocess.CalledProcessError, UnicodeDecodeError, SyntaxError, tokenize.TokenError) as exc:
             print(f"MANUAL: {path} (cannot establish formatting-only change: {exc})")
             continue
-        if not same_semantics:
+        if same_semantics:
+            merged = ours
+            reason = "formatting side matches base AST and comments"
+        elif path == "iq_model/__init__.py":
+            try:
+                merged = _merge_init_imports_and_exports(base, ours, theirs)
+                reason = "verified additive import/export union"
+            except ValueError as exc:
+                print(f"MANUAL: {path} ({exc})")
+                continue
+        else:
             print(f"MANUAL: {path} (formatting side changes AST and/or comments)")
             continue
 
-        # Preserve the PR57 code exactly; only reformat after restoring it.
+        # Save the unresolved working copy before overwriting conflict markers.
         target = root / path
-        target.write_bytes(ours)
+        backup = report_path.with_suffix(".unresolved-init.txt")
+        if path == "iq_model/__init__.py":
+            backup.write_bytes(target.read_bytes())
+            print(f"Saved original unresolved init file to {backup}")
+        target.write_bytes(merged)
         if shutil.which("ruff") is not None:
             fmt = subprocess.run(["ruff", "format", str(target)], capture_output=True, text=True)
             if fmt.returncode:
@@ -121,7 +271,7 @@ def run() -> int:
                 continue
         git("add", "--", path)
         resolved.append(path)
-        print(f"RESOLVED: {path} (formatting side AST and comments equal merge base)")
+        print(f"RESOLVED: {path} ({reason})")
 
     remaining = [
         p for p in git("diff", "--name-only", "--diff-filter=U", "-z").stdout.decode().split("\0")
