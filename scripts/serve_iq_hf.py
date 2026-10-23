@@ -102,7 +102,7 @@ def create_handler(tokenizer, model):
                     raise ValueError("request must be 1..65536 bytes")
                 data = json.loads(self.rfile.read(length))
                 if not isinstance(data, dict):
-                    raise ValueError("expected JSON object")
+                    raise TypeError("expected JSON object")
                 messages = data.get("messages")
                 if messages is None:
                     messages = [{"role": "user", "content": data.get("prompt", "")}]
@@ -122,10 +122,10 @@ def create_handler(tokenizer, model):
                 if type(tokens) is not int or not 1 <= tokens <= MAX_NEW_TOKENS:
                     raise ValueError(f"max_new_tokens must be 1..{MAX_NEW_TOKENS}")
                 response = generate(tokenizer, model, messages, tokens)
-            except (ValueError, KeyError) as exc:
+            except (ValueError, KeyError, TypeError) as exc:
                 self.respond(400, {"error": str(exc)})
                 return
-            except Exception:
+            except Exception:  # noqa: BLE001 - HTTP boundary must contain unexpected model failures
                 traceback.print_exc(file=sys.stderr)
                 self.respond(500, {"error": "inference failed; see job logs"})
                 return
