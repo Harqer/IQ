@@ -45,7 +45,10 @@ MAMBA_FORCE_BUILD=TRUE python -m pip install \
   --no-cache-dir \
   "mamba-ssm @ git+https://github.com/state-spaces/mamba.git@${MAMBA3_COMMIT}"
 
-python -m pip check
+# The container inherits unrelated build tools (notably spin) whose Click
+# range can conflict with Hugging Face Hub. Validate IQ's full transitive
+# *inference* dependency graph instead of every package in the base image.
+python scripts/verify_iq_dependencies.py
 python scripts/hf_runtime_contract.py after --snapshot "$snapshot"
 
 # No kernel-only tests, GPU benchmarks, or standalone paid job here.
