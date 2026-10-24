@@ -32,6 +32,10 @@ if [[ -e "$ROOT" ]]; then
   echo "Refusing dirty calibration repair scratch directory" >&2
   exit 2
 fi
+# Reuse the CUDA Torch wheel from the cloud image; do not reinstall it.
+source scripts/setup_glm53_gpu_worker.sh
+python scripts/check_glm53_gpu_stack.py --require-cuda \
+  --min-vram-gib "${IQ_MIN_GPU_VRAM_GIB:-20}" --smoke --pip-check
 mkdir -p "$ROOT/donor"
 hf download zai-org/GLM-5.3-BF16 config.json model.safetensors.index.json \
   --revision "$DONOR_REV" --local-dir "$ROOT/donor"
