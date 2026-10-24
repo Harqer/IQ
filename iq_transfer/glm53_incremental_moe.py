@@ -65,12 +65,25 @@ def _inverse(map_: CoordinateMap) -> np.ndarray:
         and np.all(np.sum(matrix * matrix, axis=0) == 1.0)
     ):
         return matrix
-    # A naive SVD for a dense 6144x4096 calibration map can exhaust RAM.
-    # Only small dense calibration maps may take the reference pinv path.
+    # WARM's canonical maps are dense semi-orthogonal, not one-hot.
+    # Verify the full Gram matrix by small column blocks before exploiting
+    # pinv(P).T == P. This uses O(k * block_cols) scratch, not O(k*k).
     if matrix.size > 8_000_000:
-        raise GLM53IncrementalMoEError(
-            "large non-orthogonal coordinate map needs a bounded inverse solver"
-        )
+        if matrix.shape[0] < matrix.shape[1]:
+            raise GLM53IncrementalMoEError(
+                "large wide coordinate map requires a bounded inverse solver"
+            )
+        for start in range(0, matrix.shape[1], 128):
+            stop = min(start + 128, matrix.shape[1])
+            gram = matrix.T @ matrix[:, start:stop]
+            for offset, col in enumerate(range(start, stop)):
+                gram[col, offset] -= 1.0
+            if not np.isfinite(gram).all() or float(np.max(np.abs(gram))) > 1e-8:
+                raise GLM53IncrementalMoEError(
+                    "large non-orthogonal coordinate map needs a bounded inverse solver"
+                )
+        return matrix
+    # Small general maps preserve the reference float64 pseudoinverse.
     return np.linalg.pinv(matrix).T
 
 
