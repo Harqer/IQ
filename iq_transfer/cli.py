@@ -71,7 +71,12 @@ def _parser() -> argparse.ArgumentParser:
     )
     glm_compile.add_argument("--checkpoint", required=True)
     glm_compile.add_argument("--calibration", required=True)
-    glm_compile.add_argument("--mamba3-checkpoint", required=True)
+    glm_compile.add_argument("--mamba3-checkpoint")
+    glm_compile.add_argument(
+        "--reuse-foundation-checkpoint",
+        help="Existing immutable IQ checkpoint with Mamba-3/lexical shards; "
+             "avoids recompiling the original Mamba donor",
+    )
     glm_compile.add_argument("--output", required=True)
     glm_compile.add_argument("--routed-experts", type=int, choices=(32, 64, 128, 256), default=32)
     glm_compile.add_argument("--checkpoint-revision", required=True)
@@ -317,6 +322,11 @@ def main(argv: list[str] | None = None) -> int:
             print(shard)
         return 0
     if args.command == "glm53-compile":
+        if bool(args.mamba3_checkpoint) == bool(args.reuse_foundation_checkpoint):
+            parser.error(
+                "glm53-compile requires exactly one of --mamba3-checkpoint "
+                "or --reuse-foundation-checkpoint"
+            )
         result = compile_glm53_iq_checkpoint(
             glm53_checkpoint=args.checkpoint,
             calibration_dir=args.calibration,
@@ -329,6 +339,7 @@ def main(argv: list[str] | None = None) -> int:
             streaming_source=args.streaming_source,
             glm53_repo_id=args.repo_id,
             target_config=canonical_glm53_config(routed_experts=args.routed_experts),
+            reuse_foundation_checkpoint=args.reuse_foundation_checkpoint,
         )
         print(
             json.dumps(
