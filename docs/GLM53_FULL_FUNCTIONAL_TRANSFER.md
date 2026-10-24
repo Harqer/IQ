@@ -139,6 +139,30 @@ bucket**, nor can they be reconstructed from the transplanted IQ weights.
 GLM BF16 is vastly larger than one H200; a teacher capture requires a
 suitable distributed setup or a trusted activation-export service.
 
+Once real GLM hidden captures and the independently validated coordinate map
+exist, the CPU artifact builder can serialize each example. Each call uses
+**the exact same document bytes** tokenized separately by GLM and IQ.
+
+```bash
+python scripts/build_glm53_stage2_alignment.py \
+  --document document.txt \
+  --glm-hidden glm-hidden.safetensors \
+  --glm-spans glm-byte-spans.json \
+  --iq-spans iq-byte-spans.json \
+  --iq-ids iq-token-ids.json \
+  --map-prefix validated-residual-out-map \
+  --source-layer 3 --target-layer 5 \
+  --teacher-revision abf42e6c0e53bc29a875511301e7b7fcd220315b \
+  --split train --out-dir alignment-train
+```
+
+The source/target layer numbers above are **interface examples**, not verified
+stage selections for your checkpoint. Before proceeding, use
+`transplant_manifest.json` `source_layer_map` and `iq_config.json` physical
+schedule to select a real paired stage. Build an independent validation
+artifact with `--split validation` and distinct document bytes. The
+Stage-2 trainer verifies that exact mapping.
+
 The existing trainable adapter can then be used:
 
 ```bash
