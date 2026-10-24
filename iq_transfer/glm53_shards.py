@@ -203,7 +203,20 @@ def plan_glm53_compile_shards(
     inspector = GLM53Inspector.from_config_mapping(config_data)
     calibration = GLM53CalibrationSolution.load(calibration_dir)
     target = target_config or canonical_glm53_config()
-    if calibration.target_config_fingerprint != target.fingerprint:
+    # The compiler accepts the pinned 32-expert *weight_only* map for
+    # expanded 64/128/256 expert capacities. Apply the exact same policy
+    # here; otherwise the planner rejects a valid full-capacity compile.
+    base = canonical_glm53_config()
+    expanded_weight_only = (
+        target.stable_moe is not None
+        and target.stable_moe.num_experts in (64, 128, 256)
+        and calibration.calibration_mode == "weight_only"
+        and calibration.target_config_fingerprint == base.fingerprint
+    )
+    if (
+        calibration.target_config_fingerprint != target.fingerprint
+        and not expanded_weight_only
+    ):
         raise GLM53ShardPlanError(
             "calibration target fingerprint does not match target config"
         )
