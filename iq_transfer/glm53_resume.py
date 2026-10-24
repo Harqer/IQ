@@ -65,7 +65,7 @@ def validate_legacy_partial(output: Path) -> None:
     if (output / "COMPILE_COMPLETE.json").exists():
         raise GLM53ResumeError("cannot resume a completed checkpoint")
     known = {"model.safetensors.index.json", "transplant_manifest.json",
-             "iq_config.json", "GLM53_RESUME_MANIFEST.json", "INCOMPLETE"}
+             "iq_config.json", "GLM53_RESUME_MANIFEST.json", "INCOMPLETE", "run-provenance.json"}
     found = 0
     for path in output.iterdir():
         name = path.name
