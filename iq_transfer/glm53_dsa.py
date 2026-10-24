@@ -20,7 +20,7 @@ def _array(value: Any) -> np.ndarray:
         value = value.cpu()
     # NumPy cannot represent torch.bfloat16. BF16 -> FP32 preserves every
     # source value exactly; only the temporary conversion changes dtype.
-    if getattr(getattr(value, "dtype", None), "__str__", lambda: "")() == "torch.bfloat16":
+    if str(getattr(value, "dtype", "")) == "torch.bfloat16":
         value = value.float()
     if hasattr(value, "numpy"):
         value = value.numpy()
