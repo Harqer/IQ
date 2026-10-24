@@ -10,9 +10,9 @@ Baseline: `feat/glm53-gpu-transfer-guards`, pinned GLM/Mamba donor revisions.
 | --- | --- | --- | --- |
 | CUDA / Torch | `scripts/start_glm53_full78_gpu_from_verified_calibration.sh` and `requirements-model.txt` | No worker-level compatibility gate before the large transfer | Read-only `check_glm53_gpu_stack.py` with tiny device math smoke |
 | Dependencies | `requirements-transfer.txt` | Compiler packages are declared, but HF worker image is not validated and there is no isolated setup contract | `setup_glm53_gpu_worker.sh` reuses image Torch and installs only transfer dependencies |
-| CUDA precision | `iq_transfer/glm53_gpu_projection.py` | FP32 CUDA products and adaptive row tiles implemented; BF16 source tensors become CPU FP64 arrays in the MoE path | Retain working algorithm until real numerical/throughput benchmark; forbid silent CPU fallback |
-| Transfer I/O | `iq_transfer/http_range_source.py` | Bounded HTTP Range source exists, but reads are synchronous | Profile bytes/s, retry counts, GPU wait before adding prefetch |
-| Matrix caching | `iq_transfer/glm53_incremental_moe.py` | Reuses per-stage inverses; `ProjectionOps` caches a RHS basis, but ignores `cache_left` | Profile cache hits/transfer times before optimizing |
+| CUDA precision | `iq_transfer/glm53_gpu_batch.py` | Legacy per-expert conversion included CPU FP64 matrix materialization | New GPU-native batched FP32 route for sparse MoE with BF16 output; validate numerical parity during full run |
+| Transfer I/O | `iq_transfer/http_range_source.py` | Bounded HTTP Range source exists; originally synchronous | Added bounded one-batch-ahead remote prefetch with an independent session; measure in-run bytes/s |
+| Matrix caching | `iq_transfer/glm53_incremental_moe.py` | Original per-expert RHS checked whole NumPy basis repeatedly | Sparse CUDA batches now upload the input/output bases once per stage |
 | Mamba kernels | `scripts/install_model_runtime.sh` / `requirements-mamba3-constraints.txt` | Pinned TileLang/TVM-FFI and source commit apply to *inference* only | Do not install CUDA Mamba kernels into the offline transfer compiler |
 | HF fresh vs resume | `scripts/start_glm53_full78_gpu_from_verified_calibration.sh`, `scripts/resume_glm53_full78_mounted_cloud.sh` | Fresh run accepts separate `CALIBRATION_RUN_ID`, resume previously assumed it equals `RUN_ID` | Resume now requires the original calibration ID explicitly |
 | GPU CI | `.github/workflows/glm53-transfer-safety.yml` | CPU-only runner does not exercise GPU math; CUDA-marked tests skip | Run offline contract tests in CI; measure CUDA performance during full transfer, not in standalone paid benchmark runs |
@@ -102,12 +102,30 @@ shards without revalidating all dependencies and hashes.
 - HF Jobs and persistent volumes:
   https://huggingface.co/docs/huggingface_hub/en/guides/jobs
 
+**Implementation update — multi-expert CUDA batching and bounded I/O:**
+
+- `iq_transfer/glm53_gpu_batch.py` batches up to four GLM routed experts
+  per CUDA GEMM by default (tunable 1–16, constrained by 512 MiB of BF16
+  donor payload per planned batch). WARM bases are uploaded **once per
+  sparse source layer**; sparse expert matrices no longer round-trip via
+  NumPy FP64 before GPU multiplication.
+- `iq_transfer/glm53_batch_prefetch.py` overlaps one verified remote
+  tensor batch with the current CUDA+atomic-write batch using a distinct
+  HTTP Session. Disable with `IQ_MOE_GPU_PREFETCH=0` if debugging.
+- On CUDA OOM the resident prefetched batch is split into smaller GEMMs;
+  successful components persist in slot order without extra network reads.
+  Existing per-expert safetensors resume semantics remain unchanged.
+- The compiler reports actual in-run elapsed time, estimated BF16 donor
+  MiB/s and CUDA peak allocated memory. This is **not a separate
+  microbenchmark**. CPU/NumPy path is retained as a reference.
+- CPU-only tests cover batch bounds, staged-source isolation, the optional
+  prefetch switch and unchanged checkpoint recovery; CUDA-gated tests cover
+  BF16 output parity and OOM recovery. Actual full-run speedup is **not yet
+  measured**, and complete GLM capability retention remains unproven.
+
 **Execution policy:** One authorized GPU session should make continuous
-progress on all 78 layers, with bounded stages and resumability. Internal
-per-expert shard writes preserve crash recovery; they are not separate jobs.
-The current implementation is still a sequential expert loop; multi-expert
-GPU batching and overlapping I/O remain performance enhancements to audit,
-not verified features. Do not claim batching is implemented by these changes.
+progress on all 78 layers, with bounded stages and resumability. Per-expert
+shard writes preserve crash recovery without launching separate jobs.
 
 **Status:** Offline audit and fail-closed preflight code only. No GPU time,
 donor-weight downloads, end-to-end benchmark, or model-quality improvement
