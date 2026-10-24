@@ -345,16 +345,16 @@ def compile_glm53_iq_checkpoint(
     output.mkdir(parents=True, exist_ok=True)
     config = target_config if target_config is not None else canonical_glm53_config()
     calibration = GLM53CalibrationSolution.load(calibration_dir)
-    if (
-        config.stable_moe is None
-        or config.stable_moe.num_experts not in (32, 64, 128, 256)
-        or config.schedule.layers != canonical_glm53_config().schedule.layers
-        or config.mamba3 != canonical_glm53_config().mamba3
-        or config.model.vocab_size != 128256
-        or config.model.hidden_size != 4096
-    ):
+    if config.stable_moe is None or config.stable_moe.num_experts not in (32, 64, 128, 256):
+        raise GLM53CompileError("unsupported GLM routed expert capacity")
+    expected_config = canonical_glm53_config(
+        routed_experts=config.stable_moe.num_experts
+    )
+    if config.fingerprint != expected_config.fingerprint:
         raise GLM53CompileError(
-            "expert expansion requires frozen Mamba-3 config, lexical geometry and layer schedule"
+            "noncanonical GLM recipient: only the routed expert count may change; "
+            "Mamba weights, layer schedule, lexical boundary and context geometry "
+            "must remain frozen"
         )
     if calibration.target_config_fingerprint != config.fingerprint:
         raise GLM53CompileError(
