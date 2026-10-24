@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import numpy as np
@@ -12,7 +12,7 @@ from iq_model import HybridLayerType, IQHybridConfig
 from .calibration import solve_layer_correspondence
 from .capture_runner import ActivationBundle
 from .checkpoint import SafetensorsSource
-from .complete_transplant import donor_layer_positions
+from .complete_transplant import canonical_glm53_config, donor_layer_positions
 from .glm53_direct import (
     fit_importance_subcloning_map,
     fit_mla_compressed_subspace,
@@ -656,6 +656,7 @@ def bootstrap_glm53_calibration(
     source_num_experts: int,
     source_indexer_types: tuple[str, ...],
     warm_device: str = "cpu",
+    reuse_weight_only: GLM53CalibrationSolution | None = None,
 ) -> GLM53CalibrationSolution:
     """Build the GLM->IQ bootstrap from pretrained weight geometry.
 
@@ -680,9 +681,38 @@ def bootstrap_glm53_calibration(
     stable = target_config.stable_moe
     target_nonrotary = c.head_dim - c.partial_rotary_dim
 
+    # Reuse validated original 24-stage WARM coordinates where the identical
+    # GLM source layer is present, preventing unnecessary recomputation of
+    # 24 already-transformed layers. Only physical IQ positions change.
+    reuse_by_source: dict[int, GLM53StageCalibration] = {}
+    if reuse_weight_only is not None:
+        if (
+            reuse_weight_only.calibration_mode != "weight_only"
+            or reuse_weight_only.source_layers != source_layers
+            or reuse_weight_only.target_config_fingerprint
+            != canonical_glm53_config().fingerprint
+            or len(reuse_weight_only.stages) != 24
+        ):
+            raise GLM53CalibrationError(
+                "full-78 calibration reuse requires original canonical 24-stage weight-only solution"
+            )
+        reuse_by_source = {
+            old.source_layer: old for old in reuse_weight_only.stages
+        }
     stages: list[GLM53StageCalibration] = []
     for stage, (context_physical, moe_physical) in enumerate(stage_positions):
         source_layer = mapping[stage]
+        prior = reuse_by_source.get(source_layer)
+        if prior is not None:
+            stages.append(
+                replace(
+                    prior,
+                    stage=stage,
+                    context_physical_layer=context_physical,
+                    moe_physical_layer=moe_physical,
+                )
+            )
+            continue
         residual, attention_input, moe_input, latent = _warm_glm_layer_maps(
             source_weights,
             source_layer=source_layer,
