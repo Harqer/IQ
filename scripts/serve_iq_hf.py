@@ -116,14 +116,52 @@ def generate(tokenizer, model, messages: list[dict], max_new_tokens: int) -> tup
             logits = result.logits[:, -1, :].float()
             if not bool(torch.isfinite(logits).all()):
                 raise RuntimeError("non-finite IQ logits")
+            if diagnostics and not generated:
+                probabilities = torch.softmax(logits[0], dim=-1)
+                values, indices = probabilities.topk(5)
+                report = {
+                    "event": "IQ_FIRST_TOKEN",
+                    "prompt_tokens": prompt_tokens,
+                    "logit_range": [
+                        float(logits[0].min().item()),
+                        float(logits[0].max().item()),
+                    ],
+                    "logit_std": float(logits[0].std().item()),
+                    "entropy": float(
+                        -(probabilities * probabilities.clamp_min(1e-30).log())
+                        .sum().item()
+                    ),
+                    "top5": [
+                        {
+                            "id": int(token_id),
+                            "probability": float(probability),
+                            "text": tokenizer.decode([int(token_id)]),
+                        }
+                        for token_id, probability in zip(
+                            indices.tolist(), values.tolist()
+                        )
+                    ],
+                    "layers": [
+                        {
+                            "index": index,
+                            "rms": float(
+                                hidden.float().square().mean().sqrt().item()
+                            ),
+                        }
+                        for index, hidden in traced
+                    ],
+                }
+                if isinstance(result.hidden_states, torch.Tensor):
+                    report["last_hidden_rms"] = float(
+                        result.hidden_states[0, -1]
+                        .float().square().mean().sqrt().item()
+                    )
+                print(json.dumps(report, ensure_ascii=False), flush=True)
             next_token = logits.argmax(dim=-1, keepdim=True)
             token_id = int(next_token[0, 0].item())
             generated.append(token_id)
             input_ids = torch.cat((input_ids, next_token), dim=1)
-            if (
-                tokenizer.eos_token_id is not None
-                and token_id == tokenizer.eos_token_id
-            ):
+            if token_id in stop_ids:
                 finish_reason = "stop"
                 break
     return (tokenizer.decode(generated, skip_special_tokens=True), finish_reason, prompt_tokens, len(generated))
