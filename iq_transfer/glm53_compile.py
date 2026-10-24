@@ -18,6 +18,8 @@ from .complete_transplant import (
     _save_shard,
     _translate_mamba_overlay,
     canonical_glm53_config,
+    canonical_glm53_full78_config,
+    donor_layer_positions,
     expected_complete_state_keys,
 )
 from .glm53 import GLM53Inspector
@@ -396,14 +398,24 @@ def compile_glm53_iq_checkpoint(
     calibration = GLM53CalibrationSolution.load(calibration_dir)
     if config.stable_moe is None or config.stable_moe.num_experts not in (32, 64, 128, 256):
         raise GLM53CompileError("unsupported GLM routed expert capacity")
-    expected_config = canonical_glm53_config(
-        routed_experts=config.stable_moe.num_experts
-    )
-    if config.fingerprint != expected_config.fingerprint:
+    stage_count = len(donor_layer_positions(config))
+    if stage_count not in (24, 78):
+        raise GLM53CompileError("IQ must map exactly 24 or 78 donor stages")
+    if stage_count == 24:
+        expected_config = canonical_glm53_config(
+            routed_experts=config.stable_moe.num_experts
+        )
+        if config.fingerprint != expected_config.fingerprint:
+            raise GLM53CompileError("24-stage configuration is not canonical")
+    if len(calibration.stages) != stage_count:
         raise GLM53CompileError(
-            "noncanonical GLM recipient: only the routed expert count may change; "
-            "Mamba weights, layer schedule, lexical boundary and context geometry "
-            "must remain frozen"
+            "calibration must cover all target stages before weight transport"
+        )
+    if stage_count == 78 and [
+        entry.source_layer for entry in calibration.stages
+    ] != list(range(78)):
+        raise GLM53CompileError(
+            "full-78 transfer requires exact GLM source layers 0..77"
         )
     _validate_expanded_calibration(calibration, config)
 
@@ -436,6 +448,15 @@ def compile_glm53_iq_checkpoint(
         (donor.checkpoint_dir / "config.json").read_text(encoding="utf-8")
     )
     inspector = GLM53Inspector.from_config_mapping(config_data)
+    if stage_count == 78:
+        official_full_config = canonical_glm53_full78_config(
+            source_indexer_types=inspector.layout.indexer_types,
+            routed_experts=config.stable_moe.num_experts,
+        )
+        if config.fingerprint != official_full_config.fingerprint:
+            raise GLM53CompileError(
+                "full-78 IQ context layer types do not match official GLM indexer layout"
+            )
     if calibration.source_layers != inspector.config.num_hidden_layers:
         raise GLM53CompileError(
             "calibration source layer count does not match GLM checkpoint"
