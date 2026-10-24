@@ -361,20 +361,26 @@ def save_incremental_moe_stage(
         middle = stage.dense_intermediate_map
         assert middle is not None
         middle_inverse = _inverse(middle)
-        report["shared"] = _save_expert(
-            source=source,
-            donor_prefix=root,
-            output_prefix=f"layers.{physical}.moe.shared_experts.0",
-            save_filename=f"model-moe-{stage.stage:03d}-shared.safetensors",
-            output_dir=output_dir,
-            weight_map=weight_map,
-            source_width=source_width,
-            intermediate_width=middle.matrix.shape[0],
-            target_output_map=stage.residual_map.matrix,
-            input_inverse=input_inverse,
-            middle_map=middle.matrix,
-            middle_inverse=middle_inverse,
-        )
+        shared_name = f"model-moe-{stage.stage:03d}-shared.safetensors"
+        if resume_existing and register_saved_shard(
+            output_dir, shared_name, weight_map, layer=physical
+        ):
+            report["shared"] = {"resumed_existing_shard": True}
+        else:
+            report["shared"] = _save_expert(
+                source=source,
+                donor_prefix=root,
+                output_prefix=f"layers.{physical}.moe.shared_experts.0",
+                save_filename=f"model-moe-{stage.stage:03d}-shared.safetensors",
+                output_dir=output_dir,
+                weight_map=weight_map,
+                source_width=source_width,
+                intermediate_width=middle.matrix.shape[0],
+                target_output_map=stage.residual_map.matrix,
+                input_inverse=input_inverse,
+                middle_map=middle.matrix,
+                middle_inverse=middle_inverse,
+            )
         target = f"layers.{physical}.moe"
         for slot in range(stable.num_experts):
             zeros: dict[str, torch.Tensor] = {
