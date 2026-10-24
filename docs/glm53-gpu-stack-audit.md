@@ -46,6 +46,8 @@ python scripts/check_glm53_gpu_stack.py \
   --require-cuda --min-vram-gib 20 --smoke --pip-check
 ```
 
+The dependency validator checks only the requirements reachable from IQ's transfer libraries, avoiding unrelated base-image packages (e.g. `spin`) that can make a blanket `pip check` fail incorrectly.
+
 The setup uses `python -m venv --system-site-packages` and records the
 pre/post Torch version, compiled CUDA runtime and installation path; an
 unexpected Torch change fails closed. The preflight reports package versions,
