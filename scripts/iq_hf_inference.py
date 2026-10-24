@@ -76,7 +76,7 @@ def launch_command(commit: str) -> list[str]:
         "git clone -q https://github.com/Harqer/IQ.git /workspace/IQ; "
         "cd /workspace/IQ; "
         f"git checkout -q {commit}; "
-        "export IQ_TOKENIZER_DIR=/tokenizer; "
+        "export IQ_TOKENIZER_DIR=/tokenizer IQ_DIAGNOSTICS=1; "
         "python3 scripts/check_iq_checkpoint_files.py /checkpoints; "
         "bash scripts/hf_container_venv.sh python scripts/serve_iq_hf.py"
     )
