@@ -378,6 +378,7 @@ def compile_glm53_iq_checkpoint(
     glm53_repo_id: str = "zai-org/GLM-5.3-BF16",
     target_config: IQHybridConfig | None = None,
     reuse_foundation_checkpoint: str | Path | None = None,
+    resume_existing: bool = False,
 ) -> GLM53CompileResult:
     if (mamba3_checkpoint is None) == (reuse_foundation_checkpoint is None):
         raise GLM53CompileError(
