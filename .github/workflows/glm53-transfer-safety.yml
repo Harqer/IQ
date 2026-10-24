@@ -9,6 +9,9 @@ on:
       - "scripts/*glm53*.sh"
       - "tests/test_glm53_*.py"
       - "docs/glm53-full78-gpu-runbook.md"
+      - "docs/glm53-gpu-stack-audit.md"
+      - "requirements-transfer.txt"
+      - "requirements-model.txt"
       - ".github/workflows/glm53-transfer-safety.yml"
   workflow_dispatch:
 
@@ -31,11 +34,16 @@ jobs:
       - name: Strict code/shell syntax
         run: |
           python -m compileall -q iq_transfer scripts/glm53_full78_gate.py scripts/glm53_calibration_sha256.py
+          bash -n scripts/setup_glm53_gpu_worker.sh
           bash -n scripts/repair_glm53_full78_calibration.sh
           bash -n scripts/start_glm53_full78_gpu_from_verified_calibration.sh
           bash -n scripts/resume_glm53_full78_mounted_cloud.sh
+      - name: Audit CPU dependency stack (CUDA required only on GPU workers)
+        run: |
+          python scripts/check_glm53_gpu_stack.py --pip-check
       - name: No-cloud-cost failure injection and lineage tests
         run: |
+          python -m unittest discover -s tests -p 'test_glm53_gpu_stack.py' -v
           python -m unittest discover -s tests -p 'test_glm53_full78_gate.py' -v
           python -m unittest discover -s tests -p 'test_glm53_atomic_shards.py' -v
           python -m unittest discover -s tests -p 'test_glm53_provenance.py' -v
