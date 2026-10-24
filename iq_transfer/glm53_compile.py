@@ -515,7 +515,11 @@ def compile_glm53_iq_checkpoint(
             weight_map=weight_map,
         )
         provenance["frozen_mamba_foundation_reuse"] = reused_foundation
-    else:
+    elif not (
+        resume_existing and register_saved_shard(
+            output, "model-global.safetensors", weight_map
+        )
+    ):
         assert mamba3_checkpoint is not None
         foundation_globals = load_official_mamba3_foundation_globals(
             checkpoint=mamba3_checkpoint,
