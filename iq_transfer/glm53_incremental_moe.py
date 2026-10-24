@@ -12,6 +12,7 @@ still exceed small-memory limits.
 from __future__ import annotations
 
 import gc
+import json
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +33,20 @@ _INVERSE_DENSE_THRESHOLD = 8_000_000
 
 class GLM53IncrementalMoEError(RuntimeError):
     pass
+
+
+def _energy(value: np.ndarray) -> float:
+    return float(np.sum(np.square(value), dtype=np.float64))
+
+
+def _energy_ratio(a: float, b: float) -> dict[str, float | None]:
+    if not np.isfinite(a) or not np.isfinite(b) or min(a, b) < 0:
+        raise GLM53IncrementalMoEError("nonfinite projection energy")
+    return {
+        "donor_frobenius_sq": a,
+        "projected_frobenius_sq": b,
+        "norm_energy_ratio": b / a if a else None,
+    }
 
 
 def _finite(value: Any, shape: tuple[int, ...], label: str) -> np.ndarray:
@@ -104,7 +119,8 @@ def _save_expert(
     input_inverse: np.ndarray,
     middle_map: np.ndarray | None = None,
     middle_inverse: np.ndarray | None = None,
-) -> None:
+) -> dict[str, dict[str, float | None]]:
+    metrics: dict[str, dict[str, float | None]] = {}
     if (middle_map is None) != (middle_inverse is None):
         raise GLM53IncrementalMoEError("intermediate map and inverse must be paired")
     if middle_map is not None and (
@@ -123,6 +139,7 @@ def _save_expert(
     for kind in ("gate", "up"):
         key = f"{donor_prefix}.{kind}_proj.weight"
         shape = (intermediate_width, source_width)
+        source_energy = 0.0
         if dense:
             if tuple(source.shape(key)) != shape:
                 raise GLM53IncrementalMoEError(f"{key}: unexpected donor shape")
@@ -139,19 +156,23 @@ def _save_expert(
                     (stop - row, source_width),
                     key,
                 )
+                source_energy += _energy(chunk)
                 projected += middle_map[row:stop].T @ chunk
                 del chunk
             result = projected @ input_inverse
             del projected
         else:
             w = _finite(source.get(key), shape, key)
+            source_energy = _energy(w)
             result = w @ input_inverse
             del w
+        metrics[kind] = _energy_ratio(source_energy, _energy(result))
         state[f"{output_prefix}.{kind}_proj.weight"] = _convert(result)
         del result
 
     key = f"{donor_prefix}.down_proj.weight"
     shape = (source_width, intermediate_width)
+    source_energy = 0.0
     if dense:
         if tuple(source.shape(key)) != shape:
             raise GLM53IncrementalMoEError(f"{key}: unexpected donor shape")
@@ -169,18 +190,22 @@ def _save_expert(
             )
             # (P_out.T @ W) @ pinv(P_mid).T can be accumulated in
             # row-blocks: P_out[rows].T @ (W[rows] @ pinv(P_mid).T).
+            source_energy += _energy(chunk)
             result += target_output_map[row:stop].T @ (
                 chunk @ middle_inverse
             )
             del chunk
     else:
         down = _finite(source.get(key), shape, key)
+        source_energy = _energy(down)
         result = target_output_map.T @ down
         del down
+    metrics["down"] = _energy_ratio(source_energy, _energy(result))
     state[f"{output_prefix}.down_proj.weight"] = _convert(result)
     del result
     _save_shard(output_dir, save_filename, state, weight_map)
     del state
+    return metrics
 
 def _common(
     *,
@@ -296,6 +321,18 @@ def save_incremental_moe_stage(
     if not np.isfinite(input_inverse).all() or not np.isfinite(latent_inverse).all():
         raise GLM53IncrementalMoEError("nonfinite coordinate pseudoinverse")
 
+    report: dict[str, Any] = {
+        "schema_version": 1,
+        "stage": stage.stage,
+        "source_layer": source_layer,
+        "target_layer": physical,
+        "projection_type": "shared_WARM_subspaces",
+        "caution": (
+            "Frobenius energy ratio is subspace-retained energy only when "
+            "coordinate bases are orthonormal; it is not functional fidelity."
+        ),
+        "routed": {},
+    }
     common = _common(
         source=source,
         stage=stage,
@@ -321,7 +358,7 @@ def save_incremental_moe_stage(
         middle = stage.dense_intermediate_map
         assert middle is not None
         middle_inverse = _inverse(middle)
-        _save_expert(
+        report["shared"] = _save_expert(
             source=source,
             donor_prefix=root,
             output_prefix=f"layers.{physical}.moe.shared_experts.0",
@@ -358,10 +395,13 @@ def save_incremental_moe_stage(
                 weight_map,
             )
             del zeros
+        (output_dir / f"model-moe-{stage.stage:03d}-projection.json").write_text(
+            json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
         return
 
     target = f"layers.{physical}.moe"
-    _save_expert(
+    report["shared"] = _save_expert(
         source=source,
         donor_prefix=f"{root}.shared_experts",
         output_prefix=f"{target}.shared_experts.0",
@@ -375,7 +415,9 @@ def save_incremental_moe_stage(
     )
 
     for slot, donor_id in enumerate(selected):
-        _save_expert(
+        report["routed"][str(slot)] = {
+            "donor_expert_id": int(donor_id),
+            "operators": _save_expert(
             source=source,
             donor_prefix=f"{root}.experts.{donor_id}",
             output_prefix=f"{target}.routed_experts.{slot}",
@@ -386,5 +428,9 @@ def save_incremental_moe_stage(
             intermediate_width=intermediate_width,
             target_output_map=stage.latent_map.matrix,
             input_inverse=latent_inverse,
-        )
+            ),
+        }
         gc.collect()
+    (output_dir / f"model-moe-{stage.stage:03d}-projection.json").write_text(
+        json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
