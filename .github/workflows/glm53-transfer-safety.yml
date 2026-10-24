@@ -1,0 +1,43 @@
+name: GLM53 Full78 Transfer Safety
+
+on:
+  pull_request:
+    paths:
+      - "iq_transfer/glm53_*.py"
+      - "iq_transfer/complete_transplant.py"
+      - "scripts/*glm53*.py"
+      - "scripts/*glm53*.sh"
+      - "tests/test_glm53_*.py"
+      - "docs/glm53-full78-gpu-runbook.md"
+      - ".github/workflows/glm53-transfer-safety.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  safety-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install CPU-only validation dependencies (no HF compute jobs)
+        run: |
+          python -m pip install -r requirements-transfer.txt
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - name: Strict code/shell syntax
+        run: |
+          python -m compileall -q iq_transfer scripts/glm53_full78_gate.py scripts/glm53_calibration_sha256.py
+          bash -n scripts/repair_glm53_full78_calibration.sh
+          bash -n scripts/start_glm53_full78_gpu_from_verified_calibration.sh
+          bash -n scripts/resume_glm53_full78_mounted_cloud.sh
+      - name: No-cloud-cost failure injection and lineage tests
+        run: |
+          python -m unittest discover -s tests -p 'test_glm53_full78_gate.py' -v
+          python -m unittest discover -s tests -p 'test_glm53_atomic_shards.py' -v
+          python -m unittest discover -s tests -p 'test_glm53_resume.py' -v
+          python -m unittest discover -s tests -p 'test_glm53_gpu_projection.py' -v
+          python -m unittest discover -s tests -p 'test_glm53_full78_architecture.py' -v
