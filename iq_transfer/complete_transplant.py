@@ -247,6 +247,46 @@ def canonical_glm53_config(*, routed_experts: int = 32) -> IQHybridConfig:
     )
 
 
+def canonical_glm53_full78_config(
+    *,
+    source_indexer_types: tuple[str, ...],
+    routed_experts: int = 256,
+) -> IQHybridConfig:
+    """One physical context+MoE pair per original GLM source layer (0..77).
+
+    This is a DIFFERENT, larger IQ architecture, not the 24-stage checkpoint.
+    Existing pretrained Mamba-3 slots can be retained and additional Mamba
+    slots must be initialized identity with their provenance recorded.
+    """
+    if len(source_indexer_types) != 78 or any(
+        kind not in ("full", "shared") for kind in source_indexer_types
+    ):
+        raise CompleteTransplantError(
+            "full-78 IQ requires all 78 official GLM indexer type entries"
+        )
+    base = canonical_glm53_config(routed_experts=routed_experts)
+    layers: list[HybridLayerType] = []
+    for source_layer, kind in enumerate(source_indexer_types):
+        layers.extend((
+            HybridLayerType.MAMBA3,
+            HybridLayerType.CSA if kind == "full" else HybridLayerType.HCA,
+            HybridLayerType.MOE,
+        ))
+    layers.append(HybridLayerType.MAMBA3)
+    schedule = HybridSchedule(tuple(layers))
+    assert len(schedule.layers) == 235
+    assert schedule.count(HybridLayerType.MAMBA3) == 79
+    return validate_canonical_hybrid_backbone(
+        replace(
+            base,
+            model=replace(base.model, num_hidden_layers=235),
+            schedule=schedule,
+            mamba3=replace(base.mamba3, num_layers=79),
+            attnres=replace(base.attnres, num_layers=235),
+        )
+    )
+
+
 def canonical_glm53_multimodal_config() -> IQHybridConfig:
     base = canonical_glm53_config()
     context_layers = tuple(base.schedule.attention_positions)
@@ -298,13 +338,18 @@ def canonical_multimodal_config() -> IQHybridConfig:
 def donor_layer_positions(
     config: IQHybridConfig,
 ) -> tuple[tuple[int, int], ...]:
-    """Return (context_physical, moe_physical) for donor layers 0..23."""
+    """Return one (context_physical, moe_physical) pair per IQ donor stage.
+
+    Supports both historical 24-stage and full-GLM 78-stage architectures.
+    """
     context = list(config.schedule.attention_positions)
     moe = list(config.schedule.positions(HybridLayerType.MOE))
-    if len(context) != 24 or len(moe) != 24:
+    if len(context) not in (24, 78) or len(context) != len(moe):
         raise CompleteTransplantError(
-            "canonical donor-layer mapping requires 24 context/MoE layers"
+            "donor-stage mapping requires equal 24 or 78 context/MoE pairs"
         )
+    if any(c >= m for c, m in zip(context, moe, strict=True)):
+        raise CompleteTransplantError("context must precede corresponding MoE")
     return tuple(zip(context, moe, strict=True))
 
 
