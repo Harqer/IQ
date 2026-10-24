@@ -25,6 +25,7 @@ from .glm53 import GLM53Inspector
 from .glm53_calibration import GLM53StageCalibration
 from .glm53_moe import select_experts_by_usage
 from .glm53_resume import register_saved_shard, expected_expert_keys
+from .glm53_gpu_projection import ProjectionOps
 from .transport import CoordinateMap
 from iq_model import IQHybridConfig
 
@@ -120,6 +121,7 @@ def _save_expert(
     input_inverse: np.ndarray,
     middle_map: np.ndarray | None = None,
     middle_inverse: np.ndarray | None = None,
+    projection_ops: ProjectionOps | None = None,
 ) -> dict[str, dict[str, float | None]]:
     metrics: dict[str, dict[str, float | None]] = {}
     if (middle_map is None) != (middle_inverse is None):
@@ -160,12 +162,12 @@ def _save_expert(
                 source_energy += _energy(chunk)
                 projected += middle_map[row:stop].T @ chunk
                 del chunk
-            result = projected @ input_inverse
+            result = projection_ops.matmul(projected, input_inverse, cache_right=True) if projection_ops else projected @ input_inverse
             del projected
         else:
             w = _finite(source.get(key), shape, key)
             source_energy = _energy(w)
-            result = w @ input_inverse
+            result = projection_ops.matmul(w, input_inverse, cache_right=True) if projection_ops else w @ input_inverse
             del w
         metrics[kind] = _energy_ratio(source_energy, _energy(result))
         state[f"{output_prefix}.{kind}_proj.weight"] = _convert(result)
@@ -199,7 +201,7 @@ def _save_expert(
     else:
         down = _finite(source.get(key), shape, key)
         source_energy = _energy(down)
-        result = target_output_map.T @ down
+        result = projection_ops.matmul(target_output_map.T, down, cache_left=True) if projection_ops else target_output_map.T @ down
         del down
     metrics["down"] = _energy_ratio(source_energy, _energy(result))
     state[f"{output_prefix}.down_proj.weight"] = _convert(result)
