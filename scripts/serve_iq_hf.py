@@ -83,9 +83,36 @@ def generate(tokenizer, model, messages: list[dict], max_new_tokens: int) -> tup
     input_ids = input_ids.to("cuda:0")
     generated: list[int] = []
     finish_reason = "length"
+    diagnostics = os.getenv("IQ_DIAGNOSTICS", "0") == "1"
+    stop_ids = {tokenizer.eos_token_id}
+    eot_id = tokenizer.convert_tokens_to_ids("<|eot_id|>")
+    if isinstance(eot_id, int) and 0 <= eot_id < len(tokenizer):
+        stop_ids.add(eot_id)
     with torch.inference_mode():
         for _ in range(max_new_tokens):
-            result = model(input_ids)
+            if diagnostics and not generated:
+                traced: list[tuple[int, torch.Tensor]] = []
+                handles = []
+
+                def make_probe(index: int):
+                    def probe(_module, _inputs, output):
+                        hidden = (
+                            output if isinstance(output, torch.Tensor)
+                            else getattr(output, "hidden_states", None)
+                        )
+                        if isinstance(hidden, torch.Tensor):
+                            traced.append((index, hidden.detach()[:, -1, :]))
+                    return probe
+
+                for index, layer in enumerate(model.layers):
+                    handles.append(layer.register_forward_hook(make_probe(index)))
+                try:
+                    result = model(input_ids, return_hidden_states=True)
+                finally:
+                    for handle in handles:
+                        handle.remove()
+            else:
+                result = model(input_ids)
             logits = result.logits[:, -1, :].float()
             if not bool(torch.isfinite(logits).all()):
                 raise RuntimeError("non-finite IQ logits")
