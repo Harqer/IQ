@@ -55,9 +55,18 @@ def _convert(arr: np.ndarray, *, dtype: torch.dtype = torch.bfloat16) -> torch.T
 
 
 def _inverse(map_: CoordinateMap) -> np.ndarray:
-    # Keep NumPy's original float64 pinv for mathematical parity with
-    # transform_glm53_moe_selected; compute it only once per map per stage.
-    return np.linalg.pinv(map_.matrix).T
+    # The canonical weight-only subcloning maps have orthonormal one-hot
+    # columns. Their Moore-Penrose transpose equals the original matrix.
+    # Recognize that exact case in linear memory/time and skip a huge SVD.
+    matrix = np.asarray(map_.matrix, dtype=np.float64)
+    if (
+        matrix.shape[0] >= matrix.shape[1]
+        and np.all(np.count_nonzero(matrix, axis=1) <= 1)
+        and np.all(np.sum(matrix * matrix, axis=0) == 1.0)
+    ):
+        return matrix
+    # General calibration still uses the reference NumPy float64 pinv.
+    return np.linalg.pinv(matrix).T
 
 
 def _save_expert(
@@ -87,33 +96,70 @@ def _save_expert(
         raise GLM53IncrementalMoEError("expert output-map source width mismatch")
     if input_inverse.shape[0] != source_width:
         raise GLM53IncrementalMoEError("expert input-map source width mismatch")
+
     state: dict[str, torch.Tensor] = {}
+    dense = middle_map is not None
     for kind in ("gate", "up"):
-        w = _finite(
-            source.get(f"{donor_prefix}.{kind}_proj.weight"),
-            (intermediate_width, source_width),
-            f"{donor_prefix}.{kind}",
+        key = f"{donor_prefix}.{kind}_proj.weight"
+        shape = (intermediate_width, source_width)
+        if dense:
+            if tuple(source.shape(key)) != shape:
+                raise GLM53IncrementalMoEError(f"{key}: unexpected donor shape")
+            assert middle_map is not None
+            # Read only donor rows needed by each block. Accumulate the
+            # calibrated intermediate projection before applying input map.
+            projected = np.zeros(
+                (middle_map.shape[1], source_width), dtype=np.float64
+            )
+            for row in range(0, intermediate_width, 128):
+                stop = min(row + 128, intermediate_width)
+                chunk = _finite(
+                    source.get_rows(key, range(row, stop)),
+                    (stop - row, source_width),
+                    key,
+                )
+                projected += middle_map[row:stop].T @ chunk
+                del chunk
+            result = projected @ input_inverse
+            del projected
+        else:
+            w = _finite(source.get(key), shape, key)
+            result = w @ input_inverse
+            del w
+        state[f"{output_prefix}.{kind}_proj.weight"] = _convert(result)
+        del result
+
+    key = f"{donor_prefix}.down_proj.weight"
+    shape = (source_width, intermediate_width)
+    if dense:
+        if tuple(source.shape(key)) != shape:
+            raise GLM53IncrementalMoEError(f"{key}: unexpected donor shape")
+        assert middle_inverse is not None
+        result = np.zeros(
+            (target_output_map.shape[1], middle_inverse.shape[1]),
+            dtype=np.float64,
         )
-        # P_mid=I for sparse; dense GLM has a learned calibration map.
-        if middle_map is not None:
-            w = middle_map.T @ w
-        state[f"{output_prefix}.{kind}_proj.weight"] = _convert(w @ input_inverse)
-        del w
-    down = _finite(
-        source.get(f"{donor_prefix}.down_proj.weight"),
-        (source_width, intermediate_width),
-        f"{donor_prefix}.down",
-    )
-    # Associate the dense multiplication to avoid a huge [output, donor-mid]
-    # temporary. Small floating-rounding differences from original order
-    # are checked against the BF16 output tolerance.
-    if middle_inverse is not None:
-        down = down @ middle_inverse
-    state[f"{output_prefix}.down_proj.weight"] = _convert(target_output_map.T @ down)
-    del down
+        for row in range(0, source_width, 128):
+            stop = min(row + 128, source_width)
+            chunk = _finite(
+                source.get_rows(key, range(row, stop)),
+                (stop - row, intermediate_width),
+                key,
+            )
+            # (P_out.T @ W) @ pinv(P_mid).T can be accumulated in
+            # row-blocks: P_out[rows].T @ (W[rows] @ pinv(P_mid).T).
+            result += target_output_map[row:stop].T @ (
+                chunk @ middle_inverse
+            )
+            del chunk
+    else:
+        down = _finite(source.get(key), shape, key)
+        result = target_output_map.T @ down
+        del down
+    state[f"{output_prefix}.down_proj.weight"] = _convert(result)
+    del result
     _save_shard(output_dir, save_filename, state, weight_map)
     del state
-
 
 def _common(
     *,
