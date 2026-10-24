@@ -71,6 +71,29 @@ class TestIQChatProtocol(unittest.TestCase):
             self.assertEqual(result.usage.prompt_tokens, 5)
             self.assertEqual(result.usage.total_tokens, 6)
 
+    def test_raw_completion_probe_uses_separate_prompt_format(self):
+        with patch.object(
+            server_module, "generate",
+            return_value=("4", "length", 5, 1),
+        ) as generate:
+            request = Request(
+                self.base + "/chat",
+                data=json.dumps({
+                    "prompt": "2 + 2 =",
+                    "prompt_format": "completion",
+                    "max_new_tokens": 4,
+                }).encode(),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urlopen(request, timeout=5) as response:
+                self.assertEqual(json.load(response)["response"], "4")
+            generate.assert_called_once_with(
+                None, None,
+                [{"role": "user", "content": "2 + 2 ="}],
+                4, "completion",
+            )
+
     def test_streaming_is_rejected_not_silently_ignored(self):
         request = Request(
             self.base + "/v1/chat/completions",
