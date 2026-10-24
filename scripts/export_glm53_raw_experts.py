@@ -34,9 +34,23 @@ def main() -> int:
     p.add_argument("--output", type=Path, required=True,
                    help="new empty directory for the donor-only bundle")
     p.add_argument("--full", action="store_true",
-                   help="export ALL selected expert weights (large / long-running)")
+                   help="export ALL 23 stages and selected experts (very large)")
+    p.add_argument("--stage", type=int,
+                   help="export only one routed calibration stage, 1..23")
+    p.add_argument("--experts-per-stage", type=int, default=1,
+                   help="number of selected experts to export (default: 1)")
     args = p.parse_args()
     try:
+        if args.full and (
+            args.stage is not None or args.experts_per_stage != 1
+        ):
+            raise RawExpertExportError(
+                "--full cannot be combined with --stage/--experts-per-stage"
+            )
+        if args.experts_per_stage < 1:
+            raise RawExpertExportError("--experts-per-stage must be positive")
+        if args.stage is not None and not 1 <= args.stage < 24:
+            raise RawExpertExportError("routed stage must be 1..23")
         plan = json.loads(args.plan.read_text(encoding="utf-8"))
         index_bytes = args.index.read_bytes()
         index = json.loads(index_bytes)
@@ -86,8 +100,9 @@ def main() -> int:
                     hidden=inspector.config.hidden_size,
                     intermediate=layout.moe_intermediate_size,
                     index_sha256=hashlib.sha256(index_bytes).hexdigest(),
-                    max_stages=None if args.full else 1,
-                    max_experts=None if args.full else 1,
+                    max_stages=None if args.full or args.stage is not None else 1,
+                    max_experts=None if args.full else args.experts_per_stage,
+                    selected_stage=args.stage,
                 )
             finally:
                 source.close()
