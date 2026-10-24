@@ -6,7 +6,6 @@ import importlib.util
 import sys
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -41,7 +40,9 @@ class TestIQQuality(unittest.TestCase):
                 self.assertFalse(client.check_generation_smoke(answer)[0])
 
     def test_arithmetic_canary(self):
-        for answer in ("4", "4.", "4.0", "four", "The answer is 4.", "Answer: 4"):
+        for answer in (
+            "4", "4.", "4.0", "four", "The answer is 4.", "Answer: 4"
+        ):
             with self.subTest(answer=answer):
                 self.assertTrue(client.check_generation_smoke(answer)[0])
 
@@ -53,7 +54,10 @@ class TestIQQuality(unittest.TestCase):
     def test_metadata_weight_only_is_blocker(self):
         cfg = {
             "model": {"vocab_size": 128256, "hidden_size": 4096},
-            "schedule": {"layers": ["mamba3"] * 32 + ["csa"] * 12 + ["hca"] * 12 + ["moe"] * 24},
+            "schedule": {
+                "layers": ["mamba3"] * 32 + ["csa"] * 12
+                + ["hca"] * 12 + ["moe"] * 24
+            },
         }
         manifest = {
             "method": "mamba3_foundation_plus_glm53_capability_weight_transfer",
@@ -63,7 +67,9 @@ class TestIQQuality(unittest.TestCase):
         }
         report = audit.audit(cfg, manifest)
         blockers = [f for f in report["findings"] if f["level"] == "blocker"]
-        self.assertTrue(any(f["key"] == "activation_calibration" for f in blockers))
+        self.assertTrue(
+            any(f["key"] == "activation_calibration" for f in blockers)
+        )
         self.assertFalse(report["language_quality_confirmed"])
 
     def test_widened_lexical_head_preserves_donor_logits_on_replicated_states(self):
@@ -94,7 +100,10 @@ class TestIQQuality(unittest.TestCase):
             "calibration_mode": "activation_refined",
             "foundation": {"repo": "state-spaces/mamba3-mimo-1.5b"},
         }
-        errors = [f for f in audit.audit(cfg, manifest)["findings"] if f["level"] == "error"]
+        errors = [
+            f for f in audit.audit(cfg, manifest)["findings"]
+            if f["level"] == "error"
+        ]
         self.assertTrue(any(f["key"] == "vocabulary" for f in errors))
 
 
