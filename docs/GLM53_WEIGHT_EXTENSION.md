@@ -72,6 +72,60 @@ This operation copies **no weight tensors** and performs **no training**
 or activation refinement. An expanded checkpoint must still be compiled
 from the pinned GLM donor and original Mamba donor, then verified.
 
+## Continue from the user's indexed donor shards
+
+A local metadata check found **82/82 shards listed by the local index**,
+but no `config.json`. That ratio alone does **not** prove this is the
+complete GLM donor or contains the extra expert shards required by a
+64-expert expansion. Compare against the original pinned GLM snapshot
+metadata before expensive work:
+
+```bash
+DONOR="$HOME/IQ-checkpoints/glm53-1907c8ca8b85f895ce72"
+hf download zai-org/GLM-5.3-BF16 config.json \
+  --revision abf42e6c0e53bc29a875511301e7b7fcd220315b \
+  --local-dir "$DONOR"
+python scripts/check_glm53_source_inventory.py --local-donor "$DONOR"
+```
+
+Only the tiny `config.json` and official source index are downloaded by
+these commands; the preflight reports actual original donor metadata
+coverage. An incomplete 82-shard local subset is **not** automatically
+enough for the expanded compile.
+
+Official bucket CLI supports downloading only the calibration prefix
+without syncing the entire `mocha` bucket:
+
+```bash
+hf buckets sync \
+  hf://buckets/kofecheckmate/mocha/legacy/visionboxx-macha/calibration \
+  "$HOME/IQ-calibration-original"
+```
+
+This **downloads potentially tens of GB of existing map tensors**;
+use a filesystem with sufficient disk space and prefer remote mounted
+bucket reuse if local download is unnecessary. Never pass `mocha`
+bucket root to `sync` just to retrieve calibration.
+
+Then build a candidate calibration that uses the original map files:
+
+```bash
+python scripts/reuse_glm53_calibration.py \
+  --source "$HOME/IQ-calibration-original" \
+  --output "$HOME/IQ-calibration-64" \
+  --routed-experts 64 --verify-hashes
+```
+
+**New:** the expanded compiler accepts
+`--reuse-foundation-checkpoint /path/to/original/mocha` instead of
+`--mamba3-checkpoint /path/to/raw/mamba-donor`.
+This copies the original 32 Mamba and lexical shards byte-for-byte,
+verifying every SHA-256 without reloading the 1.5B original donor.
+Use only one of the two flags. The original IQ checkpoint must be
+accessible locally (or mounted on authorized compute); this change
+does not download it. The compiler also requires genuine GLM donor
+shards and does not trigger any Hugging Face jobs by itself.
+
 ## New tools
 
 - `scripts/plan_glm53_weight_extension.py`: fetches GLM and IQ
