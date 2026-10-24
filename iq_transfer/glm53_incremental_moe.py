@@ -438,6 +438,17 @@ def save_incremental_moe_stage(
     
 
     for slot, donor_id in enumerate(selected):
+        expert_name = f"model-moe-{stage.stage:03d}-expert-{slot:03d}.safetensors"
+        if resume_existing and register_saved_shard(
+            output_dir, expert_name, weight_map,
+            expected_keys=expected_expert_keys(physical, slot),
+            layer=physical,
+        ):
+            report["routed"][str(slot)] = {
+                "donor_expert_id": int(donor_id),
+                "resumed_existing_shard": True,
+            }
+            continue
         report["routed"][str(slot)] = {
             "donor_expert_id": int(donor_id),
             "operators": _save_expert(
