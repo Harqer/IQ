@@ -36,22 +36,24 @@ hf download state-spaces/mamba3-mimo-1.5b config.json pytorch_model.bin \
 # Package the tokenizer only after separately authorized access is available.
 echo "FULL78: Resuming already calibrated 78-stage IQ output; no calibration recomputation."
 python - "$DEST_CALIB" <<'PY'
-import sys
-from iq_transfer.glm53_calibration import GLM53CalibrationSolution
-c=GLM53CalibrationSolution.load(sys.argv[1])
-assert c.source_layers==78 and len(c.stages)==78
-assert [x.source_layer for x in c.stages]==list(range(78))
-assert len([x for x in c.stages if x.expert_usage is not None])==75
+import json, sys
+from pathlib import Path
+raw=json.loads((Path(sys.argv[1])/'glm53_calibration.json').read_text())
+stages=raw['stages']
+assert raw['source_layers']==78 and len(stages)==78
+assert [int(x['source_layer']) for x in stages]==list(range(78))
+assert len([x for x in stages if x.get('expert_usage')])==75
+assert all((Path(sys.argv[1])/x['residual_map']).with_suffix('.safetensors').is_file() for x in stages)
 print("SAVED_FULL78_CALIBRATION_VERIFIED",flush=True)
 PY
 
 echo "FULL78: Probe first unsaved stage-3 donor expert before paid compilation."
 timeout 300s python - "$WORK_ROOT/glm53" "$DEST_CALIB" "$DONOR_REV" <<'PY'
 import sys, torch
-from iq_transfer.glm53_calibration import GLM53CalibrationSolution
+from iq_transfer.glm53_lazy_calibration import LazyGLM53Calibration
 from iq_transfer.glm53_moe import select_experts_by_usage
 from iq_transfer.http_range_source import HubSafetensorsSource
-solution = GLM53CalibrationSolution.load(sys.argv[2])
+solution = LazyGLM53Calibration(sys.argv[2])
 stage = solution.stages[3]
 selection = select_experts_by_usage(stage.expert_usage, target_experts=256)
 donor_id = selection[41]
