@@ -10,7 +10,12 @@ import numpy as np
 import torch
 from safetensors.torch import load_file
 
-from iq_transfer.glm53_compile import _moe_state
+from iq_transfer.glm53_compile import (
+    GLM53CompileError,
+    _moe_state,
+    _validate_expanded_calibration,
+)
+from iq_transfer.complete_transplant import canonical_glm53_config
 from iq_transfer.glm53_incremental_moe import save_incremental_moe_stage
 from iq_transfer.transport import CoordinateMap
 
@@ -159,6 +164,36 @@ class TestIncrementalMoE(unittest.TestCase):
             for name in set(index.values()):
                 values = load_file(str(Path(tmp) / name))
                 self.assertTrue(all(bool(torch.isfinite(v).all()) for v in values.values()))
+
+
+class TestExpandedCalibrationCompatibility(unittest.TestCase):
+    def test_original_weight_only_maps_can_expand_expert_count(self):
+        base = canonical_glm53_config()
+        expanded = canonical_glm53_config(routed_experts=64)
+        old = SimpleNamespace(
+            target_config_fingerprint=base.fingerprint,
+            calibration_mode="weight_only",
+        )
+        _validate_expanded_calibration(old, expanded)
+
+    def test_activation_refined_maps_cannot_silently_expand(self):
+        base = canonical_glm53_config()
+        expanded = canonical_glm53_config(routed_experts=64)
+        old = SimpleNamespace(
+            target_config_fingerprint=base.fingerprint,
+            calibration_mode="activation_refined",
+        )
+        with self.assertRaises(GLM53CompileError):
+            _validate_expanded_calibration(old, expanded)
+
+    def test_unrelated_fingerprint_fails_closed(self):
+        expanded = canonical_glm53_config(routed_experts=64)
+        wrong = SimpleNamespace(
+            target_config_fingerprint="unrelated",
+            calibration_mode="weight_only",
+        )
+        with self.assertRaises(GLM53CompileError):
+            _validate_expanded_calibration(wrong, expanded)
 
 
 if __name__ == "__main__":
