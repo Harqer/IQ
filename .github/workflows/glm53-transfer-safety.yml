@@ -49,4 +49,5 @@ jobs:
           python -m unittest discover -s tests -p 'test_glm53_provenance.py' -v
           python -m unittest discover -s tests -p 'test_glm53_resume.py' -v
           python -m unittest discover -s tests -p 'test_glm53_gpu_projection.py' -v
+          python -m unittest discover -s tests -p 'test_glm53_gpu_batch.py' -v
           python -m unittest discover -s tests -p 'test_glm53_full78_architecture.py' -v
