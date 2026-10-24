@@ -194,6 +194,7 @@ def project_one_raw_expert(
     stage: int = 1,
     slot: int = 0,
     block_rows: int = 64,
+    _verified_calibration: tuple[np.ndarray, int, dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     """Project an indexed expert using one verified WARM basis, without retraining."""
     if type(stage) is not int or not 0 <= stage < 24:
@@ -232,9 +233,22 @@ def project_one_raw_expert(
     source_layer = record["source_layer"]
     if type(source_layer) is not int or not 0 <= source_layer < 78:
         raise GLM53SingleExpertProjectionError("invalid donor layer")
-    p, physical, calibration_hashes = _calibration_map(
-        calibration, stage, source_layer, capacity
-    )
+    if _verified_calibration is None:
+        p, physical, calibration_hashes = _calibration_map(
+            calibration, stage, source_layer, capacity
+        )
+    else:
+        # Only the stage-batch orchestrator supplies this private argument
+        # after it has verified the SAME calibration and donor metadata.
+        p, physical, calibration_hashes = _verified_calibration
+        if p.ndim != 2 or not np.isfinite(p).all():
+            raise GLM53SingleExpertProjectionError(
+                "invalid verified batch coordinate map"
+            )
+        if physical != donor_layer_positions(target_config)[stage][1]:
+            raise GLM53SingleExpertProjectionError(
+                "verified batch map uses incorrect physical MoE layer"
+            )
     hidden, latent = p.shape
     intermediate = target_config.stable_moe.expert_intermediate_size
     input_roots = (raw.resolve(), calibration.resolve())
