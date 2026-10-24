@@ -20,7 +20,6 @@ import torch
 
 from .checkpoint import SafetensorsSource
 from .complete_transplant import _save_shard
-from .donor import DonorError
 from .glm53 import GLM53Inspector
 from .glm53_calibration import GLM53StageCalibration
 from .glm53_moe import select_experts_by_usage
