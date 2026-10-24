@@ -88,7 +88,15 @@ source.close()
 print(f"UNSAVED_EXPERT_SOURCE_READ_OK stage=3 slot=41 donor={donor_id}", flush=True)
 PY
 
-echo "FULL78: Stage 3 stream 78 attention + 78 FFN stages directly into a new durable run."
+# Limit each worker to a recoverable compute window instead of the platform timeout.
+MAX_SECONDS="${IQ_MAX_RUN_SECONDS:-14400}"
+if [[ ! "$MAX_SECONDS" =~ ^[0-9]+$ ]] || (( MAX_SECONDS < 900 || MAX_SECONDS > 82800 )); then
+  echo "BLOCKED: IQ_MAX_RUN_SECONDS must be 900..82800 (15m..23h)" >&2
+  exit 3
+fi
+export IQ_TRANSFER_DEADLINE_EPOCH="$(($(date +%s) + MAX_SECONDS))"
+echo "GPU_BUDGET_WINDOW_SECONDS=$MAX_SECONDS"
+echo "FULL78: Stage 3 resume saved stages and stream remaining attention/FFN."
 python -m iq_transfer.cli glm53-compile \
   --checkpoint "$WORK_ROOT/glm53" \
   --calibration "$DEST_CALIB" \
