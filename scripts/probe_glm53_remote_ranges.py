@@ -16,7 +16,7 @@ from pathlib import Path
 REPO = "zai-org/GLM-5.3-BF16"
 REVISION = "abf42e6c0e53bc29a875511301e7b7fcd220315b"
 MAX_HEADER = 32 * 1024 * 1024
-RANGE_PATTERN = re.compile(r"^bytes (\\d+)-(\\d+)/(\\d+)$")
+RANGE_PATTERN = re.compile(r"^bytes (\d+)-(\d+)/(\d+)$")
 
 
 class RangeProbeError(ValueError):
@@ -132,7 +132,7 @@ def main() -> int:
         if not 1 <= a.max_shards <= len(shards):
             raise RangeProbeError("invalid maximum shard count")
         if len(set(shards)) != len(shards) or any(
-            not re.fullmatch(r"model-\\d{5}-of-00282\\.safetensors", name)
+            not re.fullmatch(r"model-\d{5}-of-00282\.safetensors", name)
             for name in shards
         ):
             raise RangeProbeError("unexpected source shard filenames")
@@ -160,7 +160,7 @@ def main() -> int:
         if a.output:
             with a.output.open("x", encoding="utf-8") as out:
                 json.dump(report, out, indent=2, sort_keys=True)
-                out.write("\\n")
+                out.write("\n")
         return 0
     except (OSError, ValueError) as exc:
         print(f"Ranged safetensors probe FAILED: {exc}", file=sys.stderr)
