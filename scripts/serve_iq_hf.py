@@ -29,6 +29,20 @@ def build_model():
     tokenizer = AutoTokenizer.from_pretrained(
         str(tokenizer_root), local_files_only=True
     )
+    # Official Mamba3 donor uses Llama 3.1 token IDs, not GLM token IDs.
+    expected_special_ids = {
+        "<|begin_of_text|>": 128000,
+        "<|end_of_text|>": 128001,
+        "<|start_header_id|>": 128006,
+        "<|end_header_id|>": 128007,
+        "<|eot_id|>": 128009,
+    }
+    for token, expected_id in expected_special_ids.items():
+        actual = tokenizer.convert_tokens_to_ids(token)
+        if actual != expected_id:
+            raise RuntimeError(
+                f"Tokenizer special ID mismatch: {token}={actual}, expected {expected_id}"
+            )
     config = json.loads((root / "iq_config.json").read_text(encoding="utf-8"))
     if len(tokenizer) != config["model"]["vocab_size"]:
         raise RuntimeError(
