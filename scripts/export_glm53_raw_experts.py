@@ -2,6 +2,7 @@
 """Export exact official GLM-5.3 BF16 selected MoE weights without attention.
 
 Default: small smoke export (first routed stage: router, shared, ONE expert).
+Use --stage 1 --experts-per-stage 4 to export a bounded group.
 Use --full explicitly for all 23 sparse stages x 64/128/256 selected experts.
 The output is deliberately NOT a runnable IQ checkpoint.
 """
