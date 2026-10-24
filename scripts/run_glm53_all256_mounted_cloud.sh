@@ -36,9 +36,14 @@ export OMP_NUM_THREADS="${OMP_NUM_THREADS:-8}"
 # Use official immutable donor weights remotely: only config/index are fetched.
 hf download zai-org/GLM-5.3-BF16 config.json model.safetensors.index.json \
   --revision "$GLM_REV" --local-dir "$GLM_DIR"
+# The official Mamba-3 checkpoint publishes *only* config.json and pytorch_model.bin.
+# Its model card points to the meta-llama/Llama-3.1-8B tokenizer, a
+# separate gated repository; do not pretend Mamba repo includes tokenizer.
 hf download state-spaces/mamba3-mimo-1.5b \
-  config.json pytorch_model.bin tokenizer.json tokenizer_config.json \
+  config.json pytorch_model.bin \
   --revision "$MAMBA_REV" --local-dir "$MAMBA_DIR"
+# The tokenizer can be copied from the separately-authorized official model
+# in a later packaging phase; compiler does not require it to transform weights.
 
 python - "$CALIBRATION_DIR" <<'PY'
 import sys
