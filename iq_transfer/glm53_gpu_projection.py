@@ -58,5 +58,25 @@ class ProjectionOps:
             raise ProjectionComputeError("nonfinite GPU projection")
         return result
 
+    def check_orthonormal(self, matrix: np.ndarray, *, atol: float = 1e-4) -> bool:
+        """Check large WARM basis Gram in bounded CUDA blocks."""
+        p = np.asarray(matrix)
+        if p.ndim != 2 or p.shape[0] < p.shape[1]:
+            return False
+        if not self.cuda:
+            raise ProjectionComputeError("GPU basis verification requested on CPU")
+        with torch.inference_mode():
+            gpu = self._to_device(p, cache=True)
+            for j in range(0, p.shape[1], 128):
+                k = min(j + 128, p.shape[1])
+                gram = gpu.T @ gpu[:, j:k]
+                col = torch.arange(j, k, device=self.device)
+                gram[col, torch.arange(k-j, device=self.device)] -= 1.
+                if not bool(torch.isfinite(gram).all()) or float(gram.abs().max()) > atol:
+                    return False
+        return True
+
     def close(self)->None:
         self.cache.clear()
+        if self.cuda:
+            torch.cuda.empty_cache()
