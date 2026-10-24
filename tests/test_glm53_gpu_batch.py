@@ -11,7 +11,7 @@ import numpy as np
 import torch
 from safetensors.torch import load_file
 
-from iq_transfer.glm53_gpu_batch import ExpertSpec, batch_capacity, device_bases
+from iq_transfer.glm53_gpu_batch import ExpertSpec, batch_capacity, device_bases, batched_projection_math
 from iq_transfer.glm53_gpu_projection import ProjectionOps, ProjectionComputeError
 from iq_transfer.glm53_incremental_moe import save_incremental_moe_stage
 from test_glm53_incremental_moe import _donor
@@ -38,6 +38,27 @@ class BatchCapacityTests(unittest.TestCase):
             with self.assertRaises(ProjectionComputeError):
                 batch_capacity(source_width=4, intermediate_width=3,
                                expert_count=2)
+
+    def test_all_three_batched_projection_math_forms_match_numpy(self):
+        rng = np.random.default_rng(914)
+        gate_up = rng.normal(size=(3, 5, 7)).astype(np.float32)
+        down = rng.normal(size=(3, 7, 5)).astype(np.float32)
+        pin = rng.normal(size=(7, 4)).astype(np.float32)
+        pout_t = rng.normal(size=(4, 7)).astype(np.float32)
+        for name in ("gate", "up", "down"):
+            data = down if name == "down" else gate_up
+            actual = batched_projection_math(
+                torch.from_numpy(data), kind=name,
+                input_basis=torch.from_numpy(pin),
+                output_basis_t=torch.from_numpy(pout_t),
+            )
+            expected = np.stack([
+                pout_t.astype(np.float64) @ x.astype(np.float64)
+                if name == "down" else
+                x.astype(np.float64) @ pin.astype(np.float64)
+                for x in data
+            ])
+            np.testing.assert_allclose(actual.numpy(), expected, rtol=1e-5, atol=1e-5)
 
     def test_gpu_bases_not_silently_run_on_cpu(self):
         ops = ProjectionOps(mode="cpu")
