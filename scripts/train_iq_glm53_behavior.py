@@ -116,6 +116,18 @@ def main() -> int:
         config = json.loads((args.checkpoint / "iq_config.json").read_text(encoding="utf-8"))
         if config.get("model", {}).get("vocab_size") != 128256:
             raise ValueError("IQ checkpoint vocabulary mismatch")
+        provenance = json.loads(
+            (args.checkpoint / "transplant_manifest.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        if (
+            provenance.get("capability_source", {}).get("revision")
+            != meta["teacher_revision_claim"]
+        ):
+            raise ValueError(
+                "teacher revision claim differs from GLM donor used in original IQ weights"
+            )
         parent_index_sha = digest(index_path)
         print("Preflight passed: provenance, tokenizer and data file hashes verified.")
         print("Teacher attribution is a claim from input records, not API-authenticated.")
