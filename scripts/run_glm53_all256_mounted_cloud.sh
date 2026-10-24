@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # Full capacity, all 256 routed GLM experts at *each of IQ's 23 mapped sparse stages*.
 # This is not exact transfer of unmapped GLM layers: source reference is preserved.
-# HF Jobs: mount hf://buckets/kofecheckmate/mocha:/hf-bucket:rw on cpu-xl/cpu-performance.
+# HF Jobs: mount original mo che as read-only and a dedicated new output bucket as rw.
+#   hf://buckets/kofecheckmate/mocha:/hf-bucket:ro
+#   hf://buckets/kofecheckmate/iq-glm53-all256:/out
 set -euo pipefail
-if [[ "${IQ_CLOUD_WORKER:-}" != "1" || ! -d /hf-bucket/legacy/visionboxx-macha ]]; then
-  echo "REJECT: cloud worker with existing HF bucket mount required; no local execution." >&2
+if [[ "${IQ_CLOUD_WORKER:-}" != "1" || ! -d /hf-bucket/legacy/visionboxx-macha || ! -d /out ]]; then
+  echo "REJECT: cloud worker with read-only source and writable output mounts required." >&2
   exit 2
 fi
 RUN_ID="${RUN_ID:?Set a unique RUN_ID}"
@@ -14,7 +16,7 @@ if [[ ! "$RUN_ID" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]{4,79}$ ]]; then
 fi
 HF_ROOT=/hf-bucket/legacy/visionboxx-macha
 CALIBRATION_DIR="$HF_ROOT/calibration"
-REMOTE_OUTPUT="$HF_ROOT/IQ/runs/$RUN_ID"
+REMOTE_OUTPUT="/out/IQ/runs/$RUN_ID"
 WORK_ROOT="${IQ_TRANSFER_ROOT:-/tmp/iq-all256-$RUN_ID}"
 if [[ -e "$WORK_ROOT" || -e "$REMOTE_OUTPUT" ]]; then
   echo "REJECT: scratch or remote run already exists. Never overwrite previous IQ artifacts." >&2
