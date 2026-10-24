@@ -207,6 +207,36 @@ environment; calculate requirements before selecting compute.
 Streaming full shards reduces *peak* disk but does not remove
 per-shard network transfer. Do not start paid compute implicitly.
 
+## Alternative under investigation: partial safetensors range reads
+
+The 64-expert shard plan requires **103** official shards totaling
+**552,128,300,840 bytes (514.21 GiB)**. This exceeds the workstation's
+currently available 508.24 GiB and does not include the ~17.5 GB
+calibration or destination checkpoint. **Do not bulk-download those
+103 shards onto the workstation.**
+
+Safetensors encodes named tensor byte offsets in its JSON header.
+The Hugging Face/Xet protocols document byte-range requests. To verify
+that this pinned BF16 donor serves safe partial requests, run:
+
+```bash
+python -m unittest discover -s tests \
+  -p 'test_glm53_remote_range_probe.py' -v
+python -m scripts.probe_glm53_remote_ranges \
+  --plan "$HOME/glm53-official-shards-for-iq64.json" \
+  --max-shards 1
+```
+
+The probe fetches only the first 8 bytes and the JSON safetensors
+header of a single pinned official shard. It **refuses to download
+anything** if the server returns HTTP 200 instead of 206, omits the
+Content-Range header, or supplies invalid offsets. It validates file
+size and tensor header bounds. It does **not** read any tensor payload,
+prove all 103 shards support ranges, or implement tensor streaming.
+The latter is a separate next step if the probe works.
+
+No GPU job or weight download is started by these commands.
+
 ## New tools
 
 - `scripts/plan_glm53_weight_extension.py`: fetches GLM and IQ
