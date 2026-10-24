@@ -127,11 +127,11 @@ def check_generation_smoke(answer: str) -> tuple[bool, str]:
         return False, "empty response"
     if len(value) > 80:
         return False, "excessively long arithmetic response"
-    if re.search(r"([a-zA-Z]{3,10})\\1{2,}", value):
+    if re.search(r"([a-zA-Z]{3,10})\1{2,}", value):
         return False, "repeated subword output"
-    if re.fullmatch(r"(?:4(?:\\.0+)?|four)[.! ]*", value, re.IGNORECASE):
+    if re.fullmatch(r"(?:4(?:\.0+)?|four)[.! ]*", value, re.IGNORECASE):
         return True, "arithmetic smoke passed"
-    if re.fullmatch(r"(?:the answer is|answer:|it is)\\s+(?:4(?:\\.0+)?|four)[.! ]*",
+    if re.fullmatch(r"(?:the answer is|answer:|it is)\s+(?:4(?:\.0+)?|four)[.! ]*",
                     value, re.IGNORECASE):
         return True, "arithmetic smoke passed"
     return False, "did not answer 2+2 correctly and concisely"
