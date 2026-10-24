@@ -335,24 +335,25 @@ def save_incremental_moe_stage(
         ),
         "routed": {},
     }
-    common = _common(
-        source=source,
-        stage=stage,
-        stable=stable,
-        physical=physical,
-        sparse=sparse,
-        selected=selected,
-        source_width=source_width,
-        input_inverse=input_inverse,
-        latent_inverse=latent_inverse,
-    )
-    _save_shard(
-        output_dir,
-        f"model-moe-{stage.stage:03d}-common.safetensors",
-        common,
-        weight_map,
-    )
-    del common
+    common_name = f"model-moe-{stage.stage:03d}-common.safetensors"
+    if not (
+        resume_existing and register_saved_shard(
+            output_dir, common_name, weight_map, layer=physical
+        )
+    ):
+        common = _common(
+            source=source,
+            stage=stage,
+            stable=stable,
+            physical=physical,
+            sparse=sparse,
+            selected=selected,
+            source_width=source_width,
+            input_inverse=input_inverse,
+            latent_inverse=latent_inverse,
+        )
+        _save_shard(output_dir, common_name, common, weight_map)
+        del common
     root = f"model.layers.{source_layer}.mlp"
     if not sparse:
         # The actual dense donor function is retained in the shared expert;
