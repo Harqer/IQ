@@ -322,6 +322,9 @@ def save_incremental_moe_stage(
     # avoids repeated multi-GB decompositions.
     input_inverse = _inverse(stage.moe_input_map)
     latent_inverse = _inverse(stage.latent_map)
+    projection_ops = ProjectionOps()
+    if projection_ops.cuda:
+        print(f"GLM53_GPU_PROJECTION stage={stage.stage} device={projection_ops.device}", flush=True)
     if not np.isfinite(input_inverse).all() or not np.isfinite(latent_inverse).all():
         raise GLM53IncrementalMoEError("nonfinite coordinate pseudoinverse")
 
@@ -382,6 +385,7 @@ def save_incremental_moe_stage(
                 input_inverse=input_inverse,
                 middle_map=middle.matrix,
                 middle_inverse=middle_inverse,
+                projection_ops=projection_ops,
             )
         target = f"layers.{physical}.moe"
         for slot in range(stable.num_experts):
@@ -436,8 +440,9 @@ def save_incremental_moe_stage(
             intermediate_width=intermediate_width,
             target_output_map=stage.residual_map.matrix,
             input_inverse=input_inverse,
+            projection_ops=projection_ops,
         )
-    
+
 
     for slot, donor_id in enumerate(selected):
         expert_name = f"model-moe-{stage.stage:03d}-expert-{slot:03d}.safetensors"
@@ -464,9 +469,13 @@ def save_incremental_moe_stage(
             intermediate_width=intermediate_width,
             target_output_map=stage.latent_map.matrix,
             input_inverse=latent_inverse,
+            projection_ops=projection_ops,
             ),
         }
+        if slot % 8 == 0:
+            print(f"GLM53_PROGRESS layer={stage.stage} expert={slot + 1}/{len(selected)}", flush=True)
         gc.collect()
+    projection_ops.close()
     (output_dir / f"model-moe-{stage.stage:03d}-projection.json").write_text(
         json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
