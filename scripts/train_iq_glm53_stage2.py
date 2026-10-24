@@ -108,12 +108,33 @@ def main() -> int:
         source_revision = provenance["capability_source"]["revision"]
         if source_revision != train_meta["teacher_revision_claim"]:
             raise ValueError("teacher capture source differs from original GLM donor revision")
-        original_layer = provenance["source_layer_map"].get(
-            str(train_meta["target_iq_layer"])
+        recipient = json.loads(
+            (args.checkpoint / "iq_config.json").read_text(encoding="utf-8")
         )
-        # Source map keys are transplant stage ordinals, not physical layer IDs;
-        # verify mapped layer via the recipient schedule below instead.
-        del original_layer
+        schedule = recipient["schedule"]["layers"]
+        physical = int(train_meta["target_iq_layer"])
+        if physical < 1 or physical >= len(schedule):
+            raise ValueError("Stage-2 target outside recipient schedule")
+        if schedule[physical] != "moe" or schedule[physical - 1] not in ("csa", "hca"):
+            raise ValueError("Stage-2 target is not a GLM context/MoE pair")
+        stage_ordinal = sum(x == "moe" for x in schedule[:physical])
+        expected_source = int(provenance["source_layer_map"][str(stage_ordinal)])
+        if expected_source != train_meta["source_glm_layer"]:
+            raise ValueError(
+                "teacher alignment source differs from compiled GLM stage mapping"
+            )
+        map_metadata = json.loads(
+            (args.train_alignment / "validated-residual-map.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        if (
+            map_metadata["source_space"]
+            != f"glm53.layer.{expected_source}.residual_out"
+            or map_metadata["target_space"]
+            != f"iq.layer.{physical}.residual_out"
+        ):
+            raise ValueError("coordinate map spaces do not match compiled stage")
         base_index_sha = sha(args.checkpoint / "model.safetensors.index.json")
         print("Stage-2 sources and held-out coordinate map verified.")
         if args.dry_run:
