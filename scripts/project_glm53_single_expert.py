@@ -54,7 +54,7 @@ def main() -> int:
     )
     sources.add_argument(
         "--calibration-uri", type=str,
-        help="HF bucket URI, e.g. hf://buckets/Visionboxx/macha/calibration",
+        help="HF bucket URI, e.g. hf://buckets/OWNER/BUCKET/calibration", 
     )
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--stage", type=int, default=1)
