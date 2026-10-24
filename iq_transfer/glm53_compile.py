@@ -425,6 +425,9 @@ def compile_glm53_iq_checkpoint(
             donor.checkpoint_dir,
             repo_id=glm53_repo_id,
             revision=glm53_revision,
+            # Cloud-only compilation needs full dense-prefix GLM MLP tensors
+            # (larger than 128 MiB); HTTP requests remain capped at 4 MiB.
+            max_tensor_bytes=512 * 1024 * 1024,
         )
         if streaming_source
         else SafetensorsSource(donor.checkpoint_dir)
