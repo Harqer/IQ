@@ -15,7 +15,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from huggingface_hub import AutoTokenizer
+from transformers import AutoTokenizer
 from safetensors.torch import save_file
 
 from iq_transfer.complete_transplant import canonical_glm53_config
