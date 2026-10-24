@@ -9,7 +9,8 @@ if [[ "${IQ_CLOUD_WORKER:-}" != "1" ]]; then
 fi
 
 IQ_REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-IQ_GLM53_VENV="${IQ_GLM53_VENV:-/opt/iq-glm53-transfer-venv}"
+# Default to a writable user cache: HF workers need not run as root.
+IQ_GLM53_VENV="${IQ_GLM53_VENV:-$HOME/.cache/iq-glm53-transfer-venv}"
 if [[ ! -f "$IQ_GLM53_VENV/bin/activate" ]]; then
   python -m venv --system-site-packages "$IQ_GLM53_VENV"
 fi
