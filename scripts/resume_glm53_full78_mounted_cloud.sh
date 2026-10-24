@@ -44,6 +44,28 @@ assert len([x for x in c.stages if x.expert_usage is not None])==75
 print("SAVED_FULL78_CALIBRATION_VERIFIED",flush=True)
 PY
 
+echo "FULL78: Probe first unsaved stage-3 donor expert before paid compilation."
+timeout 300s python - "$WORK_ROOT/glm53" "$DEST_CALIB" "$DONOR_REV" <<'PY'
+import sys, torch
+from iq_transfer.glm53_calibration import GLM53CalibrationSolution
+from iq_transfer.glm53_moe import select_experts_by_usage
+from iq_transfer.http_range_source import HubSafetensorsSource
+solution = GLM53CalibrationSolution.load(sys.argv[2])
+stage = solution.stages[3]
+selection = select_experts_by_usage(stage.expert_usage, target_experts=256)
+donor_id = selection[41]
+key = f"model.layers.{stage.source_layer}.mlp.experts.{donor_id}.gate_proj.weight"
+source = HubSafetensorsSource(
+    sys.argv[1], repo_id="zai-org/GLM-5.3-BF16", revision=sys.argv[3],
+    max_request_bytes=16 * 1024 * 1024, max_tensor_bytes=512 * 1024 * 1024,
+)
+data = source.get(key)
+assert data.dtype == torch.bfloat16 and data.ndim == 2
+assert torch.isfinite(data.float()).all()
+source.close()
+print(f"UNSAVED_EXPERT_SOURCE_READ_OK stage=3 slot=41 donor={donor_id}", flush=True)
+PY
+
 echo "FULL78: Stage 3 stream 78 attention + 78 FFN stages directly into a new durable run."
 python -m iq_transfer.cli glm53-compile \
   --checkpoint "$WORK_ROOT/glm53" \
