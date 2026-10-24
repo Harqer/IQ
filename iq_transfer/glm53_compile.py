@@ -339,11 +339,23 @@ def compile_glm53_iq_checkpoint(
     verify_hashes: bool = True,
     streaming_source: bool = False,
     glm53_repo_id: str = "zai-org/GLM-5.3-BF16",
+    target_config: IQHybridConfig | None = None,
 ) -> GLM53CompileResult:
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
-    config = canonical_glm53_config()
+    config = target_config if target_config is not None else canonical_glm53_config()
     calibration = GLM53CalibrationSolution.load(calibration_dir)
+    if (
+        config.stable_moe is None
+        or config.stable_moe.num_experts not in (32, 64, 128, 256)
+        or config.schedule.layers != canonical_glm53_config().schedule.layers
+        or config.mamba3 != canonical_glm53_config().mamba3
+        or config.model.vocab_size != 128256
+        or config.model.hidden_size != 4096
+    ):
+        raise GLM53CompileError(
+            "expert expansion requires frozen Mamba-3 config, lexical geometry and layer schedule"
+        )
     if calibration.target_config_fingerprint != config.fingerprint:
         raise GLM53CompileError(
             "GLM calibration target fingerprint does not match canonical GLM recipient"
@@ -399,6 +411,8 @@ def compile_glm53_iq_checkpoint(
         },
         "recipient_config_fingerprint": config.fingerprint,
         "calibration_mode": calibration.calibration_mode,
+        "routed_experts_per_sparse_stage": config.stable_moe.num_experts,
+        "selected_source_expert_ids": {},
         "source_layer_map": {
             str(stage.stage): stage.source_layer for stage in calibration.stages
         },
@@ -427,6 +441,20 @@ def compile_glm53_iq_checkpoint(
     )
 
     for stage in calibration.stages:
+        if stage.source_layer < inspector.layout.first_k_dense_replace:
+            provenance["selected_source_expert_ids"][str(stage.stage)] = None
+        else:
+            if stage.expert_usage is None:
+                raise GLM53CompileError(
+                    f"source layer {stage.source_layer} missing measured or prior routing usage"
+                )
+            chosen_ids = select_experts_by_usage(
+                stage.expert_usage,
+                target_experts=config.stable_moe.num_experts,
+            )
+            if len(chosen_ids) != config.stable_moe.num_experts:
+                raise GLM53CompileError("selected routed expert count mismatch")
+            provenance["selected_source_expert_ids"][str(stage.stage)] = list(chosen_ids)
         _save_shard(
             output,
             f"model-context-{stage.stage:03d}.safetensors",
