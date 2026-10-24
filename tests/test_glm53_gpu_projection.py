@@ -18,6 +18,15 @@ class ProjectionOpsTests(unittest.TestCase):
             ProjectionOps(mode="tpu")
 
     @unittest.skipUnless(torch.cuda.is_available(), "GPU worker required")
+    def test_orthonormality_check_never_reuses_stale_input(self):
+        ops = ProjectionOps(mode="cuda")
+        basis = np.eye(140, 96, dtype=np.float64)
+        self.assertTrue(ops.check_orthonormal(basis))
+        basis[0, 0] = 2.0
+        self.assertFalse(ops.check_orthonormal(basis))
+        ops.close()
+
+    @unittest.skipUnless(torch.cuda.is_available(), "GPU worker required")
     def test_cuda_bf16_checkpoint_parity(self):
         rng=np.random.default_rng(94)
         a=rng.normal(size=(257,1024)).astype(np.float32)
