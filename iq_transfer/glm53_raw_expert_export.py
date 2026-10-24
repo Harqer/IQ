@@ -220,12 +220,20 @@ def export_raw_selected_experts(
     index_sha256: str,
     max_stages: int | None = None,
     max_experts: int | None = None,
+    selected_stage: int | None = None,
 ) -> dict[str, Any]:
     """Create only a new donor bundle, never a runnable IQ checkpoint."""
     if not tasks or min(hidden, intermediate) < 1:
         raise RawExpertExportError("invalid donor geometry or no selected experts")
     if max_stages is not None and (not _int(max_stages) or max_stages < 1):
         raise RawExpertExportError("max_stages must be positive")
+    if selected_stage is not None and (
+        not _int(selected_stage) or not 0 <= selected_stage < 24
+        or max_stages is not None
+    ):
+        raise RawExpertExportError(
+            "selected_stage must be 0..23 and cannot combine with max_stages"
+        )
     root = Path(root)
     if root.is_symlink() or (
         root.exists() and (not root.is_dir() or any(root.iterdir()))
@@ -242,7 +250,14 @@ def export_raw_selected_experts(
     tensors: dict[str, str] = {}
     dtypes: dict[str, str] = {}
     entries = []
-    active = tasks if max_stages is None else tasks[:max_stages]
+    if selected_stage is None:
+        active = tasks if max_stages is None else tasks[:max_stages]
+    else:
+        active = [row for row in tasks if row[0] == selected_stage]
+        if len(active) != 1:
+            raise RawExpertExportError(
+                "requested source stage has no routed donor experts"
+            )
     for stage, layer, ids in active:
         count = export_stage(
             source=source, root=root, stage=stage, layer=layer, ids=ids,
@@ -256,7 +271,7 @@ def export_raw_selected_experts(
             "exported_donor_ids": list(ids[:count]),
             "exported_count": count,
         })
-    complete = len(active) == len(tasks) and all(
+    complete = len(tasks) == 23 and len(active) == len(tasks) and all(
         entry["exported_count"] == len(entry["planned_donor_ids"])
         for entry in entries
     )
