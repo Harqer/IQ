@@ -58,6 +58,32 @@ class PrefetchTests(unittest.TestCase):
                         a.get(f"{root}.experts.25.gate_proj.weight")
             source.close()
 
+    def test_queue_backpressure_prevents_unbounded_host_staging(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = self._local_hf_source(Path(tmp))
+            with patch.dict(os.environ, {"IQ_MOE_GPU_PREFETCH": "1"}):
+                with RoutedBatchPrefetch(
+                    source, donor_root="model.layers.3.mlp",
+                ) as pipeline:
+                    first = pipeline.submit([ExpertSpec(0, 7)])
+                    second = pipeline.submit([ExpertSpec(1, 25)])
+                    with self.assertRaisesRegex(
+                        ProjectionComputeError, "one-ahead",
+                    ):
+                        pipeline.submit([ExpertSpec(2, 7)])
+                    a = pipeline.source_for(first, source)
+                    self.assertTrue(a.get(
+                        "model.layers.3.mlp.experts.7.gate_proj.weight"
+                    ).numel() > 0)
+                    third = pipeline.submit([ExpertSpec(2, 7)])
+                    pipeline.source_for(second, source)
+                    pipeline.source_for(third, source)
+                    with self.assertRaisesRegex(
+                        ProjectionComputeError, "already consumed",
+                    ):
+                        pipeline.source_for(first, source)
+            source.close()
+
     def test_prefetch_disabled_does_not_create_worker(self):
         with tempfile.TemporaryDirectory() as tmp:
             source = self._local_hf_source(Path(tmp))
