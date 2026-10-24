@@ -6,7 +6,7 @@ import json
 from .batches import load_token_batches
 from .capture_runner import load_activation_bundle, save_activation_bundle
 from .checkpoint import SafetensorsSource
-from .complete_transplant import canonical_glm53_config, compile_complete_iq_checkpoint
+from .complete_transplant import canonical_glm53_config, canonical_glm53_full78_config, compile_complete_iq_checkpoint
 from .glm53 import GLM53Inspector
 from .glm53_calibration import bootstrap_glm53_calibration
 from .glm53_compile import compile_glm53_iq_checkpoint
@@ -50,6 +50,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     glm_bootstrap.add_argument("--output", required=True)
     glm_bootstrap.add_argument("--routed-experts", type=int, choices=(32, 64, 128, 256), default=32)
+    glm_bootstrap.add_argument("--full-78", action="store_true", help="require one mapped IQ context/MoE pair per all 78 GLM layers")
     glm_bootstrap.add_argument("--checkpoint-revision", required=True)
     glm_bootstrap.add_argument("--repo-id", default="zai-org/GLM-5.3-BF16")
     glm_bootstrap.add_argument("--donor-license", required=True)
@@ -79,6 +80,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     glm_compile.add_argument("--output", required=True)
     glm_compile.add_argument("--routed-experts", type=int, choices=(32, 64, 128, 256), default=32)
+    glm_compile.add_argument("--full-78", action="store_true", help="require one mapped IQ context/MoE pair per all 78 GLM layers")
     glm_compile.add_argument("--checkpoint-revision", required=True)
     glm_compile.add_argument("--repo-id", default="zai-org/GLM-5.3-BF16")
     glm_compile.add_argument("--mamba3-revision", required=True)
@@ -109,6 +111,7 @@ def _parser() -> argparse.ArgumentParser:
     glm_plan_compile.add_argument("--index", required=True)
     glm_plan_compile.add_argument("--calibration", required=True)
     glm_plan_compile.add_argument("--routed-experts", type=int, choices=(32, 64, 128, 256), default=32)
+    glm_plan_compile.add_argument("--full-78", action="store_true", help="require one mapped IQ context/MoE pair per all 78 GLM layers")
 
     glm_stream_capture = sub.add_parser(
         "glm53-stream-capture",
@@ -275,15 +278,24 @@ def main(argv: list[str] | None = None) -> int:
                 artifact.checkpoint_dir,
                 repo_id=args.repo_id,
                 revision=args.checkpoint_revision,
+                max_tensor_bytes=512 * 1024 * 1024,
             )
             if args.streaming_source
             else SafetensorsSource(artifact.checkpoint_dir)
+        )
+        target_config = (
+            canonical_glm53_full78_config(
+                source_indexer_types=inspector.layout.indexer_types,
+                routed_experts=args.routed_experts,
+            )
+            if args.full_78
+            else canonical_glm53_config(routed_experts=args.routed_experts)
         )
         solution = bootstrap_glm53_calibration(
             source,
             source_weights=source_weights,
             source_hidden_size=inspector.config.hidden_size,
-            target_config=canonical_glm53_config(routed_experts=args.routed_experts),
+            target_config=target_config,
             source_layers=inspector.config.num_hidden_layers,
             source_first_dense_layers=inspector.layout.first_k_dense_replace,
             source_num_experts=inspector.layout.n_routed_experts,
@@ -313,15 +325,43 @@ def main(argv: list[str] | None = None) -> int:
             print(shard)
         return 0
     if args.command == "glm53-plan-compile-shards":
+        if args.full_78:
+            from pathlib import Path
+            inspector = GLM53Inspector.from_config_mapping(
+                json.loads(Path(args.config).read_text(encoding="utf-8"))
+            )
+            target_config = canonical_glm53_full78_config(
+                source_indexer_types=inspector.layout.indexer_types,
+                routed_experts=args.routed_experts,
+            )
+        else:
+            target_config = canonical_glm53_config(
+                routed_experts=args.routed_experts
+            )
         for shard in plan_glm53_compile_shards(
             config_path=args.config,
             index_path=args.index,
             calibration_dir=args.calibration,
-            target_config=canonical_glm53_config(routed_experts=args.routed_experts),
+            target_config=target_config,
         ):
             print(shard)
         return 0
     if args.command == "glm53-compile":
+        if args.full_78:
+            from pathlib import Path
+            inspector = GLM53Inspector.from_config_mapping(
+                json.loads(
+                    (Path(args.checkpoint) / "config.json").read_text(encoding="utf-8")
+                )
+            )
+            target_config = canonical_glm53_full78_config(
+                source_indexer_types=inspector.layout.indexer_types,
+                routed_experts=args.routed_experts,
+            )
+        else:
+            target_config = canonical_glm53_config(
+                routed_experts=args.routed_experts
+            )
         if bool(args.mamba3_checkpoint) == bool(args.reuse_foundation_checkpoint):
             parser.error(
                 "glm53-compile requires exactly one of --mamba3-checkpoint "
@@ -338,7 +378,7 @@ def main(argv: list[str] | None = None) -> int:
             verify_hashes=not args.skip_checkpoint_hashes,
             streaming_source=args.streaming_source,
             glm53_repo_id=args.repo_id,
-            target_config=canonical_glm53_config(routed_experts=args.routed_experts),
+            target_config=target_config,
             reuse_foundation_checkpoint=args.reuse_foundation_checkpoint,
         )
         print(
