@@ -239,6 +239,15 @@ class FunctionalComparisonTests(unittest.TestCase):
                                     "candidate basis SHA256 mismatch"):
             self._run()
 
+    def test_corrupt_baseline_slot_rejected_before_comparison(self):
+        meta = self.base / "slot-003" / "projection_manifest.json"
+        meta.write_text(meta.read_text() + " ", encoding="utf-8")
+        from iq_transfer.glm53_expert_informed_basis import ExpertBasisProbeError
+        with self.assertRaisesRegex(
+            ExpertBasisProbeError, "manifest digest mismatch"
+        ):
+            self._run()
+
 
 if __name__ == "__main__":
     unittest.main()
