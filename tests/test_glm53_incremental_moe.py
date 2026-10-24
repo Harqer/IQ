@@ -148,6 +148,52 @@ class TestIncrementalMoE(unittest.TestCase):
     def test_dense_matches_existing_neutral_routed_outputs(self):
         self._compare_with_old(sparse=False)
 
+    def test_nonidentity_maps_match_original_transform(self):
+        for sparse in (True, False):
+            with self.subTest(sparse=sparse):
+                source, stage, config, inspector = _donor(sparse=sparse)
+                stage.moe_input_map = CoordinateMap(
+                    np.array([
+                        [2.0, 0.3, 0.0, 0.0],
+                        [0.0, 1.5, 0.4, 0.0],
+                        [0.0, 0.0, 1.2, 0.2],
+                        [0.1, 0.0, 0.0, 1.8],
+                    ]),
+                    1e-6,
+                )
+                stage.residual_map = CoordinateMap(
+                    np.diag([1.2, 0.9, 1.1, 2.2]), 1e-6
+                )
+                stage.latent_map = CoordinateMap(
+                    np.diag([0.8, 1.1, 1.3, 1.5]), 1e-6
+                )
+                if not sparse:
+                    stage.dense_intermediate_map = CoordinateMap(
+                        np.array([
+                            [1.1, 0.2, 0.0],
+                            [0.0, 0.8, 0.3],
+                            [0.1, 0.0, 1.4],
+                        ]),
+                        1e-6,
+                    )
+                baseline = _moe_state(
+                    source=source, stage=stage, config=config, inspector=inspector
+                )
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    index = {}
+                    save_incremental_moe_stage(
+                        source=source, inspector=inspector, stage=stage,
+                        config=config, output_dir=root, weight_map=index,
+                    )
+                    for key, shard in index.items():
+                        observed = load_file(str(root / shard))[key]
+                        self.assertTrue(torch.allclose(
+                            observed.float(), baseline[key].float(),
+                            atol=0.015, rtol=0.015,
+                        ), msg=f"nonidentity mapping differs: {key}")
+
+
     def test_bf16_donor_weights_work_without_numpy_bfloat16_support(self):
         source, stage, config, inspector = _donor(sparse=True, bf16=True)
         with tempfile.TemporaryDirectory() as tmp:
