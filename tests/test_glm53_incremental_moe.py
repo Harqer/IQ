@@ -17,6 +17,7 @@ from iq_transfer.glm53_compile import (
 )
 from iq_transfer.complete_transplant import canonical_glm53_config
 from iq_transfer.glm53_incremental_moe import (
+    GLM53IncrementalMoEError,
     _inverse,
     save_incremental_moe_stage,
 )
@@ -200,6 +201,33 @@ class TestIncrementalMoE(unittest.TestCase):
                 _inverse(source_map), source_map.matrix
             ))
 
+
+    def test_dense_warm_orthogonal_map_skips_large_svd(self):
+        from unittest.mock import patch
+
+        rng = np.random.default_rng(101)
+        basis, _ = np.linalg.qr(rng.normal(size=(9, 4)))
+        warm_map = CoordinateMap(basis, 1e-6)
+        with (
+            patch("iq_transfer.glm53_incremental_moe._INVERSE_DENSE_THRESHOLD", 0),
+            patch("iq_transfer.glm53_incremental_moe.np.linalg.pinv",
+                  side_effect=AssertionError("WARM orthogonal map must skip SVD")),
+        ):
+            self.assertTrue(np.array_equal(_inverse(warm_map), warm_map.matrix))
+
+    def test_large_nonorthogonal_map_rejected_without_svd(self):
+        from unittest.mock import patch
+
+        matrix = np.eye(9, 4)
+        matrix[0, 0] = 1.5
+        invalid = CoordinateMap(matrix, 1e-6)
+        with (
+            patch("iq_transfer.glm53_incremental_moe._INVERSE_DENSE_THRESHOLD", 0),
+            patch("iq_transfer.glm53_incremental_moe.np.linalg.pinv",
+                  side_effect=AssertionError("large invalid map must fail closed")),
+        ):
+            with self.assertRaises(GLM53IncrementalMoEError):
+                _inverse(invalid)
 
     def test_nonidentity_maps_match_original_transform(self):
         for sparse in (True, False):
