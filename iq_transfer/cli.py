@@ -55,6 +55,10 @@ def _parser() -> argparse.ArgumentParser:
         "--reuse-weight-only",
         help="read-only original canonical 24-stage calibration, reusing matching GLM source layer coordinates",
     )
+    glm_bootstrap.add_argument(
+        "--repair-overlay", action="store_true",
+        help="regenerate only missing stage groups inside a verified temporary full78 overlay",
+    )
     glm_bootstrap.add_argument("--checkpoint-revision", required=True)
     glm_bootstrap.add_argument("--repo-id", default="zai-org/GLM-5.3-BF16")
     glm_bootstrap.add_argument("--donor-license", required=True)
@@ -296,6 +300,38 @@ def main(argv: list[str] | None = None) -> int:
             if args.full_78
             else canonical_glm53_config(routed_experts=args.routed_experts)
         )
+        if args.repair_overlay:
+            if not args.full_78 or args.source_activations or args.reuse_weight_only:
+                parser.error("--repair-overlay requires full78 weight-only bootstrap without original reuse")
+            from .glm53_partial_repair import PartialCalibrationStageWriter
+            sink = PartialCalibrationStageWriter(
+                args.output, target_config=target_config,
+            )
+            already_present = len(sink.skip_stages)
+            print(json.dumps({
+                "calibration_repair_existing_stages": already_present,
+                "calibration_repair_missing_stages": sink.missing_stages,
+                "mode": "incremental_streaming",
+            }, sort_keys=True), flush=True)
+            bootstrap_glm53_calibration(
+                source,
+                source_weights=source_weights,
+                source_hidden_size=inspector.config.hidden_size,
+                target_config=target_config,
+                source_layers=inspector.config.num_hidden_layers,
+                source_first_dense_layers=inspector.layout.first_k_dense_replace,
+                source_num_experts=inspector.layout.n_routed_experts,
+                source_indexer_types=inspector.layout.indexer_types,
+                warm_device=args.warm_device,
+                skip_stages=sink.skip_stages,
+                stage_sink=sink.write_stage,
+            )
+            if sink.missing_stages:
+                raise RuntimeError("incremental calibration repair left missing stages")
+            print("GLM53_ALL_78_STAGE_FILES_PRESENT_AFTER_REPAIR", flush=True)
+            # Never claim receipt validity: symlinked overlay files must be
+            # materialized and verified remotely before full checkpoint run.
+            return 0
         solution = bootstrap_glm53_calibration(
             source,
             source_weights=source_weights,
