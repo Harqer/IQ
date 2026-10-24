@@ -73,27 +73,10 @@ assert all((Path(sys.argv[1])/x['residual_map']).with_suffix('.safetensors').is_
 print("SAVED_FULL78_CALIBRATION_VERIFIED",flush=True)
 PY
 
-echo "FULL78: Fail-fast probe source stage3 slot0 before full GPU compilation."
-timeout 300s python - "$WORK_ROOT/glm53" "$DEST_CALIB" "$DONOR_REV" <<'PY'
-import sys, torch
-from iq_transfer.glm53_lazy_calibration import LazyGLM53Calibration
-from iq_transfer.glm53_moe import select_experts_by_usage
-from iq_transfer.http_range_source import HubSafetensorsSource
-solution = LazyGLM53Calibration(sys.argv[2])
-stage = solution.stages[3]
-selection = select_experts_by_usage(stage.expert_usage, target_experts=256)
-donor_id = selection[0]
-key = f"model.layers.{stage.source_layer}.mlp.experts.{donor_id}.gate_proj.weight"
-source = HubSafetensorsSource(
-    sys.argv[1], repo_id="zai-org/GLM-5.3-BF16", revision=sys.argv[3],
-    max_request_bytes=16 * 1024 * 1024, max_tensor_bytes=512 * 1024 * 1024,
-)
-data = source.get(key)
-assert data.dtype == torch.bfloat16 and data.ndim == 2
-assert torch.isfinite(data.float()).all()
-source.close()
-print(f"UNSAVED_EXPERT_SOURCE_READ_OK stage=3 slot=0 donor={donor_id}", flush=True)
-PY
+# No standalone expert range probe. The full compiler validates source
+# tensor dtype, shape, finiteness and bounded HTTP reads as each REAL batch is
+# transformed and durably written. Do not duplicate paid source reads.
+echo "FULL78: Source tensor validation occurs inside the full transfer; no single-expert benchmark."
 
 # Limit each worker to a recoverable compute window instead of the platform timeout.
 MAX_SECONDS="${IQ_MAX_RUN_SECONDS:-14400}"
