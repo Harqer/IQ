@@ -4,6 +4,15 @@
 # No weight-only recalibration, no four-expert probes, no overwrite of old IQ runs.
 set -euo pipefail
 
+# Fail closed on a developer workstation: this job writes large IQ shards
+# and fetches multi-GB Mamba/calibration artifacts to the WORKER filesystem.
+# GLM donor shards themselves remain remote, served via HTTP 206 ranges.
+if [[ "${IQ_CLOUD_WORKER:-}" != "1" ]]; then
+  echo "Refusing local bulk run. Launch on a provisioned cloud worker and set IQ_CLOUD_WORKER=1 there." >&2
+  echo "The full GLM-5.3 BF16 checkpoint is NOT required locally or on the worker." >&2
+  exit 2
+fi
+
 : "${HF_TOKEN:?Set HF_TOKEN on the authenticated cloud worker}"
 : "${RUN_ID:?Set a unique RUN_ID (for example bulk32-20261024-a)}"
 if [[ ! "$RUN_ID" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]{4,79}$ ]]; then
