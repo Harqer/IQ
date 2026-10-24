@@ -25,10 +25,10 @@ hf download zai-org/GLM-5.3-BF16 config.json model.safetensors.index.json \
   --revision "$DONOR_REV" --local-dir "$WORK_ROOT/glm53"
 hf download state-spaces/mamba3-mimo-1.5b config.json pytorch_model.bin \
   --revision "$MAMBA_REV" --local-dir "$WORK_ROOT/mamba3"
-# Mamba-3 model card uses the Llama-3.1-8B tokenizer from a distinct repo.
-# This gated dependency is checked upfront: do not compile a tokenizer-less IQ.
-hf download meta-llama/Llama-3.1-8B tokenizer.json tokenizer_config.json special_tokens_map.json \
-  --local-dir "$WORK_ROOT/mamba3"
+# The official Mamba-3 language model uses the Meta-Llama 3.1 tokenizer,
+# which is separately gated. It is NOT required to transform donor weights.
+# Never block all 78 layers of weight compilation on a tokenizer permission.
+# Package the tokenizer only after separately authorized access is available.
 # Current weight-only WARM solution validated on read; no changes to original.
 python - "$SOURCE_CALIB" <<'PY'
 import sys
@@ -100,14 +100,20 @@ assert all(len(x)==256 and set(x)==set(range(256)) for x in routed)
 assert (root/'model.safetensors.index.json').exists()
 index=json.loads((root/'model.safetensors.index.json').read_text())
 assert all((root/path).is_file() for path in index['weight_map'].values())
-for fname in ('tokenizer.json','tokenizer_config.json'):
-    assert (root/fname).is_file(), f'MISSING_TOKENIZER:{fname}'
+# The recipient checkpoint is not tokenization-ready until the official
+# tokenizer is separately attached; do not claim inference readiness here.
+tokenizer_packaged = all((root/fname).is_file() for fname in (
+    'tokenizer.json','tokenizer_config.json'
+))
+
 (root/'COMPILE_COMPLETE.json').write_text(json.dumps({
   'status':'FULL78_COMPILED_NOT_YET_INFERENCE_VALIDATED',
   'source_layers':78,'mapped_layers':78,
   'routed_source_layers':75,'routed_experts_per_layer':256,
   'mapped_routed_expert_slots':19200,
   'not_exact_bitwise_weight_reuse':True,
+  'tokenizer_packaged':tokenizer_packaged,
+  'inference_ready':False,
   'end_to_end_knowledge_retention_proven':False
 },sort_keys=True)+'\n')
 print('FULL78_ALL_19200_ROUTED_SLOTS_COMPILED_AND_INDEXED',flush=True)
