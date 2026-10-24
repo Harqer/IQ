@@ -67,7 +67,8 @@ def legacy_sources(root: Path, *, integrity: dict) -> dict[int, dict]:
 
 
 def inspect(full_dir: Path, original: Path, checkpoint: Path,
-            *, expected_old_fingerprint: str | None = None) -> dict:
+            *, expected_old_fingerprint: str | None = None,
+            existing_calibration: Path | None = None) -> dict:
     full_file = full_dir / "glm53_calibration.json"
     full = json.loads(full_file.read_text())
     records = full.get("stages", [])
@@ -92,8 +93,13 @@ def inspect(full_dir: Path, original: Path, checkpoint: Path,
     for record in records:
         stage = int(record["stage"])
         available = stage_artifacts(record)
-        present = [name for name in available if (full_dir / name).is_file() and
-                   (full_dir / name).stat().st_size > 0]
+        def exists(name: str) -> bool:
+            return any(
+                (directory / name).is_file() and (directory / name).stat().st_size > 0
+                for directory in (full_dir, existing_calibration)
+                if directory is not None
+            )
+        present = [name for name in available if exists(name)]
         if len(present) == len(available):
             existing.append(stage)
         elif present:
@@ -184,6 +190,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--partial-calibration", required=True, type=Path)
     parser.add_argument("--original-calibration", required=True, type=Path)
+    parser.add_argument("--existing-calibration", type=Path,
+                        help="Read-only previously uploaded stages, not copied to staging")
     parser.add_argument("--partial-checkpoint", required=True, type=Path)
     parser.add_argument("--expected-old-fingerprint", default=None)
     parser.add_argument("--apply-old24", action="store_true",
@@ -192,7 +200,8 @@ def main() -> int:
     try:
         plan = inspect(args.partial_calibration, args.original_calibration,
                        args.partial_checkpoint,
-                       expected_old_fingerprint=args.expected_old_fingerprint)
+                       expected_old_fingerprint=args.expected_old_fingerprint,
+                       existing_calibration=args.existing_calibration)
         if args.apply_old24:
             plan["restored_original_files"] = restore_original_maps(
                 args.partial_calibration, args.original_calibration, plan,
