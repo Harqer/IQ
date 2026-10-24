@@ -16,6 +16,8 @@ import sys
 from typing import Any
 
 from packaging.version import InvalidVersion, Version
+from packaging.requirements import Requirement, InvalidRequirement
+from packaging.utils import canonicalize_name
 
 # Keep the compiler separate from the much heavier Mamba-3 inference runtime.
 TRANSFER_REQUIREMENTS = {
@@ -92,6 +94,51 @@ def package_versions() -> dict[str, str | None]:
     return result
 
 
+def check_dependency_graph(*, model_runtime: bool = False) -> list[str]:
+    """Validate the reachable dependency graph, not unrelated host-image tools.
+
+    Inference images can include conflicting *unrelated* packages such as spin.
+    A global pip check wrongly blocks IQ on those; instead traverse only the
+    distributions reachable from the transfer or inference roots.
+    """
+    roots = {*TRANSFER_REQUIREMENTS}
+    if model_runtime:
+        roots.update(MODEL_REQUIREMENTS)
+    problems: list[str] = []
+    seen: set[str] = set()
+    pending = list(roots)
+    while pending:
+        name = pending.pop()
+        normalized = canonicalize_name(name)
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        try:
+            dist = metadata.distribution(name)
+        except metadata.PackageNotFoundError:
+            problems.append(f"missing required transitive package: {name}")
+            continue
+        for raw in dist.requires or ():
+            try:
+                requirement = Requirement(raw)
+            except InvalidRequirement:
+                problems.append(f"{name}: invalid distribution requirement: {raw}")
+                continue
+            if requirement.marker and not requirement.marker.evaluate({"extra": ""}):
+                continue
+            pending.append(requirement.name)
+            try:
+                installed = Version(metadata.version(requirement.name))
+            except (metadata.PackageNotFoundError, InvalidVersion):
+                problems.append(f"{name}: missing/invalid dependency {requirement}")
+                continue
+            if requirement.specifier and installed not in requirement.specifier:
+                problems.append(
+                    f"{name}: requires {requirement}, installed {requirement.name}={installed}"
+                )
+    return problems
+
+
 def cuda_snapshot(*, smoke: bool) -> dict[str, Any]:
     try:
         import torch
@@ -161,10 +208,7 @@ def audit(*, require_cuda: bool, min_vram_gib: float, require_bf16: bool,
     if sys.version_info < (3, 10):
         errors.append("Python >=3.10 required")
     if pip_check:
-        p = subprocess.run([sys.executable, "-m", "pip", "check"],
-                           capture_output=True, text=True, timeout=90, check=False)
-        if p.returncode:
-            errors.append(f"pip check failed: {(p.stdout + p.stderr).strip()[:2000]}")
+        errors.extend(check_dependency_graph(model_runtime=model_runtime))
     return {
         "status": "ready" if not errors else "blocked",
         "python": sys.version.split()[0],
@@ -196,7 +240,8 @@ def main() -> int:
     parser.add_argument("--require-bf16", action="store_true")
     parser.add_argument("--model-runtime", action="store_true")
     parser.add_argument("--smoke", action="store_true")
-    parser.add_argument("--pip-check", action="store_true")
+    parser.add_argument("--pip-check", action="store_true",
+                        help="Check IQ dependency closure only (not unrelated system packages)")
     parser.add_argument("--output", help="Optional JSON report path")
     args = parser.parse_args()
     if args.min_vram_gib < 0:
