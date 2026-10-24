@@ -68,7 +68,11 @@ def get_deployed_commit() -> str:
     return head
 
 
-def launch_command(commit: str) -> list[str]:
+def launch_command(commit: str, *, candidate_delta: bool = False) -> list[str]:
+    candidate_env = (
+        " IQ_CANDIDATE_DELTA_DIR=/candidate_delta IQ_ACCEPT_UNVALIDATED_DELTA=1"
+        if candidate_delta else ""
+    )
     setup = (
         "set -euo pipefail; "
         "apt-get update -qq && "
@@ -76,7 +80,7 @@ def launch_command(commit: str) -> list[str]:
         "git clone -q https://github.com/Harqer/IQ.git /workspace/IQ; "
         "cd /workspace/IQ; "
         f"git checkout -q {commit}; "
-        "export IQ_TOKENIZER_DIR=/tokenizer IQ_DIAGNOSTICS=1; "
+        f"export IQ_TOKENIZER_DIR=/tokenizer IQ_DIAGNOSTICS=1{candidate_env}; "
         "python3 scripts/check_iq_checkpoint_files.py /checkpoints; "
         "bash scripts/hf_container_venv.sh python scripts/serve_iq_hf.py"
     )
@@ -182,19 +186,29 @@ def run(args: argparse.Namespace) -> None:
     job_id = None
     namespace = args.namespace
     try:
+        volumes = [
+            Volume(type="bucket", source=f"{namespace}/mocha",
+                   mount_path="/checkpoints", read_only=True),
+            Volume(type="model", source="unsloth/Meta-Llama-3.1-8B",
+                   mount_path="/tokenizer"),
+        ]
+        if args.candidate_delta_bucket:
+            volumes.append(
+                Volume(
+                    type="bucket", source=args.candidate_delta_bucket,
+                    mount_path="/candidate_delta", read_only=True,
+                )
+            )
         job = run_job(
             image=IMAGE,
-            command=launch_command(commit),
+            command=launch_command(
+                commit, candidate_delta=bool(args.candidate_delta_bucket)
+            ),
             flavor="h200",
             timeout="30m",
             attempts=1,
             namespace=namespace,
-            volumes=[
-                Volume(type="bucket", source=f"{namespace}/mocha",
-                       mount_path="/checkpoints", read_only=True),
-                Volume(type="model", source="unsloth/Meta-Llama-3.1-8B",
-                       mount_path="/tokenizer"),
-            ],
+            volumes=volumes,
             expose=[8000],
         )
         job_id = job.id
@@ -273,6 +287,10 @@ def main() -> int:
         "--accept-unvalidated-checkpoint", action="store_true",
         help="Explicitly acknowledge the existing weight-only transplant did not pass language quality",
     )
+    p.add_argument(
+        "--candidate-delta-bucket", default="",
+        help="Read-only HF bucket owner/name containing manifest.json and candidate delta",
+    )
     p.add_argument("--namespace", default="kofecheckmate")
     p.add_argument("--prompt", default=SMOKE_PROMPT)
     p.add_argument("--max-tokens", type=int, default=16)
@@ -283,6 +301,10 @@ def main() -> int:
         p.error("--max-tokens must be 1..64")
     if args.ready_timeout < 1 or args.request_timeout < 1:
         p.error("timeouts must be positive")
+    if args.candidate_delta_bucket and not re.fullmatch(
+        r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", args.candidate_delta_bucket
+    ):
+        p.error("--candidate-delta-bucket must be owner/bucket")
     if args.run_h200 and not args.accept_unvalidated_checkpoint:
         p.error(
             "The mounted mocha checkpoint has weight_only calibration and failed "
