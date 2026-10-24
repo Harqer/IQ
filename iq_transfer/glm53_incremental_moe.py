@@ -24,6 +24,7 @@ from .complete_transplant import _save_shard
 from .glm53 import GLM53Inspector
 from .glm53_calibration import GLM53StageCalibration
 from .glm53_moe import select_experts_by_usage
+from .glm53_resume import register_saved_shard, expected_expert_keys
 from .transport import CoordinateMap
 from iq_model import IQHybridConfig
 
@@ -274,6 +275,7 @@ def save_incremental_moe_stage(
     config: IQHybridConfig,
     output_dir: Path,
     weight_map: dict[str, str],
+    resume_existing: bool = False,
 ) -> None:
     """Write common, shared, and each routed expert to independently indexed shards.
 
