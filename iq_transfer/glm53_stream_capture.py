@@ -284,6 +284,7 @@ def capture_glm53_bootstrap_streaming(
     batches: TokenBatchArtifact | Iterable[Mapping[str, Any]],
     device: str = "cpu",
     attention_implementation: str = "eager",
+    stop_at_pre_moe_layer: int | None = None,
 ) -> ActivationBundle:
     (
         torch,
@@ -297,13 +298,25 @@ def capture_glm53_bootstrap_streaming(
     if not isinstance(config_data, dict):
         raise GLM53StreamingCaptureError("GLM config must contain a JSON object")
     inspector = GLM53Inspector.from_config_mapping(config_data)
+    if stop_at_pre_moe_layer is not None and (
+        type(stop_at_pre_moe_layer) is not int
+        or not inspector.layout.first_k_dense_replace <= stop_at_pre_moe_layer
+        < inspector.config.num_hidden_layers
+    ):
+        raise GLM53StreamingCaptureError(
+            "stop_at_pre_moe_layer must be an official routed GLM layer"
+        )
     target = canonical_glm53_config()
     mapping = bootstrap_glm53_source_layer_map(
         source_layers=inspector.config.num_hidden_layers,
         target_config=target,
         source_indexer_types=inspector.layout.indexer_types,
     )
-    capture_layers = frozenset(mapping.values())
+    capture_layers = (
+        frozenset(mapping.values())
+        if stop_at_pre_moe_layer is None
+        else frozenset()
+    )
     config = config_cls(**config_data)
     config._attn_implementation = attention_implementation
     rotary = rotary_cls(config=config).to(device)
@@ -393,6 +406,21 @@ def capture_glm53_bootstrap_streaming(
                     post_norm,
                     float(config.rms_norm_eps),
                 )
+                # Exact teacher pre-MoE tensor AFTER the official
+                # post-attention RMSNorm; stop before loading any routed
+                # experts in this layer or the remaining model layers.
+                if layer == stop_at_pre_moe_layer:
+                    _append_valid(
+                        captures,
+                        f"layer.{layer}.moe_input",
+                        mlp_input,
+                        valid_mask,
+                    )
+                    del attention, input_norm, post_norm
+                    del attention_input, attention_output, mlp_input
+                    source.clear_ephemeral_shards(completed_layer=layer)
+                    break
+
                 mlp_prefix = f"{prefix}.mlp"
                 dense_hidden = None
                 router_topk = None
