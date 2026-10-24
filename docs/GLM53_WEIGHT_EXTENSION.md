@@ -126,6 +126,53 @@ accessible locally (or mounted on authorized compute); this change
 does not download it. The compiler also requires genuine GLM donor
 shards and does not trigger any Hugging Face jobs by itself.
 
+## Important correction: local donor is a *subset or repackaged source*
+
+The recent inventory check compared the local 82 indexed shards/3,457
+tensor keys against the official pinned BF16 checkpoint: 282 shards
+and 59,585 tensor keys. The filenames do not match and nearly every
+official tensor key is absent. **Do not overwrite the 82-shard index**,
+and do not use it as `--checkpoint` for official GLM streaming mode.
+
+IQ already has `HubSafetensorsSource`, which downloads missing
+**official shard names on demand** from the pinned donor revision.
+Use a separate, metadata-only donor directory with the **official**
+`config.json` and `model.safetensors.index.json`. The streamed
+checkpoint need not contain all 282 original shards in advance.
+
+### Plan exact required official shards, without downloading weights
+
+```bash
+cd ~/IQ-transfer-review
+META="$HOME/IQ-checkpoints/glm53-official-metadata"
+mkdir -p "$META"
+hf download zai-org/GLM-5.3-BF16 \
+  config.json model.safetensors.index.json \
+  --revision abf42e6c0e53bc29a875511301e7b7fcd220315b \
+  --local-dir "$META"
+
+python scripts/plan_glm53_selective_shards.py \
+  --donor-config "$META/config.json" \
+  --donor-index "$META/model.safetensors.index.json" \
+  --calibration hf://buckets/kofecheckmate/mocha/legacy/visionboxx-macha/calibration \
+  --transplant-manifest hf://buckets/kofecheckmate/mocha/transplant_manifest.json \
+  --routed-experts 64 \
+  --output "$HOME/glm53-official-shards-for-iq64.json"
+```
+
+This reads only the original calibration manifest, its integrity file,
+23 tiny expert-usage arrays, and the donor **metadata**. It uses the
+compiler's existing `_compile_tensor_keys` plus `_shards_for_keys`
+implementation so the results match the actual expert selection.
+**It does not download any donor weights, upload or mutate a bucket,
+or start GPU compute.**
+
+The JSON plan includes exact official shard names and selected expert
+IDs. When fully verified, `glm53-compile --streaming-source` can later
+use the separate official metadata checkpoint path and download only
+the required shards. Note that a shard can contain tensors that are
+not selected; shard-level streaming still downloads the whole file.
+
 ## New tools
 
 - `scripts/plan_glm53_weight_extension.py`: fetches GLM and IQ
