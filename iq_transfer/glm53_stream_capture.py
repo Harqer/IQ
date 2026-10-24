@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .batches import TokenBatchArtifact
+from .checkpoint import SafetensorsSource
 from .capture_runner import ActivationBundle
 from .http_range_source import HubSafetensorsSource
 from .complete_transplant import canonical_glm53_config
