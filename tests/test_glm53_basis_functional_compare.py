@@ -249,5 +249,104 @@ class FunctionalComparisonTests(unittest.TestCase):
             self._run()
 
 
+    def _routing_fixture(self, *, no_selected=False):
+        capture = Path(self.temp.name) / "real-teacher.npy"
+        sample = np.ones((4, 10), dtype=np.float32)
+        np.save(capture, sample)
+        cap_manifest = {
+            "artifact_type": "glm53_real_pre_moe_hidden_capture",
+            "model_repo": REPO,
+            "model_revision": REVISION,
+            "donor_layer": 3,
+            "tap": "layer.3.moe_input",
+            "tap_position": "after post_attention_layernorm, before sparse MoE",
+            "dtype": "float32",
+            "num_valid_tokens": 4,
+            "official_config_sha256": "config-fixture",
+            "official_index_sha256": "index-fixture",
+            "sha256": digest(capture),
+        }
+        cap_meta = capture.with_suffix(".json")
+        cap_meta.write_text(json.dumps(cap_manifest))
+        routed = Path(self.temp.name) / "official-router.npy"
+        selected = (
+            [[1, 2], [1, 2], [1, 2], [1, 2]]
+            if no_selected else
+            [[77, 2], [131, 3], [246, 77], [246, 1]]
+        )
+        np.save(routed, np.asarray(selected, dtype=np.int64))
+        router_manifest = {
+            "artifact_type": "glm53_real_layer3_router_topk",
+            "source_repo": REPO,
+            "source_revision": REVISION,
+            "source_layer": 3,
+            "router_weight_key": "model.layers.3.mlp.gate.weight",
+            "router_bias_key": "model.layers.3.mlp.gate.e_score_correction_bias",
+            "capture_sha256": digest(capture),
+            "capture_manifest_sha256": digest(cap_meta),
+            "official_config_sha256": "config-fixture",
+            "official_index_sha256": "index-fixture",
+            "selection_only": True,
+            "output_sha256": digest(routed),
+            "num_tokens": 4,
+            "top_k": 2,
+        }
+        routed.with_suffix(".json").write_text(json.dumps(router_manifest))
+        return capture, routed
+
+    def test_router_conditioned_only_evaluates_selected_tokens(self):
+        capture, routed = self._routing_fixture()
+        report = self._run(captured_activations=capture, router_topk=routed)
+        self.assertTrue(report["routing_conditioned"])
+        self.assertEqual(report["input_origin"],
+                         "verified_pinned_glm53_layer3_pre_moe_capture")
+        self.assertEqual(
+            report["routing_coverage"],
+            {"77": 2, "87": 0, "246": 2, "131": 1},
+        )
+        self.assertEqual(report["experts"][0]["scenarios"][
+            "captured_glm_pre_expert_hidden_states"]["evaluated_tokens"], 2)
+        self.assertEqual(report["experts"][1]["status"],
+                         "no_routed_tokens_no_fidelity_evidence")
+        self.assertEqual(report["experts"][1]["scenarios"], {})
+        self.assertEqual(report["experts"][3]["scenarios"][
+            "captured_glm_pre_expert_hidden_states"]["evaluated_tokens"], 1)
+        summary = report["result"]["captured_glm_pre_expert_hidden_states"]
+        self.assertEqual(summary["training_experts_with_routed_evidence"], 2)
+        self.assertTrue(summary["heldout_has_routed_evidence"])
+
+    def test_zero_routed_tokens_are_missing_evidence_not_zero_error(self):
+        capture, routed = self._routing_fixture(no_selected=True)
+        report = self._run(captured_activations=capture, router_topk=routed)
+        summary = report["result"]["captured_glm_pre_expert_hidden_states"]
+        self.assertIsNone(summary["train_mean_relative_rmse_change"])
+        self.assertIsNone(summary["validation_relative_rmse_change"])
+        self.assertFalse(summary["heldout_has_routed_evidence"])
+        self.assertTrue(all(row["status"].startswith("no_routed")
+                            for row in report["experts"]))
+
+    def test_router_tensor_tamper_rejected_before_fidelity(self):
+        capture, routed = self._routing_fixture()
+        with routed.open("ab") as stream:
+            stream.write(b"unexpected")
+        from iq_transfer.glm53_routing_replay import GLM53RoutingReplayError
+        with self.assertRaisesRegex(
+            GLM53RoutingReplayError, "router-topk SHA256 mismatch"
+        ):
+            self._run(captured_activations=capture, router_topk=routed)
+
+    def test_router_capture_mismatch_is_rejected(self):
+        capture, routed = self._routing_fixture()
+        mismatch = capture.with_suffix(".json")
+        entry = json.loads(mismatch.read_text())
+        entry["num_valid_tokens"] = 7
+        mismatch.write_text(json.dumps(entry))
+        from iq_transfer.glm53_routing_replay import GLM53RoutingReplayError
+        with self.assertRaisesRegex(
+            GLM53RoutingReplayError, "router provenance mismatch"
+        ):
+            self._run(captured_activations=capture, router_topk=routed)
+
+
 if __name__ == "__main__":
     unittest.main()

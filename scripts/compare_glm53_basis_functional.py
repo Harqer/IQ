@@ -27,6 +27,8 @@ def main() -> int:
     p.add_argument("--samples", type=int, default=16)
     p.add_argument("--seed", type=int, default=77)
     p.add_argument("--activations", type=Path, help="optional real pre-expert GLM [N,6144] .npy")
+    p.add_argument("--router-topk", type=Path,
+                   help="optional verified official layer-3 top-8 .npy; filters each expert's tokens")
     p.add_argument("--report", type=Path, required=True,
                    help="NEW output JSON file; existing report will not be overwritten")
     c = p.add_mutually_exclusive_group(required=True)
@@ -44,6 +46,7 @@ def main() -> int:
             samples=args.samples,
             seed=args.seed,
             captured_activations=args.activations,
+            router_topk=args.router_topk,
         )
 
     try:
@@ -58,6 +61,8 @@ def main() -> int:
         # Print the summary so there is no need to paste 12 large matrices.
         compact = {
             "input_origin": report["input_origin"],
+            "routing_conditioned": report["routing_conditioned"],
+            "routing_coverage": report["routing_coverage"],
             "validation_donor_id": report["source_expert_ids"][
                 report["validation_slot"]
             ],
@@ -66,6 +71,8 @@ def main() -> int:
                 {
                     "donor_id": entry["donor_expert_id"],
                     "role": entry["role"],
+                    "status": entry["status"],
+                    "routed_token_count": entry["routed_token_count"],
                     "relative_rmse_improvement": {
                         key: value["relative_rmse_improvement"]
                         for key, value in entry["scenarios"].items()

@@ -24,6 +24,7 @@ from .glm53_single_expert_projection import (
     _sha_tensor,
 )
 from .glm53_expert_informed_basis import _read_baseline
+from .glm53_routed_fidelity import read_verified_router_pairs
 from scripts.probe_glm53_remote_ranges import REPO, REVISION
 
 
@@ -150,11 +151,17 @@ def compare_basis_functions(
     samples: int = 16,
     seed: int = 77,
     captured_activations: str | Path | None = None,
+    router_topk: str | Path | None = None,
 ) -> dict[str, Any]:
     if type(stage) is not int or not 1 <= stage <= 23:
         raise ExpertBasisFunctionalError("stage must be 1..23")
-    if type(samples) is not int or not 1 <= samples <= 128:
-        raise ExpertBasisFunctionalError("samples must be in [1,128]")
+    max_count = 4096 if captured_activations is not None else 128
+    if type(samples) is not int or not 1 <= samples <= max_count:
+        raise ExpertBasisFunctionalError(f"samples must be in [1,{max_count}]")
+    if router_topk is not None and (captured_activations is None or stage != 1):
+        raise ExpertBasisFunctionalError(
+            "router-topk requires stage-1 real captured activations"
+        )
     if type(seed) is not int or seed < 0:
         raise ExpertBasisFunctionalError("seed must be nonnegative")
     raw, baseline, candidate, cal = map(
@@ -214,8 +221,31 @@ def compare_basis_functions(
         input_origin = "synthetic_not_real_activations"
         capture_sha = None
 
+    selected = None
+    router_sha = None
+    if router_topk is not None:
+        selected, router_sha = read_verified_router_pairs(
+            capture_path=captured_activations, routing_path=router_topk,
+            source_layer=layer,
+            samples_used=next(iter(scenarios.values())).shape[0],
+        )
+        input_origin = "verified_pinned_glm53_layer3_pre_moe_capture"
+
     results = []
     for slot, donor_id in enumerate(ids):
+        if selected is not None:
+            mask = (selected == donor_id).any(axis=1)
+            if not bool(mask.any()):
+                results.append({
+                    "slot": slot, "donor_expert_id": donor_id,
+                    "role": "validation" if slot == probe["validation_slot"] else "train",
+                    "routed_token_count": 0,
+                    "status": "no_routed_tokens_no_fidelity_evidence",
+                    "scenarios": {},
+                })
+                continue
+        else:
+            mask = None
         prefix = f"model.layers.{layer}.mlp.experts.{donor_id}."
         donor = {}
         for kind in ("gate", "up", "down"):
@@ -228,12 +258,15 @@ def compare_basis_functions(
         new_expert = _candidate_expert(donor, p1)
         scenarios_report = {}
         for label, x in scenarios.items():
+            if mask is not None:
+                x = x[torch.from_numpy(mask)]
             reference = expert_function(x, **donor)
             y_original = expert_function(x @ p0, **old_expert) @ p0.T
             y_candidate = expert_function(x @ p1, **new_expert) @ p1.T
             old_metrics = comparison(reference, y_original)
             new_metrics = comparison(reference, y_candidate)
             scenarios_report[label] = {
+                "evaluated_tokens": int(x.shape[0]),
                 "original_warm": old_metrics,
                 "expert_informed_candidate": new_metrics,
                 "relative_rmse_improvement": (
@@ -249,21 +282,29 @@ def compare_basis_functions(
         results.append({
             "slot": slot, "donor_expert_id": donor_id,
             "role": "validation" if slot == probe["validation_slot"] else "train",
+            "routed_token_count": int(mask.sum()) if mask is not None else None,
+            "status": "evaluated",
             "scenarios": scenarios_report,
         })
         del donor, old_expert, new_expert
-    summary = {
-        name: {
-            "train_mean_relative_rmse_change": float(np.mean([
-                row["scenarios"][name]["relative_rmse_improvement"]
-                for row in results if row["role"] == "train"
-            ])),
-            "validation_relative_rmse_change": results[
-                probe["validation_slot"]
-            ]["scenarios"][name]["relative_rmse_improvement"],
+    summary = {}
+    for name in scenarios:
+        available_train = [
+            row["scenarios"][name]["relative_rmse_improvement"]
+            for row in results
+            if row["role"] == "train" and name in row["scenarios"]
+        ]
+        heldout = results[probe["validation_slot"]]["scenarios"].get(name)
+        summary[name] = {
+            "train_mean_relative_rmse_change": (
+                float(np.mean(available_train)) if available_train else None
+            ),
+            "validation_relative_rmse_change": (
+                heldout["relative_rmse_improvement"] if heldout is not None else None
+            ),
+            "training_experts_with_routed_evidence": len(available_train),
+            "heldout_has_routed_evidence": heldout is not None,
         }
-        for name in scenarios
-    }
     return {
         "schema_version": 1,
         "artifact_type": "glm53_expert_informed_basis_functional_comparison",
@@ -273,6 +314,12 @@ def compare_basis_functions(
         "samples_per_scenario": next(iter(scenarios.values())).shape[0],
         "seed_if_synthetic": seed if captured_activations is None else None,
         "capture_sha256": capture_sha,
+        "router_topk_sha256": router_sha,
+        "routing_conditioned": router_topk is not None,
+        "routing_coverage": (
+            {str(row["donor_expert_id"]): row["routed_token_count"] for row in results}
+            if selected is not None else None
+        ),
         "source_layer": layer,
         "stage": stage,
         "source_expert_ids": ids,
@@ -289,6 +336,9 @@ def compare_basis_functions(
             "This isolates one SwiGLU FFN per expert. Both projected outputs are "
             "lifted back to the same donor output space before comparison. "
             "Synthetic test inputs do not establish actual GLM input distributions. "
-            "Real GLM states, routing, and end-to-end IQ evaluations are required."
+            "Router-conditioned metrics only include tokens assigned to each expert; "
+            "missing assignments mean missing evidence, never zero error. "
+            "Real GLM states with broader coverage and end-to-end IQ evaluations "
+            "are required."
         ),
     }
