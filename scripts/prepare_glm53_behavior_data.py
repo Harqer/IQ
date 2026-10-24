@@ -76,7 +76,7 @@ def main() -> int:
         manifest = {
             "schema_version": 1,
             "purpose": "iq_response_supervision",
-            "teacher_source_claim": "zai-org/GLM-5.3-BF16",
+            "teacher_source_claim": examples[0].teacher_model,
             "teacher_revision_claim": examples[0].teacher_revision,
             "teacher_attribution_verified_by_api": False,
             "teacher_input_sha256": checksum(args.input),
