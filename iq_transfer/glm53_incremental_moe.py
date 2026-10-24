@@ -65,7 +65,12 @@ def _inverse(map_: CoordinateMap) -> np.ndarray:
         and np.all(np.sum(matrix * matrix, axis=0) == 1.0)
     ):
         return matrix
-    # General calibration still uses the reference NumPy float64 pinv.
+    # A naive SVD for a dense 6144x4096 calibration map can exhaust RAM.
+    # Only small dense calibration maps may take the reference pinv path.
+    if matrix.size > 8_000_000:
+        raise GLM53IncrementalMoEError(
+            "large non-orthogonal coordinate map needs a bounded inverse solver"
+        )
     return np.linalg.pinv(matrix).T
 
 
