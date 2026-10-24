@@ -66,6 +66,24 @@ class TestIQQuality(unittest.TestCase):
         self.assertTrue(any(f["key"] == "activation_calibration" for f in blockers))
         self.assertFalse(report["language_quality_confirmed"])
 
+    def test_widened_lexical_head_preserves_donor_logits_on_replicated_states(self):
+        # Mirrors mamba3_direct.expand_mamba3_foundation_globals, factor=2.
+        source_hidden = [0.25, -1.5, 0.75]
+        source_head_row = [1.25, 0.5, -0.25]
+        donor_logit = sum(a * b for a, b in zip(source_hidden, source_head_row))
+        recipient_hidden = source_hidden + source_hidden
+        recipient_head = [v / 2 for v in source_head_row] * 2
+        transplanted_logit = sum(
+            a * b for a, b in zip(recipient_hidden, recipient_head)
+        )
+        self.assertAlmostEqual(donor_logit, transplanted_logit, places=7)
+        # Shows why later nonreplicated residual transformations are dangerous:
+        off_subspace = source_hidden + [x * 3 for x in source_hidden]
+        off_subspace_logit = sum(
+            a * b for a, b in zip(off_subspace, recipient_head)
+        )
+        self.assertNotAlmostEqual(donor_logit, off_subspace_logit, places=7)
+
     def test_wrong_vocab_fails(self):
         cfg = {
             "model": {"vocab_size": 201088, "hidden_size": 4096},
