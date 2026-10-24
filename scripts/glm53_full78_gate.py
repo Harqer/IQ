@@ -134,8 +134,11 @@ def check_checkpoint_complete(root: Path) -> dict:
     all_stage_files = set()
     for i in range(GLM_LAYERS):
         all_stage_files.update(expected_stage_shards(i))
-    expected = {x for x in all_stage_files if x.endswith(".safetensors")}
-    expected.update(("model-global.safetensors", "model-native.safetensors"))
+    expected = set(all_stage_files)
+    expected.update(("model-global.safetensors", "model-native.safetensors",
+                     "transplant_manifest.json", "iq_config.json"))
+    expected.update(f"model-mamba-{ordinal:03d}.safetensors"
+                    for ordinal in range(79))
     present = inspect_files(root, expected)
     referenced = set(mapping.values())
     if not all(isinstance(n, str) and SAFE_NAME.fullmatch(n) for n in referenced):
