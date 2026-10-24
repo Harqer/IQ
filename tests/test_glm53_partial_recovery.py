@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 
 from scripts.reconcile_glm53_partial import (
-    DONOR_REVISION, RecoveryError, inspect, restore_original_maps, stage_artifacts,
+    DONOR_REVISION, RecoveryError, inspect, restore_original_maps, stage_artifacts, link_overlay,
 )
 
 
@@ -109,6 +109,24 @@ class PartialRecoveryTests(unittest.TestCase):
         updated = self._inspect()["calibration"]
         self.assertEqual(len(updated["must_compute_stages"]), 35)
         self.assertEqual(updated["old24_sha256_reusable_stages"], [])
+
+    def test_verified_zero_copy_overlay_does_not_modify_original_buckets(self):
+        report = self._inspect()
+        remote_hashes = {
+            x.name: hashlib.sha256(x.read_bytes()).hexdigest()
+            for x in self.remote.iterdir() if x.is_file()
+        }
+        linked = link_overlay(self.stage, self.old, self.remote, report)
+        self.assertEqual(linked["hash_verified_original_links"], 166)
+        self.assertEqual(linked["existing_unverified_candidate_links"], 312)
+        self.assertTrue((self.stage / "stage-03-kv.safetensors").is_symlink())
+        self.assertTrue((self.stage / "stage-50-kv.safetensors").is_symlink())
+        self.assertFalse((self.stage / "stage-02-kv.safetensors").exists())
+        self.assertEqual(len(self._inspect()["calibration"]["must_compute_stages"]), 35)
+        self.assertEqual(remote_hashes, {
+            x.name: hashlib.sha256(x.read_bytes()).hexdigest()
+            for x in self.remote.iterdir() if x.is_file()
+        })
 
     def test_tampered_original_hash_blocks_copy(self):
         report = self._inspect()
