@@ -74,7 +74,7 @@ def _convert(arr: np.ndarray, *, dtype: torch.dtype = torch.bfloat16) -> torch.T
     return torch.from_numpy(np.ascontiguousarray(arr)).to(dtype=dtype)
 
 
-def _inverse(map_: CoordinateMap) -> np.ndarray:
+def _inverse(map_: CoordinateMap, projection_ops: ProjectionOps | None = None) -> np.ndarray:
     # The canonical weight-only subcloning maps have orthonormal one-hot
     # columns. Their Moore-Penrose transpose equals the original matrix.
     # Recognize that exact case in linear memory/time and skip a huge SVD.
@@ -89,6 +89,10 @@ def _inverse(map_: CoordinateMap) -> np.ndarray:
     # Verify the full Gram matrix by small column blocks before exploiting
     # pinv(P).T == P. This uses O(k * block_cols) scratch, not O(k*k).
     if matrix.size > _INVERSE_DENSE_THRESHOLD:
+        if projection_ops is not None and projection_ops.cuda:
+            if not projection_ops.check_orthonormal(matrix):
+                raise GLM53IncrementalMoEError("GPU WARM basis not orthonormal")
+            return matrix
         if matrix.shape[0] < matrix.shape[1]:
             raise GLM53IncrementalMoEError(
                 "large wide coordinate map requires a bounded inverse solver"
@@ -320,8 +324,8 @@ def save_incremental_moe_stage(
 
     # Existing transform uses the same pinv for every expert. Reusing it
     # avoids repeated multi-GB decompositions.
-    input_inverse = _inverse(stage.moe_input_map)
-    latent_inverse = _inverse(stage.latent_map)
+    input_inverse = _inverse(stage.moe_input_map, projection_ops)
+    latent_inverse = _inverse(stage.latent_map, projection_ops)
     projection_ops = ProjectionOps()
     if projection_ops.cuda:
         print(f"GLM53_GPU_PROJECTION stage={stage.stage} device={projection_ops.device}", flush=True)
@@ -365,7 +369,7 @@ def save_incremental_moe_stage(
         # all routed experts are deliberately zero, matching the old compiler.
         middle = stage.dense_intermediate_map
         assert middle is not None
-        middle_inverse = _inverse(middle)
+        middle_inverse = _inverse(middle, projection_ops)
         shared_name = f"model-moe-{stage.stage:03d}-shared.safetensors"
         if resume_existing and register_saved_shard(
             output_dir, shared_name, weight_map, layer=physical
