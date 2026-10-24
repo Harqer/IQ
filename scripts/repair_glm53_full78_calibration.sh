@@ -2,6 +2,14 @@
 # Recover missing WARM maps into a full durable all-78 calibration snapshot.
 # Run ONLY after private storage capacity >=600GiB has been confirmed.
 set -euo pipefail
+if [[ "${IQ_PROJECTION_DEVICE:-}" != cuda ]]; then
+  echo "BLOCKED: calibration repair requires a CUDA worker, no silent CPU downgrade" >&2
+  exit 3
+fi
+python - <<'PY'
+import torch
+assert torch.cuda.is_available(), "BLOCKED: no CUDA on calibration worker"
+PY
 CAPACITY_GIB="${IQ_CONFIRMED_PRIVATE_STORAGE_GIB:-0}"
 if [[ ! "$CAPACITY_GIB" =~ ^[0-9]+$ ]] || (( CAPACITY_GIB < 600 )); then
   echo "BLOCKED: verify >=600GiB free private durable storage before compute." >&2
@@ -36,7 +44,7 @@ python -m iq_transfer.cli glm53-bootstrap-calibration \
   --donor-license GLM-5.3 \
   --routed-experts 256 --full-78 \
   --reuse-weight-only /hf-bucket/legacy/visionboxx-macha/calibration \
-  --warm-device cpu --streaming-source
+  --warm-device cuda --streaming-source
 python - "$ROOT/calibration" <<'PY'
 import json,sys
 from pathlib import Path
