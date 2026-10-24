@@ -18,7 +18,7 @@ Status: **preparation only; DO NOT launch a full paid transfer** until every lau
 | G0 — identity | Code commit, pinned donor revisions, canonical target fingerprint, run ID, previous job stopped | Refuse to adopt old shards; investigate mismatch |
 | G1 — capacity | Verified provider/account evidence of **free** durable bucket bytes at least `required_private_bytes()` (approximately 630 GB); evidence for the exact target bucket not older than 24 h | **STOP**, no GPU allocation. Raise capacity or select a properly configured alternate store; do not bluff using environment variables |
 | G2 — calibration | 78 strictly ordered source mappings, 75 usage vectors, expected **866 artifacts**, all nonempty, plus `calibration_sha256.json` verified for EVERY file from a separate read-only worker | **STOP**, run calibration-only repair and republish, never compile against a partial manifest |
-| G3 — GPU preflight | CUDA present, BF16→FP32 numerical parity, one real unsaved donor expert range read, adequate memory; bounded range requests with retries | Retry transient range errors on a small diagnostic job; for OOM reduce tile/L4→L40S→A100; **never silently switch to CPU** |
+| G3 — GPU preflight | CUDA present, tiny device math smoke, sufficient VRAM; bounded range and tensor checks are performed inline by the full compiler | Retry bounded transient range errors during the real job; for OOM reduce tile/L4→L40S→A100; **never silently switch to CPU** |
 | G4 — transfer | One writer, exact historical source IDs, atomic shard writes, per-slot progress and a paid-worker deadline | Exit with error after safe shard boundary; keep completed files; resume only after job is confirmed stopped |
 | G5 — stage durability | All 256 routed slots, shared/common/context, projection report per source layer independently checked; no missing or corrupt shards | Recompute ONLY the missing stage/slot, do not overwrite valid shards |
 | G6 — final | Strict expected model state keys, 78 context, 78 MoE, 79 Mamba, **19,968 expert slots**, final index and manifest, independent re-read from a different worker | Fail release; fix missing files and resume; checkpoint is not yet inference-validated |
@@ -71,7 +71,7 @@ If any name/size/hash differs, do not start transfer. Never replace historical r
 
 ## Full GPU resume (only after gates G0–G3)
 
-For the first approved execution, use `scripts/start_glm53_full78_gpu_from_verified_calibration.sh` with a **new** RUN_ID and the verified `CALIBRATION_RUN_ID`. For subsequent segments of that *same provenanced run*, use `scripts/resume_glm53_full78_mounted_cloud.sh` only after independent inventory checks. Use pinned code and exactly one writable output mount. Job arguments, token permissions, storage volume and CUDA device must be reviewed before launch. GPU priority is **L40S for throughput / VRAM**, then **L4 only after a real one-expert throughput and memory benchmark**, then an A100/H100 if sustained OOM or slower effective cost. Select using **$/completed expert**, not hourly rate alone.
+For the first approved execution, use `scripts/start_glm53_full78_gpu_from_verified_calibration.sh` with a **new** RUN_ID and the verified `CALIBRATION_RUN_ID`. For subsequent segments of that *same provenanced run*, use `scripts/resume_glm53_full78_mounted_cloud.sh` only after independent inventory checks. Use pinned code and exactly one writable output mount. Job arguments, token permissions, storage volume and CUDA device must be reviewed before launch. GPU priority is **L40S for throughput / VRAM**, then A100/H100 if sustained OOM or slower effective cost. Consider L4 only if its usable memory and throughput are sufficient for the full job. Record **$/completed validated stage** within the ongoing run, not a separate one-expert benchmark.
 
 The guarded entry point is `scripts/resume_glm53_full78_mounted_cloud.sh`. It requires:
 
@@ -83,6 +83,19 @@ The guarded entry point is `scripts/resume_glm53_full78_mounted_cloud.sh`. It re
 - Correct read-only source calibration mount `/hf-bucket`, writable output mount `/out`, and HF credentials with only required access.
 
 The compiler checks `IQ_TRANSFER_DEADLINE_EPOCH` before every expert and stops with a clear checkpointed-budget message, leaving all committed expert files eligible for the next run. **It deliberately exits nonzero** on a budget stop. Human/operator checks status and files, verifies the prior job stopped, then explicitly launches the next segment.
+
+## Full-run efficiency policy
+
+Do not launch separate one-expert or one-layer GPU benchmarks. Once preflight,
+calibration hashes, source revisions, durable free capacity and provenance pass,
+launch the **full 78-layer / 256-expert-per-sparse-layer** job immediately.
+The compiler reads/validates actual donor tensors only as it transforms them;
+there is no extra network read of stage-3 slot-0 or slot-41 on startup.
+Observe stage-level throughput, GPU/CPU transfer time, network throughput and
+peak memory in the same job. Resume only genuinely incomplete shards if a
+worker budget expires. A sequential per-slot compiler is **not** equivalent
+to high-throughput multi-expert batching; optimize that separately using
+measured in-run profiles while preserving atomic outputs and exact shapes.
 
 ## Fallback classification
 
@@ -110,4 +123,4 @@ These prove expected **file inventory**, not language-model functional correctne
 
 ## Never again
 
-No 24-hour monolithic worker as the first experiment, no inferred storage quota, no manifest-only calibration success, no silent CPU fallback, no writing an index before the shard exists, no overwrite of an apparently valid historical shard, no concurrent resume jobs, and no declaration of successful transplant without external durable file verification.
+No standalone single-expert GPU benchmarks, no 24-hour non-resumable worker, no inferred storage quota, no manifest-only calibration success, no silent CPU fallback, no writing an index before the shard exists, no overwrite of an apparently valid historical shard, no concurrent resume jobs, and no declaration of successful transplant without external durable file verification.
