@@ -399,6 +399,12 @@ def compile_glm53_iq_checkpoint(
         )
     output.mkdir(parents=True, exist_ok=True)
     calibration = GLM53CalibrationSolution.load(calibration_dir)
+    if resume_existing:
+        if not streaming_source or len(calibration.stages) != 78:
+            raise GLM53CompileError(
+                "restart requires a full78 streaming donor compilation"
+            )
+        validate_legacy_partial(output)
     if config.stable_moe is None or config.stable_moe.num_experts not in (32, 64, 128, 256):
         raise GLM53CompileError("unsupported GLM routed expert capacity")
     stage_count = len(donor_layer_positions(config))
