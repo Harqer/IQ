@@ -26,7 +26,7 @@ from .complete_transplant import _save_shard
 from .glm53 import GLM53Inspector
 from .glm53_calibration import GLM53StageCalibration
 from .glm53_moe import select_experts_by_usage
-from .glm53_resume import register_saved_shard, expected_expert_keys
+from .glm53_resume import register_saved_shard, expected_expert_keys, expected_expert_shapes
 from .glm53_gpu_projection import ProjectionOps
 from .transport import CoordinateMap
 from iq_model import IQHybridConfig
@@ -127,6 +127,27 @@ def _inverse(map_: CoordinateMap, projection_ops: ProjectionOps | None = None) -
         return matrix
     # Small general maps preserve the reference float64 pseudoinverse.
     return np.linalg.pinv(matrix).T
+
+
+def _resume_expert_shard(
+    *, output_dir: Path, filename: str, weight_map: dict[str, str],
+    physical: int, slot: int, stable: Any,
+) -> bool:
+    """Skip completed experts only with the exact expected tensor contract.
+
+    safetensors shape/dtype checks use headers without loading full tensors.
+    This applies equally to CPU, CUDA and function-neutral dense stages.
+    """
+    expected = expected_expert_shapes(
+        physical, slot, latent_width=stable.latent_size,
+        intermediate_width=stable.expert_intermediate_size,
+    )
+    return register_saved_shard(
+        output_dir, filename, weight_map, layer=physical,
+        expected_keys=expected_expert_keys(physical, slot),
+        expected_shapes=expected,
+        expected_dtypes={key: "BF16" for key in expected},
+    )
 
 
 def _save_expert(
@@ -414,10 +435,10 @@ def save_incremental_moe_stage(
         for slot in range(stable.num_experts):
             _check_runtime_budget(stage.stage, slot)
             expert_name = f"model-moe-{stage.stage:03d}-expert-{slot:03d}.safetensors"
-            if resume_existing and register_saved_shard(
-                output_dir, expert_name, weight_map,
-                expected_keys=expected_expert_keys(physical, slot),
-                layer=physical,
+            if resume_existing and _resume_expert_shard(
+                output_dir=output_dir, filename=expert_name,
+                weight_map=weight_map, physical=physical, slot=slot,
+                stable=stable,
             ):
                 continue
             zeros: dict[str, torch.Tensor] = {
@@ -479,10 +500,10 @@ def save_incremental_moe_stage(
         pending: list[ExpertSpec] = []
         for slot, donor_id in enumerate(selected):
             expert_name = f"model-moe-{stage.stage:03d}-expert-{slot:03d}.safetensors"
-            if resume_existing and register_saved_shard(
-                output_dir, expert_name, weight_map,
-                expected_keys=expected_expert_keys(physical, slot),
-                layer=physical,
+            if resume_existing and _resume_expert_shard(
+                output_dir=output_dir, filename=expert_name,
+                weight_map=weight_map, physical=physical, slot=slot,
+                stable=stable,
             ):
                 report["routed"][str(slot)] = {
                     "donor_expert_id": int(donor_id),
@@ -607,10 +628,10 @@ def save_incremental_moe_stage(
         for slot, donor_id in enumerate(selected):
             _check_runtime_budget(stage.stage, slot)
             expert_name = f"model-moe-{stage.stage:03d}-expert-{slot:03d}.safetensors"
-            if resume_existing and register_saved_shard(
-                output_dir, expert_name, weight_map,
-                expected_keys=expected_expert_keys(physical, slot),
-                layer=physical,
+            if resume_existing and _resume_expert_shard(
+                output_dir=output_dir, filename=expert_name,
+                weight_map=weight_map, physical=physical, slot=slot,
+                stable=stable,
             ):
                 report["routed"][str(slot)] = {
                     "donor_expert_id": int(donor_id),
