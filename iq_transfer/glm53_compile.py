@@ -342,8 +342,18 @@ def compile_glm53_iq_checkpoint(
     target_config: IQHybridConfig | None = None,
 ) -> GLM53CompileResult:
     output = Path(output_dir)
-    output.mkdir(parents=True, exist_ok=True)
     config = target_config if target_config is not None else canonical_glm53_config()
+    if (
+        config.stable_moe is not None
+        and config.stable_moe.num_experts > 32
+        and output.exists()
+        and (not output.is_dir() or any(output.iterdir()))
+    ):
+        raise GLM53CompileError(
+            "expanded GLM compile requires a NEW empty directory; refusing "
+            "to overwrite the original checkpoint or an earlier candidate"
+        )
+    output.mkdir(parents=True, exist_ok=True)
     calibration = GLM53CalibrationSolution.load(calibration_dir)
     if config.stable_moe is None or config.stable_moe.num_experts not in (32, 64, 128, 256):
         raise GLM53CompileError("unsupported GLM routed expert capacity")
