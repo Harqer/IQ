@@ -71,6 +71,8 @@ def main() -> int:
         )
         ids = encoded["input_ids"].cpu()
         mask = encoded["attention_mask"].cpu()
+        # Position IDs must respect padding side for multiple text examples.
+        position_ids = (mask.long().cumsum(-1) - 1).clamp_min(0)
         if int(mask.sum().item()) < 1:
             raise ValueError("tokenizer produced no valid tokens")
         config_file = Path(hf_hub_download(REPO, "config.json", revision=REVISION))
@@ -90,7 +92,11 @@ def main() -> int:
                 result = capture_glm53_bootstrap_streaming(
                     source=source,
                     config_path=config_file,
-                    batches=[{"input_ids": ids, "attention_mask": mask}],
+                    batches=[{
+                        "input_ids": ids,
+                        "attention_mask": mask,
+                        "position_ids": position_ids,
+                    }],
                     device="cpu",
                     attention_implementation="eager",
                     stop_at_pre_moe_layer=3,
