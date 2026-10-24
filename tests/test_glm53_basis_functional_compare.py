@@ -323,6 +323,16 @@ class FunctionalComparisonTests(unittest.TestCase):
         self.assertTrue(all(row["status"].startswith("no_routed")
                             for row in report["experts"]))
 
+    def test_router_tensor_tamper_rejected_before_fidelity(self):
+        capture, routed = self._routing_fixture()
+        with routed.open("ab") as stream:
+            stream.write(b"unexpected")
+        from iq_transfer.glm53_routing_replay import GLM53RoutingReplayError
+        with self.assertRaisesRegex(
+            GLM53RoutingReplayError, "router-topk SHA256 mismatch"
+        ):
+            self._run(captured_activations=capture, router_topk=routed)
+
     def test_router_capture_mismatch_is_rejected(self):
         capture, routed = self._routing_fixture()
         mismatch = capture.with_suffix(".json")
