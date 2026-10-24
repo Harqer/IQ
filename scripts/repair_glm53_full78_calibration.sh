@@ -2,6 +2,14 @@
 # Recover missing WARM maps into a full durable all-78 calibration snapshot.
 # Run ONLY after private storage capacity >=600GiB has been confirmed.
 set -euo pipefail
+if [[ "${IQ_PROJECTION_DEVICE:-}" != cuda ]]; then
+  echo "BLOCKED: calibration repair requires a CUDA worker, no silent CPU downgrade" >&2
+  exit 3
+fi
+python - <<'PY'
+import torch
+assert torch.cuda.is_available(), "BLOCKED: no CUDA on calibration worker"
+PY
 CAPACITY_GIB="${IQ_CONFIRMED_PRIVATE_STORAGE_GIB:-0}"
 if [[ ! "$CAPACITY_GIB" =~ ^[0-9]+$ ]] || (( CAPACITY_GIB < 600 )); then
   echo "BLOCKED: verify >=600GiB free private durable storage before compute." >&2
@@ -36,7 +44,7 @@ python -m iq_transfer.cli glm53-bootstrap-calibration \
   --donor-license GLM-5.3 \
   --routed-experts 256 --full-78 \
   --reuse-weight-only /hf-bucket/legacy/visionboxx-macha/calibration \
-  --warm-device cpu --streaming-source
+  --warm-device cuda --streaming-source
 python - "$ROOT/calibration" <<'PY'
 import json,sys
 from pathlib import Path
@@ -66,6 +74,7 @@ if missing:
    {n:(root/n).stat().st_size for n in sorted(names)},sort_keys=True))
 print('ALL78_LOCAL_CALIBRATION_FILES_VERIFIED',len(names),flush=True)
 PY
+python scripts/glm53_calibration_sha256.py make --root "$ROOT/calibration"
 echo "CALIBRATION78_EXPLICIT_BUCKET_SYNC_NO_DELETE"
 # Explicit upload/sync instead of relying on transient mounted-FUSE flush.
 hf buckets sync "$ROOT/calibration" "$DEST" --ignore-existing
@@ -85,3 +94,5 @@ if missing:
     raise SystemExit(f'BUCKET_CALIBRATION_INCOMPLETE {len(missing)} first={list(missing)[:12]}')
 print('ALL78_REMOTE_CALIBRATION_FILES_AND_SIZES_VERIFIED',len(local),flush=True)
 PY
+
+echo 'IMPORTANT: launch an independent read-only worker to verify calibration_sha256.json and all 866 SHA256 hashes before any paid GPU weight transfer.'

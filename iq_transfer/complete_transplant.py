@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import shutil
 import tempfile
 from collections.abc import Mapping
@@ -804,12 +805,22 @@ def _save_shard(
     tensors: Mapping[str, torch.Tensor],
     weight_map: dict[str, str],
 ) -> None:
+    """Publish a complete shard or none; never index an unfinished write.
+
+    The rename is atomic on compliant filesystems. On a mounted remote
+    bucket, a SEPARATE read-only job must still confirm durable persistence
+    before another GPU stage starts.
+    """
     try:
         from safetensors.torch import save_file
     except ImportError as exc:
         raise CompleteTransplantError("safetensors is required") from exc
     path = output_dir / filename
     path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists() or path.is_symlink():
+        raise CompleteTransplantError(
+            f"output shard already exists; resume must validate, not overwrite: {filename}"
+        )
     materialized = {}
     for key, tensor in tensors.items():
         if key in weight_map:
@@ -817,8 +828,25 @@ def _save_shard(
         if not bool(torch.isfinite(tensor.float()).all()):
             raise CompleteTransplantError(f"non-finite target tensor: {key}")
         materialized[key] = tensor.detach().cpu().contiguous()
-        weight_map[key] = filename
-    save_file(materialized, str(path))
+
+    # Use a sibling temp path so the final name never exposes partial bytes.
+    fd, temp_path = tempfile.mkstemp(prefix=f".{filename}.", suffix=".partial",
+                                    dir=str(path.parent))
+    os.close(fd)
+    try:
+        save_file(materialized, temp_path)
+        with open(temp_path, "rb") as saved:
+            os.fsync(saved.fileno())
+        if path.exists() or path.is_symlink():
+            raise CompleteTransplantError(f"concurrent writer detected for {filename}")
+        os.replace(temp_path, path)
+        if not path.is_file() or path.stat().st_size < 16:
+            raise CompleteTransplantError(f"shard publish verification failed: {filename}")
+    finally:
+        if os.path.exists(temp_path):
+            os.unlink(temp_path)
+    # Only after the actual file exists may we claim its keys in the final index.
+    weight_map.update({key: filename for key in materialized})
 
 
 def _translate_mamba_overlay(

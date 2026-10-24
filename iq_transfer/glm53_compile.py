@@ -37,6 +37,7 @@ from .glm53_moe import (
 from .glm53_stream_capture import HubSafetensorsSource
 from .glm53_incremental_moe import save_incremental_moe_stage
 from .glm53_resume import register_saved_shard, validate_legacy_partial
+from .glm53_provenance import enforce_run_provenance
 from .glm53_lazy_calibration import LazyGLM53Calibration
 from .glm53_incremental_context import transport_input_projection_rows
 from .mamba3_direct import (
@@ -472,6 +473,15 @@ def compile_glm53_iq_checkpoint(
     if calibration.source_layers != inspector.config.num_hidden_layers:
         raise GLM53CompileError(
             "calibration source layer count does not match GLM checkpoint"
+        )
+
+    if stage_count == 78 and streaming_source:
+        enforce_run_provenance(
+            output, Path(calibration_dir),
+            glm_revision=glm53_revision,
+            mamba_revision=mamba3_revision,
+            target_fingerprint=config.fingerprint,
+            resume=resume_existing,
         )
 
     weight_map: dict[str, str] = {}

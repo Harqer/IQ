@@ -11,6 +11,15 @@ if [[ ! "$CAPACITY_GIB" =~ ^[0-9]+$ ]] || (( CAPACITY_GIB < 600 )); then
   exit 3
 fi
 python scripts/full78_storage_preflight.py
+: "${IQ_STORAGE_ATTESTATION:?Fail-closed: provide recent provider-verified free-space evidence}"
+REQUIRED_BYTES="$(python -c 'from scripts.full78_storage_preflight import required_private_bytes;print(required_private_bytes())')"
+python scripts/glm53_full78_gate.py storage \
+  --attestation "$IQ_STORAGE_ATTESTATION" \
+  --required-bytes "$REQUIRED_BYTES"
+if [[ "${IQ_PROJECTION_DEVICE:-}" != cuda ]]; then
+  echo "BLOCKED: production GPU resume requires IQ_PROJECTION_DEVICE=cuda; CPU is diagnostics-only" >&2
+  exit 3
+fi
 if [[ "${IQ_CONFIRM_PREVIOUS_JOB_STOPPED:-}" != "1" ]]; then
   echo 'Refusing to resume while previous run may still write.' >&2
   exit 2
@@ -33,6 +42,9 @@ if [[ ! -f "$DEST_CALIB/glm53_calibration.json" || ! -d "$DEST_IQ" || -e "$WORK_
   echo "Resume requires saved calibration, incomplete IQ shards, and clean scratch." >&2
   exit 2
 fi
+# Read-only file-by-file verification; the calibration manifest alone is insufficient.
+python scripts/glm53_full78_gate.py calibration --root "$DEST_CALIB"
+python scripts/glm53_calibration_sha256.py verify --root "$DEST_CALIB"
 mkdir -p "$WORK_ROOT/glm53" "$WORK_ROOT/mamba3"
 hf download zai-org/GLM-5.3-BF16 config.json model.safetensors.index.json \
   --revision "$DONOR_REV" --local-dir "$WORK_ROOT/glm53"
@@ -77,7 +89,15 @@ source.close()
 print(f"UNSAVED_EXPERT_SOURCE_READ_OK stage=3 slot=41 donor={donor_id}", flush=True)
 PY
 
-echo "FULL78: Stage 3 stream 78 attention + 78 FFN stages directly into a new durable run."
+# Limit each worker to a recoverable compute window instead of the platform timeout.
+MAX_SECONDS="${IQ_MAX_RUN_SECONDS:-14400}"
+if [[ ! "$MAX_SECONDS" =~ ^[0-9]+$ ]] || (( MAX_SECONDS < 900 || MAX_SECONDS > 82800 )); then
+  echo "BLOCKED: IQ_MAX_RUN_SECONDS must be 900..82800 (15m..23h)" >&2
+  exit 3
+fi
+export IQ_TRANSFER_DEADLINE_EPOCH="$(($(date +%s) + MAX_SECONDS))"
+echo "GPU_BUDGET_WINDOW_SECONDS=$MAX_SECONDS"
+echo "FULL78: Stage 3 resume saved stages and stream remaining attention/FFN."
 python -m iq_transfer.cli glm53-compile \
   --checkpoint "$WORK_ROOT/glm53" \
   --calibration "$DEST_CALIB" \
@@ -122,3 +142,6 @@ tokenizer_packaged = all((root/fname).is_file() for fname in (
 },sort_keys=True)+'\n')
 print('FULL78_ALL_19200_ROUTED_SLOTS_COMPILED_AND_INDEXED',flush=True)
 PY
+python scripts/glm53_full78_gate.py checkpoint-complete --root "$DEST_IQ"
+echo FULL78_LOCAL_COMPLETION_VERIFIED_REQUIRES_SEPARATE_REMOTE_AUDIT
+

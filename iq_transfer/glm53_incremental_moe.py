@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import gc
 import json
+import os
+import time
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +37,22 @@ _INVERSE_DENSE_THRESHOLD = 8_000_000
 
 class GLM53IncrementalMoEError(RuntimeError):
     pass
+
+
+def _check_runtime_budget(stage: int, slot: int = -1) -> None:
+    """Stop BEFORE starting another expensive expert; saved shards remain reusable."""
+    deadline = os.environ.get("IQ_TRANSFER_DEADLINE_EPOCH")
+    if not deadline:
+        return
+    if not deadline.isdigit():
+        raise GLM53IncrementalMoEError("invalid IQ_TRANSFER_DEADLINE_EPOCH")
+    # Leave 120 seconds for ordinary Python exception/cleanup before job timeout.
+    if time.time() + 120 >= int(deadline):
+        print(f"GLM53_CHECKPOINTED_BUDGET_STOP stage={stage} next_slot={slot}",
+              flush=True)
+        raise GLM53IncrementalMoEError(
+            "transfer time budget reached; persisted complete shards can resume"
+        )
 
 
 def _energy(value: np.ndarray) -> float:
@@ -324,6 +342,7 @@ def save_incremental_moe_stage(
 
     # Existing transform uses the same pinv for every expert. Reusing it
     # avoids repeated multi-GB decompositions.
+    _check_runtime_budget(stage.stage)
     projection_ops = ProjectionOps()
     input_inverse = _inverse(stage.moe_input_map, projection_ops)
     latent_inverse = _inverse(stage.latent_map, projection_ops)
@@ -393,6 +412,7 @@ def save_incremental_moe_stage(
             )
         target = f"layers.{physical}.moe"
         for slot in range(stable.num_experts):
+            _check_runtime_budget(stage.stage, slot)
             expert_name = f"model-moe-{stage.stage:03d}-expert-{slot:03d}.safetensors"
             if resume_existing and register_saved_shard(
                 output_dir, expert_name, weight_map,
@@ -450,6 +470,7 @@ def save_incremental_moe_stage(
 
 
     for slot, donor_id in enumerate(selected):
+        _check_runtime_budget(stage.stage, slot)
         expert_name = f"model-moe-{stage.stage:03d}-expert-{slot:03d}.safetensors"
         if resume_existing and register_saved_shard(
             output_dir, expert_name, weight_map,
