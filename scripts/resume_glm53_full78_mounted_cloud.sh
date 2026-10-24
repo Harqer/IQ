@@ -11,6 +11,15 @@ if [[ ! "$CAPACITY_GIB" =~ ^[0-9]+$ ]] || (( CAPACITY_GIB < 600 )); then
   exit 3
 fi
 python scripts/full78_storage_preflight.py
+: "${IQ_STORAGE_ATTESTATION:?Fail-closed: provide recent provider-verified free-space evidence}"
+REQUIRED_BYTES="$(python -c 'from scripts.full78_storage_preflight import required_private_bytes;print(required_private_bytes())')"
+python scripts/glm53_full78_gate.py storage \
+  --attestation "$IQ_STORAGE_ATTESTATION" \
+  --required-bytes "$REQUIRED_BYTES"
+if [[ "${IQ_PROJECTION_DEVICE:-}" != cuda ]]; then
+  echo "BLOCKED: production GPU resume requires IQ_PROJECTION_DEVICE=cuda; CPU is diagnostics-only" >&2
+  exit 3
+fi
 if [[ "${IQ_CONFIRM_PREVIOUS_JOB_STOPPED:-}" != "1" ]]; then
   echo 'Refusing to resume while previous run may still write.' >&2
   exit 2
@@ -33,6 +42,8 @@ if [[ ! -f "$DEST_CALIB/glm53_calibration.json" || ! -d "$DEST_IQ" || -e "$WORK_
   echo "Resume requires saved calibration, incomplete IQ shards, and clean scratch." >&2
   exit 2
 fi
+# Read-only file-by-file verification; the calibration manifest alone is insufficient.
+python scripts/glm53_full78_gate.py calibration --root "$DEST_CALIB"
 mkdir -p "$WORK_ROOT/glm53" "$WORK_ROOT/mamba3"
 hf download zai-org/GLM-5.3-BF16 config.json model.safetensors.index.json \
   --revision "$DONOR_REV" --local-dir "$WORK_ROOT/glm53"
