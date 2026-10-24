@@ -15,22 +15,16 @@ DONOR_REV=abf42e6c0e53bc29a875511301e7b7fcd220315b
 MAMBA_REV=bc6b5d0f7994fe4cb3478242e92da8daf9ee29ec
 SOURCE_CALIB=/hf-bucket/legacy/visionboxx-macha/calibration
 DEST_CALIB="/out/calibration78/$RUN_ID"
-LOCAL_CALIB="$WORK_ROOT/calibration"
 DEST_IQ="/out/IQ/runs/$RUN_ID"
 WORK_ROOT="/tmp/iq-full78-$RUN_ID"
+LOCAL_CALIB="$WORK_ROOT/calibration"
 if [[ -e "$DEST_CALIB" || -e "$DEST_IQ" || -e "$WORK_ROOT" ]]; then
   echo "Refusing existing run; immutable artifacts are never overwritten." >&2
   exit 2
 fi
-mkdir -p "$WORK_ROOT/glm53" "$WORK_ROOT/mamba3"
+mkdir -p "$WORK_ROOT/glm53"
 hf download zai-org/GLM-5.3-BF16 config.json model.safetensors.index.json \
   --revision "$DONOR_REV" --local-dir "$WORK_ROOT/glm53"
-hf download state-spaces/mamba3-mimo-1.5b config.json pytorch_model.bin \
-  --revision "$MAMBA_REV" --local-dir "$WORK_ROOT/mamba3"
-# The official Mamba-3 language model uses the Meta-Llama 3.1 tokenizer,
-# which is separately gated. It is NOT required to transform donor weights.
-# Never block all 78 layers of weight compilation on a tokenizer permission.
-# Package the tokenizer only after separately authorized access is available.
 # Current weight-only WARM solution validated on read; no changes to original.
 python - "$SOURCE_CALIB" <<'PY'
 import sys
@@ -57,7 +51,7 @@ python -m iq_transfer.cli glm53-bootstrap-calibration \
   --full-78 --reuse-weight-only "$SOURCE_CALIB" \
   --warm-device cuda --streaming-source
 
-python - "$DEST_CALIB" <<'PY'
+python - "$LOCAL_CALIB" <<'PY'
 import sys
 from iq_transfer.glm53_calibration import GLM53CalibrationSolution
 c=GLM53CalibrationSolution.load(sys.argv[1])
