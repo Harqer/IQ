@@ -11,8 +11,8 @@ class GLM53ResumeError(RuntimeError):
 
 
 _SHARD_RE = re.compile(
-    r"model-(?:global|native|context-\\d{3}|mamba-\\d{3}"
-    r"|moe-\\d{3}(?:-common|-shared|-expert-\\d{3})?)\\.safetensors"
+    r"model-(?:global|native|context-\d{3}|mamba-\d{3}"
+    r"|moe-\d{3}(?:-common|-shared|-expert-\d{3})?)\.safetensors"
 )
 
 
