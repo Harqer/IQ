@@ -65,6 +65,14 @@ class PartialRecoveryTests(unittest.TestCase):
                 val = f"donor={record['source_layer']} role={role}\n".encode()
                 (self.old / name).write_bytes(val)
                 data_hashes[name] = hashlib.sha256(val).hexdigest()
+        for prefix, value in (
+            ("lexical-input", b"canonical-input-frame"),
+            ("final-output", b"canonical-final-frame"),
+        ):
+            for suffix in (".json", ".safetensors"):
+                name = prefix + suffix
+                (self.old / name).write_bytes(value)
+                data_hashes[name] = hashlib.sha256(value).hexdigest()
         (self.old / ".calibration_integrity.json").write_text(json.dumps({
             "donor_revision": DONOR_REVISION,
             "files": data_hashes,
@@ -77,12 +85,18 @@ class PartialRecoveryTests(unittest.TestCase):
         )
         for record in full_records[50:]:
             for name, role in stage_artifacts(record).items():
-                (self.remote / name).write_bytes(
-                    f"preexisting {record['stage']} {role}".encode()
-                )
+                if record["source_layer"] in old_source:
+                    old_record = old_records[old_source.index(record["source_layer"])]
+                    by_role = {
+                        v: k for k, v in stage_artifacts(old_record).items()
+                    }
+                    val = (self.old / by_role[role]).read_bytes()
+                else:
+                    val = f"preexisting {record['stage']} {role}".encode()
+                (self.remote / name).write_bytes(val)
         for name in ("lexical-input.json", "lexical-input.safetensors",
                      "final-output.json", "final-output.safetensors"):
-            (self.remote / name).write_bytes(b"existing read-only global map")
+            (self.remote / name).write_bytes((self.old / name).read_bytes())
 
     def _inspect(self):
         return inspect(
@@ -121,7 +135,9 @@ class PartialRecoveryTests(unittest.TestCase):
         }
         linked = link_overlay(self.stage, self.old, self.remote, report)
         self.assertEqual(linked["hash_verified_original_links"], 166)
-        self.assertEqual(linked["existing_unverified_candidate_links"], 312)
+        self.assertEqual(linked["existing_linked_files"], 312)
+        self.assertEqual(linked["hash_verified_existing_overlap"], 99)
+        self.assertEqual(linked["unverified_existing_files"], 209)
         self.assertTrue((self.stage / "stage-03-kv.safetensors").is_symlink())
         self.assertTrue((self.stage / "stage-50-kv.safetensors").is_symlink())
         self.assertFalse((self.stage / "stage-02-kv.safetensors").exists())
