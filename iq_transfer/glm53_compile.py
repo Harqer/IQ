@@ -581,6 +581,7 @@ def compile_glm53_iq_checkpoint(
                 config=config,
                 output_dir=output,
                 weight_map=weight_map,
+                resume_existing=resume_existing,
             )
         else:
             _save_shard(
