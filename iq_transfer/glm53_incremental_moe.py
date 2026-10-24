@@ -27,6 +27,9 @@ from .transport import CoordinateMap
 from iq_model import IQHybridConfig
 
 
+_INVERSE_DENSE_THRESHOLD = 8_000_000
+
+
 class GLM53IncrementalMoEError(RuntimeError):
     pass
 
@@ -68,7 +71,7 @@ def _inverse(map_: CoordinateMap) -> np.ndarray:
     # WARM's canonical maps are dense semi-orthogonal, not one-hot.
     # Verify the full Gram matrix by small column blocks before exploiting
     # pinv(P).T == P. This uses O(k * block_cols) scratch, not O(k*k).
-    if matrix.size > 8_000_000:
+    if matrix.size > _INVERSE_DENSE_THRESHOLD:
         if matrix.shape[0] < matrix.shape[1]:
             raise GLM53IncrementalMoEError(
                 "large wide coordinate map requires a bounded inverse solver"
