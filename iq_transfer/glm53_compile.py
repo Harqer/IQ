@@ -617,12 +617,17 @@ def compile_glm53_iq_checkpoint(
                 resume_existing=resume_existing,
             )
 
-    _save_shard(
-        output,
-        "model-native.safetensors",
-        _native_controller_state(config),
-        weight_map,
-    )
+    if not (
+        resume_existing and register_saved_shard(
+            output, "model-native.safetensors", weight_map
+        )
+    ):
+        _save_shard(
+            output,
+            "model-native.safetensors",
+            _native_controller_state(config),
+            weight_map,
+        )
 
     expected = expected_complete_state_keys(config)
     actual = frozenset(weight_map)
