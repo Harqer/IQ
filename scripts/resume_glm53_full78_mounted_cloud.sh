@@ -133,3 +133,6 @@ tokenizer_packaged = all((root/fname).is_file() for fname in (
 },sort_keys=True)+'\n')
 print('FULL78_ALL_19200_ROUTED_SLOTS_COMPILED_AND_INDEXED',flush=True)
 PY
+python scripts/glm53_full78_gate.py checkpoint-complete --root "$DEST_IQ"
+echo FULL78_LOCAL_COMPLETION_VERIFIED_REQUIRES_SEPARATE_REMOTE_AUDIT
+
