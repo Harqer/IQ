@@ -44,6 +44,9 @@ class RoutedBatchPrefetch:
         self.donor_root = donor_root
         self._pool: ThreadPoolExecutor | None = None
         self._worker_source: HubSafetensorsSource | None = None
+        # Current + one future batch only. Never allow an unbounded queue of
+        # source tensor downloads consuming host RAM.
+        self._outstanding: set[Future] = set()
         if self.enabled:
             # Do not share requests.Session or its mutable header cache
             # with the main thread. Immutable repository revision is copied.
@@ -61,7 +64,13 @@ class RoutedBatchPrefetch:
         if not specs or not self.enabled:
             return None
         assert self._pool is not None
-        return self._pool.submit(self._load, tuple(specs))
+        if len(self._outstanding) >= 2:
+            raise ProjectionComputeError(
+                "HTTP prefetch queue exceeds current+one-ahead batch limit"
+            )
+        future = self._pool.submit(self._load, tuple(specs))
+        self._outstanding.add(future)
+        return future
 
     def _load(self, specs: tuple[ExpertSpec, ...]) -> dict[str, torch.Tensor]:
         assert self._worker_source is not None
@@ -75,12 +84,20 @@ class RoutedBatchPrefetch:
     def source_for(self, future: Future | None, fallback: Any) -> Any:
         if future is None:
             return fallback
-        return StagedBatchSource(future.result())
+        if future not in self._outstanding:
+            raise ProjectionComputeError("unknown or already consumed prefetch future")
+        try:
+            return StagedBatchSource(future.result())
+        finally:
+            self._outstanding.remove(future)
 
     def close(self) -> None:
         if self._pool is not None:
+            for future in self._outstanding:
+                future.cancel()
             self._pool.shutdown(wait=True, cancel_futures=True)
             self._pool = None
+        self._outstanding.clear()
         if self._worker_source is not None:
             self._worker_source.close()
             self._worker_source = None
