@@ -8,87 +8,14 @@ from typing import Any
 
 from .batches import TokenBatchArtifact
 from .capture_runner import ActivationBundle
-from .checkpoint import SafetensorsSource
+from .http_range_source import HubSafetensorsSource
 from .complete_transplant import canonical_glm53_config
-from .donor import DonorError
 from .glm53 import GLM53Inspector
 from .glm53_calibration import bootstrap_glm53_source_layer_map
 
 
 class GLM53StreamingCaptureError(RuntimeError):
     pass
-
-
-class HubSafetensorsSource(SafetensorsSource):
-    """Safetensors source that downloads missing indexed shards on demand."""
-
-    def __init__(
-        self,
-        model_dir: str | Path,
-        *,
-        repo_id: str,
-        revision: str,
-        token: str | None = None,
-    ) -> None:
-        super().__init__(model_dir)
-        self.repo_id = repo_id
-        self.revision = revision
-        self.token = token
-        self._ephemeral_shards: set[Path] = set()
-        self._shard_last_layer: dict[str, int] = {}
-        for key, shard in self._weight_map.items():
-            parts = key.split(".")
-            last_layer = -1
-            if len(parts) > 2 and parts[0] == "model" and parts[1] == "layers":
-                try:
-                    last_layer = int(parts[2])
-                except ValueError:
-                    last_layer = -1
-            self._shard_last_layer[shard] = max(
-                last_layer,
-                self._shard_last_layer.get(shard, -1),
-            )
-
-    def _path(self, key: str) -> Path:
-        try:
-            shard = self._weight_map[key]
-        except KeyError as exc:
-            raise DonorError(f"unknown checkpoint tensor: {key}") from exc
-        path = self.model_dir / shard
-        if path.is_file():
-            return path
-        try:
-            from huggingface_hub import hf_hub_download
-        except ImportError as exc:
-            raise GLM53StreamingCaptureError(
-                "huggingface_hub is required for streaming capture"
-            ) from exc
-        resolved = Path(
-            hf_hub_download(
-                repo_id=self.repo_id,
-                filename=shard,
-                revision=self.revision,
-                local_dir=self.model_dir,
-                token=self.token,
-            )
-        )
-        if resolved.resolve() != path.resolve() and not path.is_file():
-            raise GLM53StreamingCaptureError(
-                f"Hub download did not materialize expected shard: {shard}"
-            )
-        self._ephemeral_shards.add(path)
-        return path
-
-    def clear_ephemeral_shards(self, *, completed_layer: int | None = None) -> None:
-        """Evict downloaded shards once no later layer can reference them."""
-        for path in tuple(self._ephemeral_shards):
-            last_layer = self._shard_last_layer.get(path.name, -1)
-            if completed_layer is not None and last_layer > completed_layer:
-                continue
-            try:
-                path.unlink(missing_ok=True)
-            finally:
-                self._ephemeral_shards.discard(path)
 
 
 def _require_runtime():
