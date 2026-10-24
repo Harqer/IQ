@@ -173,6 +173,40 @@ use the separate official metadata checkpoint path and download only
 the required shards. Note that a shard can contain tensors that are
 not selected; shard-level streaming still downloads the whole file.
 
+## Estimate download and disk cost before any shard transfer
+
+The official donor has 282 BF16 shards. The exact 64-expert
+metadata plan from the original cloud calibration requires **103**
+official shards containing **4,738** tensor keys, but there is no
+assurance those 103 shard files are small. Official shard files can be
+about 5.3 GB each. Fetch file sizes using `HfApi.model_info`
+without downloading the weights:
+
+```bash
+python -m scripts.estimate_glm53_shard_bytes \
+  --plan "$HOME/glm53-official-shards-for-iq64.json" \
+  --disk "$HOME"
+```
+
+This gives the exact *once-per-shard* estimated transfer size from
+current model metadata and reports available local disk. Network
+retries, cache copies and additional IQ/calibration artifacts can
+increase actual disk and traffic. It does not allocate a GPU or
+download shard weights. CPU-only unit tests:
+
+```bash
+python -m unittest discover -s tests \
+  -p 'test_glm53_shard_size_estimate.py' -v
+```
+
+A 64-expert selected sparse layer can load multiple gigabytes of
+source expert matrices before nonlinear WARM refactor computations,
+with potentially much larger peak RAM due to float32 intermediates.
+A 16 GB RAM workstation should **not** be the default full-compile
+environment; calculate requirements before selecting compute.
+Streaming full shards reduces *peak* disk but does not remove
+per-shard network transfer. Do not start paid compute implicitly.
+
 ## New tools
 
 - `scripts/plan_glm53_weight_extension.py`: fetches GLM and IQ
