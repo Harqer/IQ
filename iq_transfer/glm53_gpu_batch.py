@@ -68,6 +68,21 @@ def device_bases(ops: ProjectionOps, *, input_inverse: np.ndarray,
     return a, b
 
 
+def batched_projection_math(
+    stacked: torch.Tensor,
+    *,
+    kind: str,
+    input_basis: torch.Tensor,
+    output_basis_t: torch.Tensor,
+) -> torch.Tensor:
+    """Pure shape-preserving matmul, testable on CPU without GPU hardware."""
+    if stacked.ndim != 3 or kind not in ("gate", "up", "down"):
+        raise ProjectionComputeError("invalid batched MoE operator")
+    if kind == "down":
+        return torch.matmul(output_basis_t, stacked)
+    return torch.matmul(stacked, input_basis)
+
+
 def _validated_weight(source: Any, key: str, shape: tuple[int, int]) -> torch.Tensor:
     tensor = source.get(key)
     if not isinstance(tensor, torch.Tensor) or tuple(tensor.shape) != shape:
@@ -119,10 +134,10 @@ def project_routed_batch(
         # Direct BF16/FP32 tensor -> CUDA FP32; no intermediate NumPy FP64
         # matrices, unnecessary pseudoinverses, or repeated basis uploads.
         stacked = torch.stack([value.to(ops.device, dtype=torch.float32) for value in raw])
-        if kind == "down":
-            transformed = torch.matmul(output_basis_t, stacked)
-        else:
-            transformed = torch.matmul(stacked, input_basis)
+        transformed = batched_projection_math(
+            stacked, kind=kind, input_basis=input_basis,
+            output_basis_t=output_basis_t,
+        )
         if not bool(torch.isfinite(transformed).all()):
             raise ProjectionComputeError(f"nonfinite CUDA output in {kind}")
         # One batched GPU energy reduction and one BF16 device->host transfer
