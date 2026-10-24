@@ -1,6 +1,7 @@
 """Incremental MoE shard output must match the existing single-stage compiler."""
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -158,6 +159,38 @@ class TestIncrementalMoE(unittest.TestCase):
 
     def test_dense_matches_existing_neutral_routed_outputs(self):
         self._compare_with_old(sparse=False)
+
+    def test_projection_energy_report_matches_identity_reference(self):
+        for sparse in (True, False):
+            with self.subTest(sparse=sparse):
+                source, stage, config, inspector = _donor(sparse=sparse)
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    index = {}
+                    save_incremental_moe_stage(
+                        source=source, inspector=inspector, stage=stage,
+                        config=config, output_dir=root, weight_map=index,
+                    )
+                    path = root / "model-moe-000-projection.json"
+                    self.assertTrue(path.exists())
+                    report = json.loads(path.read_text(encoding="utf-8"))
+                    self.assertEqual(report["projection_type"], "shared_WARM_subspaces")
+                    self.assertEqual(report["stage"], 0)
+                    for metric in report["shared"].values():
+                        self.assertAlmostEqual(metric["norm_energy_ratio"], 1.0,
+                                               places=9)
+                    if sparse:
+                        self.assertEqual(
+                            [report["routed"][str(i)]["donor_expert_id"] for i in range(2)],
+                            [7, 25],
+                        )
+                        for slot in ("0", "1"):
+                            for metric in report["routed"][slot]["operators"].values():
+                                self.assertAlmostEqual(metric["norm_energy_ratio"], 1.0,
+                                                       places=9)
+                    else:
+                        self.assertEqual(report["routed"], {})
+
 
     def test_dense_donor_never_materializes_full_matrices(self):
         source, stage, config, inspector = _donor(sparse=False)
