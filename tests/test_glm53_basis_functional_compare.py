@@ -298,6 +298,8 @@ class FunctionalComparisonTests(unittest.TestCase):
         capture, routed = self._routing_fixture()
         report = self._run(captured_activations=capture, router_topk=routed)
         self.assertTrue(report["routing_conditioned"])
+        self.assertEqual(report["input_origin"],
+                         "verified_pinned_glm53_layer3_pre_moe_capture")
         self.assertEqual(
             report["routing_coverage"],
             {"77": 2, "87": 0, "246": 2, "131": 1},
