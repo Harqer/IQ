@@ -16,7 +16,10 @@ from iq_transfer.glm53_compile import (
     _validate_expanded_calibration,
 )
 from iq_transfer.complete_transplant import canonical_glm53_config
-from iq_transfer.glm53_incremental_moe import save_incremental_moe_stage
+from iq_transfer.glm53_incremental_moe import (
+    _inverse,
+    save_incremental_moe_stage,
+)
 from iq_transfer.transport import CoordinateMap
 
 
@@ -34,6 +37,13 @@ class _Tensors:
     def get(self, key: str):
         self.read_keys.append(key)
         return self.tensors[key]
+
+    def shape(self, key: str):
+        return tuple(self.tensors[key].shape)
+
+    def get_rows(self, key: str, row_indices):
+        self.read_keys.append(key + ":rows")
+        return self.tensors[key][list(row_indices)]
 
 
 def _donor(*, sparse: bool, bf16: bool = False):
@@ -147,6 +157,49 @@ class TestIncrementalMoE(unittest.TestCase):
 
     def test_dense_matches_existing_neutral_routed_outputs(self):
         self._compare_with_old(sparse=False)
+
+    def test_dense_donor_never_materializes_full_matrices(self):
+        source, stage, config, inspector = _donor(sparse=False)
+
+        def forbidden_get(key):
+            raise AssertionError(f"dense full-tensor read forbidden: {key}")
+
+        source.get = forbidden_get
+        with tempfile.TemporaryDirectory() as tmp:
+            index = {}
+            save_incremental_moe_stage(
+                source=source, inspector=inspector,
+                stage=stage, config=config,
+                output_dir=Path(tmp), weight_map=index,
+            )
+            self.assertEqual(len(index), 6 + 3 + 2 * 3)
+        self.assertEqual(
+            sorted(set(source.read_keys)),
+            [
+                "model.layers.0.mlp.down_proj.weight:rows",
+                "model.layers.0.mlp.gate_proj.weight:rows",
+                "model.layers.0.mlp.up_proj.weight:rows",
+            ],
+        )
+
+    def test_orthogonal_subcloning_inverse_skips_svd(self):
+        from unittest.mock import patch
+
+        source_map = CoordinateMap(
+            np.array([
+                [0.0, 1.0],
+                [0.0, 0.0],
+                [1.0, 0.0],
+                [0.0, 0.0],
+            ]),
+            1e-6,
+        )
+        with patch("iq_transfer.glm53_incremental_moe.np.linalg.pinv",
+                   side_effect=AssertionError("unnecessary SVD")):
+            self.assertTrue(np.array_equal(
+                _inverse(source_map), source_map.matrix
+            ))
+
 
     def test_nonidentity_maps_match_original_transform(self):
         for sparse in (True, False):
