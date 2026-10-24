@@ -229,6 +229,7 @@ def compare_basis_functions(
             source_layer=layer,
             samples_used=next(iter(scenarios.values())).shape[0],
         )
+        input_origin = "verified_pinned_glm53_layer3_pre_moe_capture"
 
     results = []
     for slot, donor_id in enumerate(ids):
