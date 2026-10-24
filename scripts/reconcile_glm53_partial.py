@@ -270,6 +270,16 @@ def main() -> int:
                       help="Create TEMPORARY symlinks to RO sources; never sync these to HF")
     args = parser.parse_args()
     try:
+        if args.link_overlay:
+            if args.existing_calibration is None:
+                raise RecoveryError("--link-overlay requires --existing-calibration")
+            args.partial_calibration.mkdir(parents=True, exist_ok=True)
+            manifest = args.partial_calibration / "glm53_calibration.json"
+            if not manifest.exists():
+                shutil.copyfile(
+                    args.existing_calibration / "glm53_calibration.json",
+                    manifest,
+                )
         plan = inspect(args.partial_calibration, args.original_calibration,
                        args.partial_checkpoint,
                        expected_old_fingerprint=args.expected_old_fingerprint,
