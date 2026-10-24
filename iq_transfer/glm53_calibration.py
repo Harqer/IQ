@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -658,7 +658,7 @@ def bootstrap_glm53_calibration(
     warm_device: str = "cpu",
     reuse_weight_only: GLM53CalibrationSolution | None = None,
     skip_stages: frozenset[int] = frozenset(),
-    stage_sink: object | None = None,
+    stage_sink: Callable[[GLM53StageCalibration], None] | None = None,
 ) -> GLM53CalibrationSolution | None:
     """Build the GLM->IQ bootstrap from pretrained weight geometry.
 
