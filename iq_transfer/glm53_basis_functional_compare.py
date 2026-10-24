@@ -6,7 +6,6 @@ No calibration, projection, or checkpoint file is modified.
 """
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
 
