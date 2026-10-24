@@ -237,6 +237,42 @@ The latter is a separate next step if the probe works.
 
 No GPU job or weight download is started by these commands.
 
+## Single command to install and audit GLM transfer dependencies
+
+The transfer requirements now declare `requests>=2.32,<3` for the
+remote HTTP range probe. Rather than relying on shell activation or
+reinstalling the existing CPU PyTorch, run:
+
+```bash
+cd ~/IQ-transfer-review
+bash scripts/setup_glm53_workflow.sh
+```
+
+The setup script uses
+`~/IQ-integrate/.venv-iq-client/bin/python` **directly**, verifies
+that it is an isolated venv, installs the declared dependencies,
+runs `pip check`, imports every GLM transfer CLI/utility module, and
+runs the relevant CPU unit tests. It neither upgrades/reinstalls
+PyTorch nor downloads donor weights. `IQ_VENV=/path/to/venv` or
+`IQ_PYTHON=/path/to/venv/bin/python` overrides the interpreter.
+
+A clean preflight prints
+`"status": "ready_for_glm53_metadata_workflow"`.
+If a dependency is missing, the preflight prints its name and cause,
+rather than deferring discovery until a long-running compile.
+Additional, optional transformers runtime used for full GLM activation
+capture is **not installed automatically**, because the current
+metadata/weight-transfer commands do not require it.
+
+Run the safe header-only range probe **without activating the venv**:
+
+```bash
+"$HOME/IQ-integrate/.venv-iq-client/bin/python" \
+  -m scripts.probe_glm53_remote_ranges \
+  --plan "$HOME/glm53-official-shards-for-iq64.json" \
+  --max-shards 1
+```
+
 ## New tools
 
 - `scripts/plan_glm53_weight_extension.py`: fetches GLM and IQ
