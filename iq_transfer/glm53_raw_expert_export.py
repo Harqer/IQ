@@ -106,17 +106,23 @@ def _sha_tensor(t: torch.Tensor) -> str:
     return hashlib.sha256(t.contiguous().view(torch.uint8).numpy().tobytes()).hexdigest()
 
 
-def _read(source: Any, name: str, shape: tuple[int, ...]) -> torch.Tensor:
+def _read(
+    source: Any, name: str, shape: tuple[int, ...], *,
+    allow_fp32: bool = False,
+) -> torch.Tensor:
     if tuple(source.shape(name)) != shape:
         raise RawExpertExportError(f"unexpected GLM tensor shape for {name}")
     tensor = source.get(name)
     if (
         not isinstance(tensor, torch.Tensor)
         or tensor.device.type != "cpu"
-        or tensor.dtype != torch.bfloat16
+        or tensor.dtype not in (
+            (torch.bfloat16, torch.float32) if allow_fp32
+            else (torch.bfloat16,)
+        )
         or tuple(tensor.shape) != shape
     ):
-        raise RawExpertExportError(f"donor tensor is not expected CPU BF16: {name}")
+        raise RawExpertExportError(f"donor tensor has invalid shape, device or dtype: {name}")
     return tensor.detach().contiguous()
 
 
@@ -127,6 +133,7 @@ def _save(
     mapping: dict[str, str],
     file_hashes: dict[str, str],
     tensor_hashes: dict[str, str],
+    dtypes: dict[str, str],
 ) -> None:
     path = root / filename
     if path.exists() or any(key in mapping for key in tensors):
@@ -135,13 +142,18 @@ def _save(
     save_file(tensors, str(path))
     roundtrip = load_file(str(path), device="cpu")
     if set(roundtrip) != set(tensors) or any(
-        t.dtype != torch.bfloat16 or _sha_tensor(t) != sha[k]
+        t.dtype != tensors[k].dtype or _sha_tensor(t) != sha[k]
         for k, t in roundtrip.items()
     ):
         raise RawExpertExportError(f"BF16 roundtrip integrity failure: {filename}")
-    file_hashes[filename] = hashlib.sha256(path.read_bytes()).hexdigest()
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(4 * 1024 * 1024), b""):
+            digest.update(chunk)
+    file_hashes[filename] = digest.hexdigest()
     for key, value in sha.items():
         tensor_hashes[key] = value
+        dtypes[key] = str(tensors[key].dtype).removeprefix("torch.")
         mapping[key] = filename
 
 
@@ -158,6 +170,7 @@ def export_stage(
     mapping: dict[str, str],
     files: dict[str, str],
     tensors: dict[str, str],
+    dtypes: dict[str, str],
 ) -> int:
     """Stream one donor expert at a time; include router and shared expert."""
     if max_experts is not None and (not _int(max_experts) or max_experts < 1):
@@ -168,11 +181,12 @@ def export_stage(
             source, f"{prefix}.gate.weight", (256, hidden)
         ),
         f"{prefix}.gate.e_score_correction_bias": _read(
-            source, f"{prefix}.gate.e_score_correction_bias", (256,)
+            source, f"{prefix}.gate.e_score_correction_bias", (256,),
+            allow_fp32=True,
         ),
     }
     _save(root, f"stage-{stage:02d}-router.safetensors", router,
-          mapping, files, tensors)
+          mapping, files, tensors, dtypes)
     del router
 
     def write_expert(name: str, filename: str) -> None:
@@ -182,7 +196,7 @@ def export_stage(
         )
         group = {key: _read(source, key, shape)
                  for key, shape in zip(expert_keys(name), shapes, strict=True)}
-        _save(root, filename, group, mapping, files, tensors)
+        _save(root, filename, group, mapping, files, tensors, dtypes)
         del group
 
     write_expert(f"{prefix}.shared_experts", f"stage-{stage:02d}-shared.safetensors")
@@ -226,6 +240,7 @@ def export_raw_selected_experts(
     mapping: dict[str, str] = {}
     files: dict[str, str] = {}
     tensors: dict[str, str] = {}
+    dtypes: dict[str, str] = {}
     entries = []
     active = tasks if max_stages is None else tasks[:max_stages]
     for stage, layer, ids in active:
@@ -233,7 +248,7 @@ def export_raw_selected_experts(
             source=source, root=root, stage=stage, layer=layer, ids=ids,
             hidden=hidden, intermediate=intermediate,
             max_experts=max_experts, mapping=mapping,
-            files=files, tensors=tensors,
+            files=files, tensors=tensors, dtypes=dtypes,
         )
         entries.append({
             "stage": stage, "source_layer": layer,
@@ -259,8 +274,9 @@ def export_raw_selected_experts(
         "weight_map": dict(sorted(mapping.items())),
         "file_sha256": dict(sorted(files.items())),
         "tensor_sha256": dict(sorted(tensors.items())),
+        "tensor_dtype": dict(sorted(dtypes.items())),
         "tensor_count": len(mapping),
-        "note": "Exact original BF16 tensors; no attention and no IQ transforms.",
+        "note": "Exact original tensor bytes (BF16 experts; bias dtype preserved); no attention or IQ transforms.",
     }
     (root / "raw_expert_manifest.json").write_text(
         json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
