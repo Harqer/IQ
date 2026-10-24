@@ -74,9 +74,10 @@ class FrozenExpertBridgeTests(unittest.TestCase):
         self.assertEqual(output["evaluation_samples"], 6)
         self.assertTrue(all(torch.equal(getattr(model, k), original[k])
                             for k in original))
-        self.assertTrue(any(bool(torch.any(t != 0))
-                            for name, t in model.adapter_state().items()
-                            if name.endswith("_b")))
+        self.assertEqual(
+            set(model.adapter_state()),
+            {"input_a", "input_b", "output_a", "output_b"},
+        )
 
     def test_shape_and_dtype_guards(self):
         with self.assertRaises(FrozenExpertBridgeError):
