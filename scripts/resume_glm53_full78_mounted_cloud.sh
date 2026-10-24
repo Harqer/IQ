@@ -44,6 +44,7 @@ if [[ ! -f "$DEST_CALIB/glm53_calibration.json" || ! -d "$DEST_IQ" || -e "$WORK_
 fi
 # Read-only file-by-file verification; the calibration manifest alone is insufficient.
 python scripts/glm53_full78_gate.py calibration --root "$DEST_CALIB"
+python scripts/glm53_calibration_sha256.py verify --root "$DEST_CALIB"
 mkdir -p "$WORK_ROOT/glm53" "$WORK_ROOT/mamba3"
 hf download zai-org/GLM-5.3-BF16 config.json model.safetensors.index.json \
   --revision "$DONOR_REV" --local-dir "$WORK_ROOT/glm53"
