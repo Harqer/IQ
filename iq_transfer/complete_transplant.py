@@ -763,19 +763,21 @@ def expected_complete_state_keys(
                 )
             elif layer_type is HybridLayerType.MOE:
                 assert config.stable_moe is not None
-                module = StableLatentMoELayer(
-                    config.stable_moe,
-                    norm_eps=config.model.rms_norm_eps,
-                    residual_dropout=config.model.residual_dropout,
-                )
+                with torch.device("meta"):
+                    module = StableLatentMoELayer(
+                        config.stable_moe,
+                        norm_eps=config.model.rms_norm_eps,
+                        residual_dropout=config.model.residual_dropout,
+                    )
                 keys.update(f"layers.{physical}.{name}" for name in module.state_dict())
             elif layer_type in {HybridLayerType.CSA, HybridLayerType.HCA}:
                 assert config.compressed_context is not None
-                module = CompressedContextResidualLayer(
-                    config.model,
-                    config.compressed_context,
-                    mode=layer_type,
-                )
+                with torch.device("meta"):
+                    module = CompressedContextResidualLayer(
+                        config.model,
+                        config.compressed_context,
+                        mode=layer_type,
+                    )
                 keys.update(f"layers.{physical}.{name}" for name in module.state_dict())
             else:
                 raise CompleteTransplantError(
@@ -838,15 +840,29 @@ def _translate_mamba_overlay(
     }
     identity = {int(x) for x in manifest["identity_mamba_ordinals"]}
     positions = config.schedule.positions(HybridLayerType.MAMBA3)
-    if len(positions) != 32:
-        raise CompleteTransplantError("complete config requires 32 Mamba positions")
+    if len(positions) not in (32, 79):
+        raise CompleteTransplantError(
+            "Mamba overlay requires historical 32 or full-78 architecture's 79 positions"
+        )
+    # Reuse the 32 canonical Mamba slots, spread across the 79-layer full
+    # backbone; all additional Mamba positions are function-neutral identity
+    # initialized. Do not pretend to have 79 independent pretrained layers.
+    source_to_target = {
+        old: (old if len(positions) == 32
+              else round(old * (len(positions) - 1) / 31))
+        for old in range(32)
+    }
+    if len(set(source_to_target.values())) != 32:
+        raise CompleteTransplantError("Mamba placement collision")
+    target_to_source = {v: k for k, v in source_to_target.items()}
 
     provenance: dict[int, str] = {}
     for ordinal, physical in enumerate(positions):
-        if ordinal in placements:
-            item = placements[ordinal]
+        original_ordinal = target_to_source.get(ordinal)
+        if original_ordinal is not None and original_ordinal in placements:
+            item = placements[original_ordinal]
             source = load_file(str(overlay_dir / item["shard"]), device="cpu")
-            canonical_prefix = f"mamba_layers.{ordinal}."
+            canonical_prefix = f"mamba_layers.{original_ordinal}."
             target: dict[str, torch.Tensor] = {}
             for key, value in source.items():
                 if not key.startswith(canonical_prefix):
@@ -865,7 +881,7 @@ def _translate_mamba_overlay(
             provenance[physical] = (
                 f"{MAMBA3_MIMO_15B_REPO}:layer:{item['source_layer']}"
             )
-        elif ordinal in identity:
+        elif original_ordinal is None or original_ordinal in identity:
             filename = f"model-mamba-{ordinal:03d}.safetensors"
             _save_shard(
                 output_dir,
@@ -879,7 +895,7 @@ def _translate_mamba_overlay(
             provenance[physical] = "recipient_native_identity"
         else:
             raise CompleteTransplantError(
-                f"Mamba ordinal {ordinal} is neither transplanted nor identity"
+                f"Mamba ordinal {ordinal} has no pretrained or identity placement"
             )
     return provenance
 
