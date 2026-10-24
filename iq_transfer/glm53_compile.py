@@ -391,6 +391,7 @@ def compile_glm53_iq_checkpoint(
         and config.stable_moe.num_experts > 32
         and output.exists()
         and (not output.is_dir() or any(output.iterdir()))
+        and not resume_existing
     ):
         raise GLM53CompileError(
             "expanded GLM compile requires a NEW empty directory; refusing "
