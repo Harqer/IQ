@@ -138,6 +138,25 @@ class RawDonorExpertExportTests(unittest.TestCase):
             self.assertFalse(any("self_attn" in key for _, key in source.calls))
             self.assertFalse(any(".experts.8." in key for _, key in source.calls))
 
+    def test_router_bias_fp32_is_preserved_without_cast(self):
+        tensors = fixture()
+        bias = "model.layers.3.mlp.gate.e_score_correction_bias"
+        tensors[bias] = tensors[bias].float()
+        source = FakeSource(tensors)
+        plan, _ = example_plan()
+        with tempfile.TemporaryDirectory() as tmp:
+            report = export_raw_selected_experts(
+                source=source, plan=plan,
+                tasks=[(1, 3, (7,))], root=Path(tmp) / "fp32",
+                hidden=4, intermediate=3,
+                index_sha256="abc", max_experts=1,
+            )
+            self.assertEqual(report["tensor_dtype"][bias], "float32")
+            filename = report["weight_map"][bias]
+            got = load_file(str(Path(tmp) / "fp32" / filename))[bias]
+            self.assertEqual(got.dtype, torch.float32)
+            self.assertTrue(torch.equal(got, tensors[bias]))
+
     def test_reject_output_overwrite_and_nonbf16_payload(self):
         plan, _ = example_plan()
         source = FakeSource(fixture())
@@ -155,7 +174,7 @@ class RawDonorExpertExportTests(unittest.TestCase):
             root2 = Path(tmp) / "bad"
             key = "model.layers.3.mlp.gate.weight"
             source.tensors[key] = source.tensors[key].float()
-            with self.assertRaisesRegex(RawExpertExportError, "CPU BF16"):
+            with self.assertRaisesRegex(RawExpertExportError, "invalid shape, device or dtype"):
                 export_raw_selected_experts(
                     source=source, plan=plan,
                     tasks=[(1, 3, (7,))], root=root2,
