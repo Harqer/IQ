@@ -49,6 +49,7 @@ def _parser() -> argparse.ArgumentParser:
         help="optional captured GLM activations; omit for data-free weight-only bootstrap",
     )
     glm_bootstrap.add_argument("--output", required=True)
+    glm_bootstrap.add_argument("--routed-experts", type=int, choices=(32, 64, 128, 256), default=32)
     glm_bootstrap.add_argument("--checkpoint-revision", required=True)
     glm_bootstrap.add_argument("--repo-id", default="zai-org/GLM-5.3-BF16")
     glm_bootstrap.add_argument("--donor-license", required=True)
@@ -70,8 +71,14 @@ def _parser() -> argparse.ArgumentParser:
     )
     glm_compile.add_argument("--checkpoint", required=True)
     glm_compile.add_argument("--calibration", required=True)
-    glm_compile.add_argument("--mamba3-checkpoint", required=True)
+    glm_compile.add_argument("--mamba3-checkpoint")
+    glm_compile.add_argument(
+        "--reuse-foundation-checkpoint",
+        help="Existing immutable IQ checkpoint with Mamba-3/lexical shards; "
+             "avoids recompiling the original Mamba donor",
+    )
     glm_compile.add_argument("--output", required=True)
+    glm_compile.add_argument("--routed-experts", type=int, choices=(32, 64, 128, 256), default=32)
     glm_compile.add_argument("--checkpoint-revision", required=True)
     glm_compile.add_argument("--repo-id", default="zai-org/GLM-5.3-BF16")
     glm_compile.add_argument("--mamba3-revision", required=True)
@@ -101,6 +108,7 @@ def _parser() -> argparse.ArgumentParser:
     glm_plan_compile.add_argument("--config", required=True)
     glm_plan_compile.add_argument("--index", required=True)
     glm_plan_compile.add_argument("--calibration", required=True)
+    glm_plan_compile.add_argument("--routed-experts", type=int, choices=(32, 64, 128, 256), default=32)
 
     glm_stream_capture = sub.add_parser(
         "glm53-stream-capture",
@@ -275,7 +283,7 @@ def main(argv: list[str] | None = None) -> int:
             source,
             source_weights=source_weights,
             source_hidden_size=inspector.config.hidden_size,
-            target_config=canonical_glm53_config(),
+            target_config=canonical_glm53_config(routed_experts=args.routed_experts),
             source_layers=inspector.config.num_hidden_layers,
             source_first_dense_layers=inspector.layout.first_k_dense_replace,
             source_num_experts=inspector.layout.n_routed_experts,
@@ -309,10 +317,16 @@ def main(argv: list[str] | None = None) -> int:
             config_path=args.config,
             index_path=args.index,
             calibration_dir=args.calibration,
+            target_config=canonical_glm53_config(routed_experts=args.routed_experts),
         ):
             print(shard)
         return 0
     if args.command == "glm53-compile":
+        if bool(args.mamba3_checkpoint) == bool(args.reuse_foundation_checkpoint):
+            parser.error(
+                "glm53-compile requires exactly one of --mamba3-checkpoint "
+                "or --reuse-foundation-checkpoint"
+            )
         result = compile_glm53_iq_checkpoint(
             glm53_checkpoint=args.checkpoint,
             calibration_dir=args.calibration,
@@ -324,6 +338,8 @@ def main(argv: list[str] | None = None) -> int:
             verify_hashes=not args.skip_checkpoint_hashes,
             streaming_source=args.streaming_source,
             glm53_repo_id=args.repo_id,
+            target_config=canonical_glm53_config(routed_experts=args.routed_experts),
+            reuse_foundation_checkpoint=args.reuse_foundation_checkpoint,
         )
         print(
             json.dumps(

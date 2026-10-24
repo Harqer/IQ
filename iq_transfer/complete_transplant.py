@@ -174,7 +174,7 @@ def canonical_complete_config() -> IQHybridConfig:
     )
 
 
-def canonical_glm53_config() -> IQHybridConfig:
+def canonical_glm53_config(*, routed_experts: int = 32) -> IQHybridConfig:
     """IQ geometry for a Mamba-3-founded model with GLM-5.3 capability transfer.
 
     Official pretrained Mamba-3 MIMO owns the lexical boundary and recurrent
@@ -182,6 +182,11 @@ def canonical_glm53_config() -> IQHybridConfig:
     capability weights. Context geometry keeps GLM query-latent and rotary
     semantics only where that enables a valid algebraic transfer.
     """
+    if type(routed_experts) is not int or routed_experts not in (32, 64, 128, 256):
+        raise CompleteTransplantError(
+            "GLM-5.3 routed_experts must be 32, 64, 128, or 256. "
+            "New expert counts require a freshly calibrated versioned checkpoint."
+        )
     base = canonical_complete_config()
     assert base.stable_moe is not None
     assert base.compressed_context is not None
@@ -197,6 +202,7 @@ def canonical_glm53_config() -> IQHybridConfig:
     )
     control_moe = replace(
         base.moe,
+        num_experts=routed_experts,
         expert_intermediate_size=2048,
         top_k=8,
         shared_expert_intermediate_size=2048,
@@ -205,6 +211,7 @@ def canonical_glm53_config() -> IQHybridConfig:
     stable = replace(
         base.stable_moe,
         latent_size=2048,
+        num_experts=routed_experts,
         expert_intermediate_size=2048,
         top_k=8,
         situ_beta=1_000_000.0,

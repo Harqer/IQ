@@ -25,6 +25,7 @@ from .glm53_calibration import GLM53CalibrationSolution, GLM53StageCalibration
 from .glm53_direct import GLM53MLALayout, transform_glm53_mla
 from .glm53_dsa import transform_glm53_dsa_indexer
 from .glm53_job import validate_glm53_donor, validate_glm53_streaming_donor
+from .foundation_reuse import reuse_frozen_mamba_foundation
 from .glm53_moe import (
     ExpertWeights,
     select_experts_by_usage,
@@ -331,7 +332,7 @@ def compile_glm53_iq_checkpoint(
     *,
     glm53_checkpoint: str | Path,
     calibration_dir: str | Path,
-    mamba3_checkpoint: str | Path,
+    mamba3_checkpoint: str | Path | None,
     output_dir: str | Path,
     glm53_revision: str,
     mamba3_revision: str,
@@ -339,11 +340,38 @@ def compile_glm53_iq_checkpoint(
     verify_hashes: bool = True,
     streaming_source: bool = False,
     glm53_repo_id: str = "zai-org/GLM-5.3-BF16",
+    target_config: IQHybridConfig | None = None,
+    reuse_foundation_checkpoint: str | Path | None = None,
 ) -> GLM53CompileResult:
+    if (mamba3_checkpoint is None) == (reuse_foundation_checkpoint is None):
+        raise GLM53CompileError(
+            "choose exactly one Mamba source: raw donor checkpoint or existing IQ foundation"
+        )
     output = Path(output_dir)
+    config = target_config if target_config is not None else canonical_glm53_config()
+    if (
+        config.stable_moe is not None
+        and config.stable_moe.num_experts > 32
+        and output.exists()
+        and (not output.is_dir() or any(output.iterdir()))
+    ):
+        raise GLM53CompileError(
+            "expanded GLM compile requires a NEW empty directory; refusing "
+            "to overwrite the original checkpoint or an earlier candidate"
+        )
     output.mkdir(parents=True, exist_ok=True)
-    config = canonical_glm53_config()
     calibration = GLM53CalibrationSolution.load(calibration_dir)
+    if config.stable_moe is None or config.stable_moe.num_experts not in (32, 64, 128, 256):
+        raise GLM53CompileError("unsupported GLM routed expert capacity")
+    expected_config = canonical_glm53_config(
+        routed_experts=config.stable_moe.num_experts
+    )
+    if config.fingerprint != expected_config.fingerprint:
+        raise GLM53CompileError(
+            "noncanonical GLM recipient: only the routed expert count may change; "
+            "Mamba weights, layer schedule, lexical boundary and context geometry "
+            "must remain frozen"
+        )
     if calibration.target_config_fingerprint != config.fingerprint:
         raise GLM53CompileError(
             "GLM calibration target fingerprint does not match canonical GLM recipient"
@@ -399,6 +427,8 @@ def compile_glm53_iq_checkpoint(
         },
         "recipient_config_fingerprint": config.fingerprint,
         "calibration_mode": calibration.calibration_mode,
+        "routed_experts_per_sparse_stage": config.stable_moe.num_experts,
+        "selected_source_expert_ids": {},
         "source_layer_map": {
             str(stage.stage): stage.source_layer for stage in calibration.stages
         },
@@ -407,26 +437,55 @@ def compile_glm53_iq_checkpoint(
         "mamba": "official Mamba-3 MIMO foundation; no GLM QKV-to-recurrence fabrication",
     }
 
-    # Mamba-3 is the pretrained foundation and owns the lexical boundary.
-    # GLM-5.3 never replaces the tokenizer, embedding, final norm, or LM head.
-    foundation_globals = load_official_mamba3_foundation_globals(
-        checkpoint=mamba3_checkpoint,
-        checkpoint_revision=mamba3_revision,
-        verify_checkpoint_hash=verify_hashes,
-        target_hidden_size=config.model.hidden_size,
-    )
-    if foundation_globals["embed_tokens.weight"].shape[0] != config.model.vocab_size:
-        raise GLM53CompileError(
-            "Mamba foundation vocabulary does not match canonical IQ config"
+    # Keep the original pretrained Mamba/lexical foundation byte-identical.
+    # Using a completed IQ checkpoint avoids reloading/retransplanting 1.5B
+    # raw Mamba donor weights for every GLM expert capacity experiment.
+    reused_foundation: dict[str, object] | None = None
+    if reuse_foundation_checkpoint is not None:
+        reused_foundation = reuse_frozen_mamba_foundation(
+            original=Path(reuse_foundation_checkpoint),
+            output=output,
+            expected_source_fingerprint=canonical_glm53_config().fingerprint,
+            target_config=config,
+            mamba_revision=mamba3_revision,
+            glm_revision=glm53_revision,
+            weight_map=weight_map,
         )
-    _save_shard(
-        output,
-        "model-global.safetensors",
-        {key: value.to(torch.bfloat16) for key, value in foundation_globals.items()},
-        weight_map,
-    )
+        provenance["frozen_mamba_foundation_reuse"] = reused_foundation
+    else:
+        assert mamba3_checkpoint is not None
+        foundation_globals = load_official_mamba3_foundation_globals(
+            checkpoint=mamba3_checkpoint,
+            checkpoint_revision=mamba3_revision,
+            verify_checkpoint_hash=verify_hashes,
+            target_hidden_size=config.model.hidden_size,
+        )
+        if foundation_globals["embed_tokens.weight"].shape[0] != config.model.vocab_size:
+            raise GLM53CompileError(
+                "Mamba foundation vocabulary does not match canonical IQ config"
+            )
+        _save_shard(
+            output,
+            "model-global.safetensors",
+            {key: value.to(torch.bfloat16) for key, value in foundation_globals.items()},
+            weight_map,
+        )
 
     for stage in calibration.stages:
+        if stage.source_layer < inspector.layout.first_k_dense_replace:
+            provenance["selected_source_expert_ids"][str(stage.stage)] = None
+        else:
+            if stage.expert_usage is None:
+                raise GLM53CompileError(
+                    f"source layer {stage.source_layer} missing measured or prior routing usage"
+                )
+            chosen_ids = select_experts_by_usage(
+                stage.expert_usage,
+                target_experts=config.stable_moe.num_experts,
+            )
+            if len(chosen_ids) != config.stable_moe.num_experts:
+                raise GLM53CompileError("selected routed expert count mismatch")
+            provenance["selected_source_expert_ids"][str(stage.stage)] = list(chosen_ids)
         _save_shard(
             output,
             f"model-context-{stage.stage:03d}.safetensors",
@@ -453,20 +512,22 @@ def compile_glm53_iq_checkpoint(
         if callable(clear):
             clear(completed_layer=stage.source_layer)
 
-    with tempfile.TemporaryDirectory(prefix="iq-glm53-mamba-") as temporary:
-        overlay = Path(temporary)
-        compile_official_mamba3_mimo_15b_transplant(
-            checkpoint=mamba3_checkpoint,
-            output_dir=overlay,
-            checkpoint_revision=mamba3_revision,
-            verify_checkpoint_hash=verify_hashes,
-        )
-        _translate_mamba_overlay(
-            overlay_dir=overlay,
-            config=config,
-            output_dir=output,
-            weight_map=weight_map,
-        )
+    if reuse_foundation_checkpoint is None:
+        assert mamba3_checkpoint is not None
+        with tempfile.TemporaryDirectory(prefix="iq-glm53-mamba-") as temporary:
+            overlay = Path(temporary)
+            compile_official_mamba3_mimo_15b_transplant(
+                checkpoint=mamba3_checkpoint,
+                output_dir=overlay,
+                checkpoint_revision=mamba3_revision,
+                verify_checkpoint_hash=verify_hashes,
+            )
+            _translate_mamba_overlay(
+                overlay_dir=overlay,
+                config=config,
+                output_dir=output,
+                weight_map=weight_map,
+            )
 
     _save_shard(
         output,
@@ -486,7 +547,11 @@ def compile_glm53_iq_checkpoint(
         )
 
     config.write_json(str(output / "iq_config.json"))
-    _copy_tokenizer_assets(Path(mamba3_checkpoint), output)
+    _copy_tokenizer_assets(
+        Path(reuse_foundation_checkpoint)
+        if reuse_foundation_checkpoint is not None else Path(mamba3_checkpoint),
+        output,
+    )
     index = {
         "metadata": {
             "total_size": sum(
