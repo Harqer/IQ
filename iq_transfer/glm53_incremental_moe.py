@@ -510,8 +510,11 @@ def save_incremental_moe_stage(
                 nonlocal device_batch_limit
                 # Preserve already staged HTTP tensors across CUDA OOM retries.
                 if len(specs) > device_batch_limit:
-                    for start in range(0, len(specs), device_batch_limit):
-                        commit_batch(specs[start:start + device_batch_limit], planned_source)
+                    cursor = 0
+                    while cursor < len(specs):
+                        part = specs[cursor:cursor + device_batch_limit]
+                        commit_batch(part, planned_source)
+                        cursor += len(part)
                     return
                 try:
                     results = project_routed_batch(
@@ -537,8 +540,9 @@ def save_incremental_moe_stage(
                         f"GLM53_GPU_BATCH_OOM_REDUCED stage={stage.stage} "
                         f"experts_per_batch={device_batch_limit}", flush=True,
                     )
-                    commit_batch(specs[:device_batch_limit], planned_source)
-                    commit_batch(specs[device_batch_limit:], planned_source)
+                    left_count = device_batch_limit
+                    commit_batch(specs[:left_count], planned_source)
+                    commit_batch(specs[left_count:], planned_source)
                     return
                 # Individual atomic shards are the recovery boundary even
                 # when several experts share one GPU batched operation.
