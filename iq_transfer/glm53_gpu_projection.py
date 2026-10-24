@@ -25,7 +25,7 @@ class ProjectionOps:
             raise ProjectionComputeError("CUDA explicitly required but unavailable")
         self.cuda = mode != "cpu" and torch.cuda.is_available()
         self.device = torch.device("cuda" if self.cuda else "cpu")
-        if min_row_block < 1 or row_block < min_row_block:
+        if min_row_block < 1 or row_block < 1 or (self.cuda and row_block < min_row_block):
             raise ProjectionComputeError("invalid GPU tile sizes")
         self.row_block, self.min_row_block = row_block, min_row_block
         # Keep the original array alive with cached GPU data to avoid pointer
