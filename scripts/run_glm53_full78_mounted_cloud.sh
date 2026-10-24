@@ -2,6 +2,7 @@
 # Full GLM-5.3 -> expanded IQ: all 78 original layers, 75 x 256 routed expert slots.
 # Deploy ONLY to an HF Jobs cloud worker with source:ro and output:rw buckets.
 set -euo pipefail
+python scripts/full78_storage_preflight.py
 if [[ "${IQ_CLOUD_WORKER:-}" != 1 || ! -d /hf-bucket/legacy/visionboxx-macha/calibration || ! -d /out ]]; then
   echo "FULL78 REQUIREMENT: cloud worker with immutable calibration mount and writable private bucket" >&2
   exit 2
