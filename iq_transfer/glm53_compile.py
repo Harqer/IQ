@@ -329,6 +329,31 @@ def _copy_tokenizer_assets(source_dir: Path, output_dir: Path) -> None:
             shutil.copy2(source, output_dir / name)
 
 
+def _validate_expanded_calibration(
+    calibration: GLM53CalibrationSolution, config: IQHybridConfig
+) -> None:
+    """Allow prior *weight-only* calibration when only routed capacity grows.
+
+    canonical_glm53_config() supplies identical backbone, dimensions, and
+    map geometry for the permitted expert-count variants. Do not silently
+    reuse activation-refined or unrelated calibration configurations.
+    """
+    if calibration.target_config_fingerprint == config.fingerprint:
+        return
+    original = canonical_glm53_config()
+    if (
+        config.stable_moe is not None
+        and config.stable_moe.num_experts in (64, 128, 256)
+        and calibration.calibration_mode == "weight_only"
+        and calibration.target_config_fingerprint == original.fingerprint
+    ):
+        return
+    raise GLM53CompileError(
+        "GLM calibration fingerprint mismatch: expanded compile only supports "
+        "canonical weight-only calibration from the original 32-expert IQ layout"
+    )
+
+
 def compile_glm53_iq_checkpoint(
     *,
     glm53_checkpoint: str | Path,
@@ -373,10 +398,7 @@ def compile_glm53_iq_checkpoint(
             "Mamba weights, layer schedule, lexical boundary and context geometry "
             "must remain frozen"
         )
-    if calibration.target_config_fingerprint != config.fingerprint:
-        raise GLM53CompileError(
-            "GLM calibration target fingerprint does not match canonical GLM recipient"
-        )
+    _validate_expanded_calibration(calibration, config)
 
     if streaming_source:
         donor = validate_glm53_streaming_donor(
