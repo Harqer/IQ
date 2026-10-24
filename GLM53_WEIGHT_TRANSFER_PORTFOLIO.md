@@ -1,8 +1,8 @@
 # GLM-5.3 BF16 -> IQ: Comprehensive Weight- and Capability-Transfer Portfolio
 
 Status: research and execution contract, not a claim that every strategy has been implemented.
-Donor: official \`zai-org/GLM-5.3-BF16\`, pinned revision \`abf42e6c0e53bc29a875511301e7b7fcd220315b\`.
-Recipient: \`canonical_glm53_config()\` and \`IQHybridForCausalLM\`; official pinned Mamba-3 MIMO remains the recurrent/lexical foundation.
+Donor: official `zai-org/GLM-5.3-BF16`, pinned revision `abf42e6c0e53bc29a875511301e7b7fcd220315b`.
+Recipient: `canonical_glm53_config()` and `IQHybridForCausalLM`; official pinned Mamba-3 MIMO remains the recurrent/lexical foundation.
 
 ## Operating objective
 
@@ -49,19 +49,19 @@ read-only prototype. **new candidate** requires an implementation/benchmark.
 
 | ID | Family | Candidate method(s) | Implementation entry / proposed module | Primary measured gate |
 | --- | --- | --- | --- | --- |
-| T01 | Exact copy | bit-identical compatible weights, scalars/norms, partial slices and hash-proven provenance | \`iq_transfer/apply.py\`, \`mamba3_direct.py\` — existing primitives | exact semantics, shape, source/target basis and tensor hash |
-| T02 | Weight subcloning | activation-/gradient-/weight-importance channels; TransMamba-style seeded initialization | \`glm53_direct.py\` — existing primitive | real held-out block outputs vs unbiased controls |
-| T03 | Coordinate transfer | WARM, separate input/output bases, rotations, orthogonal Procrustes, pseudoinverse; teacher/student paired-state regression | \`warm.py\`, \`transport.py\`, \`glm53_expert_informed_basis.py\` — existing + experiment | nontrivial held-out routed RMSE and rank/spectrum |
+| T01 | Exact copy | bit-identical compatible weights, scalars/norms, partial slices and hash-proven provenance | `iq_transfer/apply.py`, `mamba3_direct.py` — existing primitives | exact semantics, shape, source/target basis and tensor hash |
+| T02 | Weight subcloning | activation-/gradient-/weight-importance channels; TransMamba-style seeded initialization | `glm53_direct.py` — existing primitive | real held-out block outputs vs unbiased controls |
+| T03 | Coordinate transfer | WARM, separate input/output bases, rotations, orthogonal Procrustes, pseudoinverse; teacher/student paired-state regression | `warm.py`, `transport.py`, `glm53_expert_informed_basis.py` — existing + experiment | nontrivial held-out routed RMSE and rank/spectrum |
 | T04 | Output/input representation | jointly learned nonlinear codecs, residual/error paths, optional 4,096D sidecar or wider offloaded expert state | new candidate | capacity, training instability, decode overhead, teacher-space fidelity |
 | T05 | Frozen donor graft | untouched BF16 expert FFN with IQ 2,048->6,144 input adapter, 6,144->2,048 output adapter; optional 4,096D path | new candidate | exact donor tensor hashes, adapter held-out/generalization, runtime footprint |
 | T06 | Low-rank individual experts | standard SVD; SVD-LLM truncation-aware whitened factorization; low-rank + important sparse residual | new candidate | matched rank, activation-weighted loss, real routed token fidelity |
 | T07 | Cross-expert sharing | MoE-SVD shared factors, MoBE basis experts, SLBF, expert-specific sparse/delta residual | new candidate | total bank storage, specialization, rare experts, throughput, held-out quality |
-| T08 | Expert consolidation | usage-aware selection, balanced clustering/merging/splitting, Sub-MoE functional clusters, MergeMoE output fitting | \`glm53_moe.py\` usage-selection existing; others new | no systematic rare-expert collapse, remapped top-k behavior and functionality |
-| T09 | Routing | temperature-, top-k-, probability-, load-, co-occurrence-, preference-matrix matching; teacher->student expert ID map | \`glm53_routing_replay.py\`, \`glm53_routed_fidelity.py\` — existing probes | real token hit-rate, weighted output KL/MAE, load balance, 0-coverage guard |
-| T10 | Attention/context | MLA/DSA weights/operator transport, learned context adapters, sparse-indexer equivalence, attention->Mamba mixer initialization | \`glm53_dsa.py\`, \`mamba3_init.py\` — existing primitives | faithful effective token-mixing operator, matched contexts, causal checks |
-| T11 | Architecture transfer | MOHAWK mixer alignment, layer/hidden alignment, Mamba in the Llama stepwise attention replacement, TransMamba WSAB | \`mohawk.py\`, \`iq_training/mohawk.py\` existing stages; new schedules | Mamba recurrence preserved; trained-block and E2E gains |
+| T08 | Expert consolidation | usage-aware selection, balanced clustering/merging/splitting, Sub-MoE functional clusters, MergeMoE output fitting | `glm53_moe.py` usage-selection existing; others new | no systematic rare-expert collapse, remapped top-k behavior and functionality |
+| T09 | Routing | temperature-, top-k-, probability-, load-, co-occurrence-, preference-matrix matching; teacher->student expert ID map | `glm53_routing_replay.py`, `glm53_routed_fidelity.py` — existing probes | real token hit-rate, weighted output KL/MAE, load balance, 0-coverage guard |
+| T10 | Attention/context | MLA/DSA weights/operator transport, learned context adapters, sparse-indexer equivalence, attention->Mamba mixer initialization | `glm53_dsa.py`, `mamba3_init.py` — existing primitives | faithful effective token-mixing operator, matched contexts, causal checks |
+| T11 | Architecture transfer | MOHAWK mixer alignment, layer/hidden alignment, Mamba in the Llama stepwise attention replacement, TransMamba WSAB | `mohawk.py`, `iq_training/mohawk.py` existing stages; new schedules | Mamba recurrence preserved; trained-block and E2E gains |
 | T12 | Distillation | blockwise feature/gradient regression, routed-expert matching, intermediate teacher trajectories, offline teacher demonstrations, sequence-level logits | existing trainer primitives; additional loaders/objectives needed | held-out teacher/student loss and generation; no fabricated alignments |
-| T13 | Different tokenizers | UTF-8 document/byte-boundary causal alignment, context-aware cross-tokenizer probability mapping, OT or likelihood scoring | \`alignment.py\`, \`mohawk.py\` hard guard existing; additional losses candidate | proven causal token alignment; never raw ID-level KL |
+| T13 | Different tokenizers | UTF-8 document/byte-boundary causal alignment, context-aware cross-tokenizer probability mapping, OT or likelihood scoring | `alignment.py`, `mohawk.py` hard guard existing; additional losses candidate | proven causal token alignment; never raw ID-level KL |
 | T14 | Structured reduction | depth/width/head pruning, progressive shrinking, Wanda/SparseGPT, protected important channels + recovery | new candidate | task-level retention and actual target-hardware speedups |
 | T15 | Training-efficient recovery | LoRA/DoRA-style residuals, alternating adapter and expert fine-tune, progressive unfreezing, QAT, rank allocation | new candidate | measured gains and trainable-parameter costs |
 | T16 | Numerical serving | BF16 reference, FP8/int8/int4 candidates, AWQ/GPTQ-style activation-aware quantization, mixed-precision protected experts | new candidate | match functional/task thresholds, measure real native kernels |
@@ -96,7 +96,7 @@ Checkpoint provenance records exact initialization plus all subsequent changes.
 
 For every method and composition, require one manifest with:
 
-\`\`\`json
+```json
 {
   "schema_version": 1,
   "donor_repository": "zai-org/GLM-5.3-BF16",
@@ -120,7 +120,7 @@ For every method and composition, require one manifest with:
   "evaluation_report_sha256": null,
   "checkpoint_promoted": false
 }
-\`\`\`
+```
 
 The angle-bracket fields are **schema examples**, not real hashes/artifacts.
 Production runners must reject placeholders rather than treat this JSON
