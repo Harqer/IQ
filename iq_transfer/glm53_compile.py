@@ -553,17 +553,24 @@ def compile_glm53_iq_checkpoint(
             if len(chosen_ids) != config.stable_moe.num_experts:
                 raise GLM53CompileError("selected routed expert count mismatch")
             provenance["selected_source_expert_ids"][str(stage.stage)] = list(chosen_ids)
-        _save_shard(
-            output,
-            f"model-context-{stage.stage:03d}.safetensors",
-            _context_state(
-                source=source,
-                inspector=inspector,
-                stage=stage,
-                config=config,
-            ),
-            weight_map,
-        )
+        context_name = f"model-context-{stage.stage:03d}.safetensors"
+        if not (
+            resume_existing and register_saved_shard(
+                output, context_name, weight_map,
+                layer=stage.context_physical_layer,
+            )
+        ):
+            _save_shard(
+                output,
+                context_name,
+                _context_state(
+                    source=source,
+                    inspector=inspector,
+                    stage=stage,
+                    config=config,
+                ),
+                weight_map,
+            )
         if streaming_source:
             # Persist each transformed expert before reading the next donor
             # expert. Avoid holding all routed experts in one stage dictionary.
