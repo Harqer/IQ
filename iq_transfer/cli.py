@@ -51,6 +51,10 @@ def _parser() -> argparse.ArgumentParser:
     glm_bootstrap.add_argument("--output", required=True)
     glm_bootstrap.add_argument("--routed-experts", type=int, choices=(32, 64, 128, 256), default=32)
     glm_bootstrap.add_argument("--full-78", action="store_true", help="require one mapped IQ context/MoE pair per all 78 GLM layers")
+    glm_bootstrap.add_argument(
+        "--reuse-weight-only",
+        help="read-only original canonical 24-stage calibration, reusing matching GLM source layer coordinates",
+    )
     glm_bootstrap.add_argument("--checkpoint-revision", required=True)
     glm_bootstrap.add_argument("--repo-id", default="zai-org/GLM-5.3-BF16")
     glm_bootstrap.add_argument("--donor-license", required=True)
@@ -301,6 +305,13 @@ def main(argv: list[str] | None = None) -> int:
             source_num_experts=inspector.layout.n_routed_experts,
             source_indexer_types=inspector.layout.indexer_types,
             warm_device=args.warm_device,
+            reuse_weight_only=(
+                __import__(
+                    "iq_transfer.glm53_calibration",
+                    fromlist=["GLM53CalibrationSolution"]
+                ).GLM53CalibrationSolution.load(args.reuse_weight_only)
+                if args.reuse_weight_only else None
+            ),
         )
         manifest = solution.write(args.output)
         print(
