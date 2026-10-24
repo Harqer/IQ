@@ -85,6 +85,7 @@ def _parser() -> argparse.ArgumentParser:
     glm_compile.add_argument("--output", required=True)
     glm_compile.add_argument("--routed-experts", type=int, choices=(32, 64, 128, 256), default=32)
     glm_compile.add_argument("--full-78", action="store_true", help="require one mapped IQ context/MoE pair per all 78 GLM layers")
+    glm_compile.add_argument("--resume", action="store_true", help="resume complete saved shards from a stopped full78 cloud run")
     glm_compile.add_argument("--checkpoint-revision", required=True)
     glm_compile.add_argument("--repo-id", default="zai-org/GLM-5.3-BF16")
     glm_compile.add_argument("--mamba3-revision", required=True)
@@ -388,6 +389,7 @@ def main(argv: list[str] | None = None) -> int:
             glm53_repo_id=args.repo_id,
             target_config=target_config,
             reuse_foundation_checkpoint=args.reuse_foundation_checkpoint,
+            resume_existing=args.resume,
         )
         print(
             json.dumps(
