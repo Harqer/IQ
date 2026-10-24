@@ -237,9 +237,15 @@ def project_one_raw_expert(
     )
     hidden, latent = p.shape
     intermediate = target_config.stable_moe.expert_intermediate_size
-    if raw.resolve() == output.resolve() or calibration.resolve() == output.resolve():
-        raise GLM53SingleExpertProjectionError("output cannot overwrite inputs")
-    if output.exists() and (not output.is_dir() or output.is_symlink() or any(output.iterdir())):
+    input_roots = (raw.resolve(), calibration.resolve())
+    destination = output.resolve()
+    if any(destination == base or base in destination.parents for base in input_roots):
+        raise GLM53SingleExpertProjectionError(
+            "projection output cannot overlap donor or calibration inputs"
+        )
+    if output.is_symlink() or (
+        output.exists() and (not output.is_dir() or any(output.iterdir()))
+    ):
         raise GLM53SingleExpertProjectionError("output must be a new empty directory")
     # Validate all inputs BEFORE creating any output artifacts.
     prefix = f"model.layers.{source_layer}.mlp.experts.{donor}"
