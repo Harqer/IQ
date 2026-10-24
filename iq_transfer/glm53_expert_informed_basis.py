@@ -6,18 +6,15 @@ This is a weight-energy-only optimization, NOT activation or task fidelity.
 """
 from __future__ import annotations
 
-import hashlib
 import json
 from pathlib import Path
 from typing import Any, Mapping
 
 import numpy as np
-import torch
 from safetensors.numpy import save_file
 
 from .complete_transplant import canonical_glm53_config
 from .glm53_single_expert_projection import (
-    GLM53SingleExpertProjectionError,
     _calibration_map,
     _json,
     _read_donor,
