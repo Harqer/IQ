@@ -15,6 +15,18 @@ if [[ ! "$CAPACITY_GIB" =~ ^[0-9]+$ ]] || (( CAPACITY_GIB < 600 )); then
   echo "BLOCKED: verify >=600GiB free private durable storage before compute." >&2
   exit 3
 fi
+# Require actual provider-evidenced free capacity, matching the fresh/resume
+# GPU workers; a self-declared 600GiB environment variable alone is not proof.
+python scripts/full78_storage_preflight.py
+: "${IQ_STORAGE_ATTESTATION:?Provider-verified capacity evidence required}"
+REQUIRED_BYTES="$(python -c 'from scripts.full78_storage_preflight import required_private_bytes;print(required_private_bytes())')"
+python scripts/glm53_full78_gate.py storage \
+  --attestation "$IQ_STORAGE_ATTESTATION" \
+  --required-bytes "$REQUIRED_BYTES"
+if [[ "${IQ_CONFIRM_NO_OTHER_WRITER:-}" != 1 ]]; then
+  echo >&2 "BLOCKED: independently verify no other full78 calibration writer is active"
+  exit 3
+fi
 if [[ "${IQ_CLOUD_WORKER:-}" != 1 || ! -d /hf-bucket/legacy/visionboxx-macha/calibration ]]; then
   echo "requires cloud worker and original immutable 24 WARM maps" >&2
   exit 2
