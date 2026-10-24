@@ -15,7 +15,7 @@ Baseline: `feat/glm53-gpu-transfer-guards`, pinned GLM/Mamba donor revisions.
 | Matrix caching | `iq_transfer/glm53_incremental_moe.py` | Reuses per-stage inverses; `ProjectionOps` caches a RHS basis, but ignores `cache_left` | Profile cache hits/transfer times before optimizing |
 | Mamba kernels | `scripts/install_model_runtime.sh` / `requirements-mamba3-constraints.txt` | Pinned TileLang/TVM-FFI and source commit apply to *inference* only | Do not install CUDA Mamba kernels into the offline transfer compiler |
 | HF fresh vs resume | `scripts/start_glm53_full78_gpu_from_verified_calibration.sh`, `scripts/resume_glm53_full78_mounted_cloud.sh` | Fresh run accepts separate `CALIBRATION_RUN_ID`, resume previously assumed it equals `RUN_ID` | Resume now requires the original calibration ID explicitly |
-| GPU CI | `.github/workflows/glm53-transfer-safety.yml` | CPU-only runner does not exercise GPU math; CUDA-marked tests skip | Run offline contract tests in CI; separate paid real-hardware benchmark is still required |
+| GPU CI | `.github/workflows/glm53-transfer-safety.yml` | CPU-only runner does not exercise GPU math; CUDA-marked tests skip | Run offline contract tests in CI; measure CUDA performance during full transfer, not in standalone paid benchmark runs |
 
 ## Recommended environment
 
@@ -65,11 +65,16 @@ Do not force BF16 for FP32 weight transformation alone.
    donor revisions and target config fingerprint fixed.
 2. Fresh output namespace, sufficient independently verified private storage,
    no concurrent writer and current provenance receipt.
-3. GPU preflight green, then **one unsaved real donor expert** and per-operator
-   FP32 GPU vs FP64 CPU numerical parity on the selected hardware.
+3. GPU preflight green, then begin the **actual complete 78-stage compilation**.
+   Validate donor tensors inline as processed; prohibit a redundant one-expert
+   download or standalone paid microbenchmark. Compare GPU vs reference
+   numerical behavior using CPU offline fixtures and bounded inline sampling
+   without separate jobs or stopping production progress.
 4. Capture actual stage wall-time, HTTP bytes/requests, PCIe transfers, GEMM
-   time, peak RSS/VRAM, `torch.profiler` records, and dollars per verified
-   routed expert. Compare baseline vs revised kernels before deploying fusion.
+   time, peak RSS/VRAM, and dollars per verified expert **during the real
+   compilation**. Use stage-level metrics; no stand-alone per-expert
+   benchmarking, no experimental one-expert job loops. Optimize subsequent
+   batches using those measurements without repeating completed work.
 5. Full compilation must prove all 78 GLM source layers and 75 x 256 routed
    experts were mapped. The original Mamba foundation only supplies 32
    pretrained recurrent slots; remaining recurrent slots need validation.
@@ -96,6 +101,13 @@ shards without revalidating all dependencies and hashes.
   https://github.com/state-spaces/mamba
 - HF Jobs and persistent volumes:
   https://huggingface.co/docs/huggingface_hub/en/guides/jobs
+
+**Execution policy:** One authorized GPU session should make continuous
+progress on all 78 layers, with bounded stages and resumability. Internal
+per-expert shard writes preserve crash recovery; they are not separate jobs.
+The current implementation is still a sequential expert loop; multi-expert
+GPU batching and overlapping I/O remain performance enhancements to audit,
+not verified features. Do not claim batching is implemented by these changes.
 
 **Status:** Offline audit and fail-closed preflight code only. No GPU time,
 donor-weight downloads, end-to-end benchmark, or model-quality improvement
