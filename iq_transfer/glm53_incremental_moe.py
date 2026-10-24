@@ -567,6 +567,7 @@ def save_incremental_moe_stage(
             # current one. A separate HF Session prevents unsafe shared state.
             # Local/test sources deliberately retain the direct read path.
             with RoutedBatchPrefetch(source, donor_root=root) as prefetch:
+                started_at = time.perf_counter()
                 completed = 0
                 future = prefetch.submit(pending[:batch_size])
                 while completed < len(pending):
@@ -580,12 +581,24 @@ def save_incremental_moe_stage(
                     next_future = prefetch.submit(upcoming)
                     staged_source = prefetch.source_for(future, source)
                     commit_batch(specs, staged_source)
+                    del staged_source
                     completed += len(specs)
                     future = next_future
+                    elapsed_s = max(1e-9, time.perf_counter() - started_at)
+                    # Source tensor payload bytes are exact for BF16 GLM routed
+                    # experts; this rate includes reads, CUDA and atomic writes.
+                    processed_mib = (
+                        completed * 3 * source_width * intermediate_width * 2
+                        / (1024 * 1024)
+                    )
                     print(
                         f"GLM53_GPU_BATCH_PROGRESS layer={stage.stage} "
                         f"saved={completed}/{len(pending)} "
-                        f"planned_batch={len(specs)} gpu_batch={device_batch_limit}",
+                        f"planned_batch={len(specs)} gpu_batch={device_batch_limit} "
+                        f"elapsed_s={elapsed_s:.1f} "
+                        f"source_mib_per_s={processed_mib/elapsed_s:.1f} "
+                        f"cuda_peak_allocated_mib="
+                        f"{torch.cuda.max_memory_allocated()/(1024*1024):.0f}",
                         flush=True,
                     )
             del input_basis, output_basis_t
