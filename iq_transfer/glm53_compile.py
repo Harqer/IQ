@@ -36,6 +36,7 @@ from .glm53_moe import (
 )
 from .glm53_stream_capture import HubSafetensorsSource
 from .glm53_incremental_moe import save_incremental_moe_stage
+from .glm53_resume import register_saved_shard, validate_legacy_partial
 from .glm53_incremental_context import transport_input_projection_rows
 from .mamba3_direct import (
     compile_official_mamba3_mimo_15b_transplant,
