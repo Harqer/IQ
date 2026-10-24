@@ -196,7 +196,17 @@ def save_incremental_moe_stage(
     source_layer = stage.source_layer
     source_width = inspector.config.hidden_size
     intermediate_width = inspector.layout.moe_intermediate_size
+    # Fail before any weight reads if calibration geometry cannot produce
+    # the exact IQ model parameter shapes.
+    if (
+        stage.moe_input_map.matrix.shape != (source_width, stable.hidden_size)
+        or stage.residual_map.matrix.shape != (source_width, stable.hidden_size)
+        or stage.latent_map.matrix.shape != (source_width, stable.latent_size)
+    ):
+        raise GLM53IncrementalMoEError("calibration geometry differs from target IQ widths")
     sparse = source_layer >= inspector.layout.first_k_dense_replace
+    if sparse and intermediate_width != stable.expert_intermediate_size:
+        raise GLM53IncrementalMoEError("sparse donor expert width differs from IQ expert width")
     if sparse:
         if stage.expert_usage is None:
             raise GLM53IncrementalMoEError("sparse stage lacks expert usage")
@@ -208,6 +218,8 @@ def save_incremental_moe_stage(
     else:
         if stage.dense_intermediate_map is None:
             raise GLM53IncrementalMoEError("dense stage lacks intermediate map")
+        if stage.dense_intermediate_map.matrix.shape[1] != stable.expert_intermediate_size:
+            raise GLM53IncrementalMoEError("dense calibration intermediate target width differs")
         selected = ()
 
     # Existing transform uses the same pinv for every expert. Reusing it
