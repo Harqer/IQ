@@ -22,6 +22,8 @@ def register_saved_shard(
     weight_map: dict[str, str],
     *,
     expected_keys: set[str] | None = None,
+    expected_shapes: dict[str, tuple[int, ...]] | None = None,
+    expected_dtypes: dict[str, str] | None = None,
     layer: int | None = None,
 ) -> bool:
     if not _SHARD_RE.fullmatch(filename):
@@ -36,10 +38,29 @@ def register_saved_shard(
             keys = set(reader.keys())
             if not keys or (expected_keys is not None and keys != expected_keys):
                 raise GLM53ResumeError(f"incorrect tensor keys: {filename}")
+            if expected_shapes is not None and keys != set(expected_shapes):
+                raise GLM53ResumeError(f"incorrect expected-shape inventory: {filename}")
+            if expected_dtypes is not None and keys != set(expected_dtypes):
+                raise GLM53ResumeError(f"incorrect expected-dtype inventory: {filename}")
             for key in keys:
-                shape = reader.get_slice(key).get_shape()
+                slice_ = reader.get_slice(key)
+                shape = tuple(int(n) for n in slice_.get_shape())
                 if not shape or any(int(n) < 1 for n in shape):
                     raise GLM53ResumeError(f"invalid shape for {key}")
+                if expected_shapes is not None and shape != expected_shapes[key]:
+                    raise GLM53ResumeError(
+                        f"wrong resumed tensor shape for {key}: "
+                        f"got {shape}, expected {expected_shapes[key]}"
+                    )
+                if expected_dtypes is not None:
+                    # The safetensors slice exposes dtype metadata without
+                    # loading the complete large checkpoint tensor.
+                    actual_dtype = slice_.get_dtype()
+                    if actual_dtype != expected_dtypes[key]:
+                        raise GLM53ResumeError(
+                            f"wrong resumed tensor dtype for {key}: "
+                            f"got {actual_dtype}, expected {expected_dtypes[key]}"
+                        )
                 if layer is not None and not key.startswith(f"layers.{layer}."):
                     raise GLM53ResumeError(f"incorrect physical layer {key}")
                 if key in weight_map:
@@ -56,6 +77,20 @@ def register_saved_shard(
 def expected_expert_keys(physical: int, slot: int) -> set[str]:
     root = f"layers.{physical}.moe.routed_experts.{slot}"
     return {f"{root}.{name}_proj.weight" for name in ("gate", "up", "down")}
+
+
+def expected_expert_shapes(
+    physical: int, slot: int, *, latent_width: int, intermediate_width: int,
+) -> dict[str, tuple[int, int]]:
+    """Canonical GLM-to-IQ routed expert dimensions, excluding flat invalid slots."""
+    if latent_width <= 0 or intermediate_width <= 0:
+        raise GLM53ResumeError("positive expert dimensions required")
+    root = f"layers.{physical}.moe.routed_experts.{slot}"
+    return {
+        f"{root}.gate_proj.weight": (intermediate_width, latent_width),
+        f"{root}.up_proj.weight": (intermediate_width, latent_width),
+        f"{root}.down_proj.weight": (latent_width, intermediate_width),
+    }
 
 
 def validate_legacy_partial(output: Path) -> None:
