@@ -46,6 +46,10 @@ fi
 # Read-only file-by-file verification; the calibration manifest alone is insufficient.
 python scripts/glm53_full78_gate.py calibration --root "$DEST_CALIB"
 python scripts/glm53_calibration_sha256.py verify --root "$DEST_CALIB"
+# Fail closed on missing CUDA, inconsistent packages, or unsupported hardware
+# BEFORE fetching donor tensors or allocating a long-running transfer.
+python scripts/check_glm53_gpu_stack.py --require-cuda \
+  --min-vram-gib "${IQ_MIN_GPU_VRAM_GIB:-20}" --smoke --pip-check
 mkdir -p "$WORK_ROOT/glm53" "$WORK_ROOT/mamba3"
 hf download zai-org/GLM-5.3-BF16 config.json model.safetensors.index.json \
   --revision "$DONOR_REV" --local-dir "$WORK_ROOT/glm53"
