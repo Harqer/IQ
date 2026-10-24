@@ -500,15 +500,24 @@ def save_incremental_moe_stage(
                 projection_ops, input_inverse=latent_inverse,
                 output_map=stage.latent_map.matrix, source_width=source_width,
             )
-            completed = 0
-            while completed < len(pending):
-                chunk = pending[completed:completed + batch_size]
-                _check_runtime_budget(stage.stage, chunk[0].slot)
+            from .glm53_batch_prefetch import RoutedBatchPrefetch
+
+            device_batch_limit = batch_size
+
+            def commit_batch(
+                specs: list[ExpertSpec], planned_source: Any,
+            ) -> None:
+                nonlocal device_batch_limit
+                # Preserve already staged HTTP tensors across CUDA OOM retries.
+                if len(specs) > device_batch_limit:
+                    for start in range(0, len(specs), device_batch_limit):
+                        commit_batch(specs[start:start + device_batch_limit], planned_source)
+                    return
                 try:
                     results = project_routed_batch(
-                        source=source,
+                        source=planned_source,
                         donor_root=root,
-                        specs=chunk,
+                        specs=specs,
                         source_width=source_width,
                         intermediate_width=intermediate_width,
                         input_basis=input_basis,
@@ -516,23 +525,29 @@ def save_incremental_moe_stage(
                         ops=projection_ops,
                     )
                 except torch.cuda.OutOfMemoryError as exc:
-                    # Failed batches write NO checkpoint shards. Retry with
-                    # fewer experts; never fall back silently to CPU.
-                    if batch_size == 1:
+                    # No new writes have happened within the failed GEMM.
+                    # Split the *already downloaded* batch; never redownload.
+                    if len(specs) == 1:
                         raise GLM53IncrementalMoEError(
                             "CUDA OOM for one expert; resume on larger GPU"
                         ) from exc
-                    batch_size = max(1, batch_size // 2)
+                    device_batch_limit = max(1, len(specs) // 2)
                     torch.cuda.empty_cache()
                     print(
                         f"GLM53_GPU_BATCH_OOM_REDUCED stage={stage.stage} "
-                        f"experts_per_batch={batch_size}", flush=True,
+                        f"experts_per_batch={device_batch_limit}", flush=True,
                     )
-                    continue
-                for spec, (weights, metrics) in zip(chunk, results):
+                    commit_batch(specs[:device_batch_limit], planned_source)
+                    commit_batch(specs[device_batch_limit:], planned_source)
+                    return
+                # Individual atomic shards are the recovery boundary even
+                # when several experts share one GPU batched operation.
+                for spec, (weights, metrics) in zip(specs, results):
                     prefix = f"{target}.routed_experts.{spec.slot}"
-                    state = {f"{prefix}.{name}": tensor
-                             for name, tensor in weights.items()}
+                    state = {
+                        f"{prefix}.{name}": tensor
+                        for name, tensor in weights.items()
+                    }
                     _save_shard(
                         output_dir,
                         f"model-moe-{stage.stage:03d}-expert-{spec.slot:03d}.safetensors",
@@ -542,13 +557,33 @@ def save_incremental_moe_stage(
                         "donor_expert_id": spec.donor_id,
                         "operators": metrics,
                     }
-                completed += len(chunk)
-                print(
-                    f"GLM53_GPU_BATCH_PROGRESS layer={stage.stage} "
-                    f"saved={completed}/{len(pending)} batch={len(chunk)}",
-                    flush=True,
-                )
                 del results
+
+            # Read the NEXT bounded remote batch while CUDA computes/saves the
+            # current one. A separate HF Session prevents unsafe shared state.
+            # Local/test sources deliberately retain the direct read path.
+            with RoutedBatchPrefetch(source, donor_root=root) as prefetch:
+                completed = 0
+                future = prefetch.submit(pending[:batch_size])
+                while completed < len(pending):
+                    specs = pending[completed:completed + batch_size]
+                    _check_runtime_budget(stage.stage, specs[0].slot)
+                    next_offset = completed + len(specs)
+                    upcoming = (
+                        pending[next_offset:next_offset + batch_size]
+                        if next_offset < len(pending) else []
+                    )
+                    next_future = prefetch.submit(upcoming)
+                    staged_source = prefetch.source_for(future, source)
+                    commit_batch(specs, staged_source)
+                    completed += len(specs)
+                    future = next_future
+                    print(
+                        f"GLM53_GPU_BATCH_PROGRESS layer={stage.stage} "
+                        f"saved={completed}/{len(pending)} "
+                        f"planned_batch={len(specs)} gpu_batch={device_batch_limit}",
+                        flush=True,
+                    )
             del input_basis, output_basis_t
     else:
         # Reference implementation kept for offline CPU parity and fixtures.
