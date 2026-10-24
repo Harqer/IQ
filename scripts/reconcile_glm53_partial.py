@@ -47,10 +47,20 @@ def stage_artifacts(record: dict) -> dict[str, str]:
     for field in MAP_FIELDS:
         basename = record.get(field)
         if basename:
+            if not isinstance(basename, str) or not re.fullmatch(
+                r"stage-[0-9]{2}-(?:residual|attention-input|moe-input|kv|latent|dense-intermediate)",
+                basename,
+            ):
+                raise RecoveryError(f"unsafe calibration map name: {basename}")
             artifacts[basename + ".json"] = field + ".json"
             artifacts[basename + ".safetensors"] = field + ".safetensors"
     if record.get("expert_usage"):
-        artifacts[record["expert_usage"]] = "expert_usage"
+        name = record["expert_usage"]
+        if not isinstance(name, str) or not re.fullmatch(
+            r"stage-[0-9]{2}-expert-usage\.npy", name
+        ):
+            raise RecoveryError(f"unsafe calibration usage path: {name}")
+        artifacts[name] = "expert_usage"
     return artifacts
 
 
@@ -161,6 +171,8 @@ def restore_original_maps(full_dir: Path, original: Path, plan: dict) -> int:
             src_name = by_role[role]
             source = original / src_name
             destination = full_dir / name
+            if source.is_symlink() or not source.is_file():
+                raise RecoveryError(f"unsafe original map source: {src_name}")
             if destination.exists() or destination.is_symlink():
                 raise RecoveryError(f"refusing overwrite of existing calibration: {name}")
             expected_hash = integrity["files"].get(src_name)
