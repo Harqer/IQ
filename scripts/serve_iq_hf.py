@@ -52,7 +52,22 @@ def build_model():
     model = load_complete_iq_checkpoint(
         root, device=torch.device("cuda:0"), dtype=torch.bfloat16
     ).eval()
-    print("IQ: checkpoint loaded; chat endpoint ready", flush=True)
+    delta_dir = os.getenv("IQ_CANDIDATE_DELTA_DIR")
+    if delta_dir:
+        if os.getenv("IQ_ACCEPT_UNVALIDATED_DELTA") != "1":
+            raise RuntimeError(
+                "candidate correction delta requires explicit IQ_ACCEPT_UNVALIDATED_DELTA=1"
+            )
+        from iq_training.transfer_overlay import apply_candidate_delta
+        count = apply_candidate_delta(
+            model, checkpoint_dir=root, delta_dir=delta_dir
+        )
+        print(
+            f"IQ: UNVALIDATED candidate delta overlaid in RAM ({count} tensors); "
+            "source checkpoint unchanged",
+            flush=True,
+        )
+    print("IQ: checkpoint loaded; language quality still unverified", flush=True)
     return tokenizer, model
 
 
