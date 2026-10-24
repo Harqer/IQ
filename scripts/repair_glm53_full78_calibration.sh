@@ -66,6 +66,7 @@ if missing:
    {n:(root/n).stat().st_size for n in sorted(names)},sort_keys=True))
 print('ALL78_LOCAL_CALIBRATION_FILES_VERIFIED',len(names),flush=True)
 PY
+python scripts/glm53_calibration_sha256.py make --root "$ROOT/calibration"
 echo "CALIBRATION78_EXPLICIT_BUCKET_SYNC_NO_DELETE"
 # Explicit upload/sync instead of relying on transient mounted-FUSE flush.
 hf buckets sync "$ROOT/calibration" "$DEST" --ignore-existing
@@ -85,3 +86,5 @@ if missing:
     raise SystemExit(f'BUCKET_CALIBRATION_INCOMPLETE {len(missing)} first={list(missing)[:12]}')
 print('ALL78_REMOTE_CALIBRATION_FILES_AND_SIZES_VERIFIED',len(local),flush=True)
 PY
+
+echo 'IMPORTANT: launch an independent read-only worker to verify calibration_sha256.json and all 866 SHA256 hashes before any paid GPU weight transfer.'
