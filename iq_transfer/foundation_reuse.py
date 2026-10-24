@@ -11,7 +11,7 @@ import json
 from pathlib import Path
 import shutil
 
-from iq_model import IQHybridConfig
+from iq_model import HybridLayerType, IQHybridConfig
 
 
 class FoundationReuseError(ValueError):
@@ -78,9 +78,7 @@ def reuse_frozen_mamba_foundation(
         "embed_tokens.weight", "norm.weight", "lm_head.weight"
     }:
         raise FoundationReuseError("original lexical foundation index keys are incorrect")
-    mamba_positions = target_config.schedule.positions(
-        __import__("iq_model", fromlist=["HybridLayerType"]).HybridLayerType.MAMBA3
-    )
+    mamba_positions = target_config.schedule.positions(HybridLayerType.MAMBA3)
     if len(mamba_positions) != 32:
         raise FoundationReuseError("recipient Mamba schedule changed")
     for ordinal, physical in enumerate(mamba_positions):
