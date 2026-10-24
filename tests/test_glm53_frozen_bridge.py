@@ -79,6 +79,25 @@ class FrozenExpertBridgeTests(unittest.TestCase):
             {"input_a", "input_b", "output_a", "output_b"},
         )
 
+    def test_training_rejects_mismatched_target_shapes(self):
+        model = FrozenGLMExpertBridge(self.donor, self.basis, rank=2)
+        z_train = torch.zeros(12, 3)
+        z_eval = torch.zeros(4, 3)
+        with self.assertRaisesRegex(
+            FrozenExpertBridgeError, "invalid train/eval inputs"
+        ):
+            train_frozen_bridge(
+                model, z_train, torch.zeros(12, 2),
+                z_eval, torch.zeros(4, 3), steps=1,
+            )
+        with self.assertRaisesRegex(
+            FrozenExpertBridgeError, "invalid train/eval inputs"
+        ):
+            train_frozen_bridge(
+                model, z_train, torch.zeros(12, 3),
+                z_eval, torch.zeros(4, 2), steps=1,
+            )
+
     def test_shape_and_dtype_guards(self):
         with self.assertRaises(FrozenExpertBridgeError):
             FrozenGLMExpertBridge(self.donor, self.basis, rank=0)
