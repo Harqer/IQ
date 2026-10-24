@@ -212,9 +212,25 @@ def link_overlay(full_dir: Path, original: Path, existing: Path,
     full = json.loads((full_dir / "glm53_calibration.json").read_text())
     linked_original = 0
     linked_existing = 0
+    verified_existing_overlap = 0
     for stage in plan["calibration"]["present_stages"]:
         record = full["stages"][stage]
-        for name in stage_artifacts(record):
+        # The 24-stage canonical WARM source maps offer independent,
+        # SHA-protected provenance for nine of the saved late stages.
+        overlap = originals.get(stage)
+        overlap_map = (
+            {role: old_name for old_name, role in stage_artifacts(overlap).items()}
+            if overlap is not None else {}
+        )
+        for name, role in stage_artifacts(record).items():
+            if overlap is not None:
+                old_name = overlap_map[role]
+                expected_digest = old_integrity["files"].get(old_name)
+                if not expected_digest or digest(existing / name) != expected_digest:
+                    raise RecoveryError(
+                        f"saved stage {stage} is incompatible with protected 24-stage WARM: {name}"
+                    )
+                verified_existing_overlap += 1
             dst = full_dir / name
             source = existing / name
             if (not source.is_file() or source.is_symlink() or
@@ -249,10 +265,17 @@ def link_overlay(full_dir: Path, original: Path, existing: Path,
             if (not src.is_file() or src.is_symlink() or
                 dst.exists() or dst.is_symlink()):
                 raise RecoveryError(f"missing/unsafe full78 global map: {name}")
+            original_hash = old_integrity["files"].get(name)
+            if original_hash is None or digest(src) != original_hash:
+                raise RecoveryError(
+                    f"saved {name} mismatches original SHA-verified lexical/final frame"
+                )
             dst.symlink_to(src.resolve())
             linked_existing += 1
     return {"hash_verified_original_links": linked_original,
-            "existing_unverified_candidate_links": linked_existing}
+            "existing_linked_files": linked_existing,
+            "hash_verified_existing_overlap": verified_existing_overlap,
+            "unverified_existing_files": linked_existing - verified_existing_overlap - 4}
 
 
 def main() -> int:
