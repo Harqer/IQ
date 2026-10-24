@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import inspect
 import json
+import re
 import signal
 import subprocess
 import sys
@@ -116,6 +117,36 @@ def chat_once(client: InferenceClient, history: list[dict], limit: int) -> str:
         raise RuntimeError("IQ returned an empty or malformed completion")
     return answer
 
+SMOKE_PROMPT = "What is 2 + 2? Reply with only the digit."
+
+
+def check_generation_smoke(answer: str) -> tuple[bool, str]:
+    """Specific arithmetic canary; passing is NOT proof of general model quality."""
+    value = answer.strip()
+    if not value:
+        return False, "empty response"
+    if len(value) > 80:
+        return False, "excessively long arithmetic response"
+    if re.search(r"([a-zA-Z]{3,10})\\1{2,}", value):
+        return False, "repeated subword output"
+    if re.fullmatch(r"(?:4(?:\\.0+)?|four)[.! ]*", value, re.IGNORECASE):
+        return True, "arithmetic smoke passed"
+    if re.fullmatch(r"(?:the answer is|answer:|it is)\\s+(?:4(?:\\.0+)?|four)[.! ]*",
+                    value, re.IGNORECASE):
+        return True, "arithmetic smoke passed"
+    return False, "did not answer 2+2 correctly and concisely"
+
+
+def verify_generation(client: InferenceClient) -> str:
+    answer = chat_once(client, [{"role": "user", "content": SMOKE_PROMPT}], 8)
+    passed, reason = check_generation_smoke(answer)
+    if not passed:
+        raise RuntimeError(
+            f"MODEL_QUALITY_FAILURE ({reason}): {answer[:120]!r}. "
+            "HTTP success / strict tensor coverage do not imply coherent language."
+        )
+    return answer
+
 
 def run(args: argparse.Namespace) -> None:
     token = get_token()
@@ -146,10 +177,13 @@ def run(args: argparse.Namespace) -> None:
         print(f"HF Job: {job.url} (auto-cancel on exit)", flush=True)
         base = wait_ready(job_id, namespace, token, args.ready_timeout)
         client = InferenceClient(base_url=base, token=token, timeout=args.request_timeout)
+        # Reject a loaded-but-incoherent transplant before offering interaction.
+        smoke_answer = verify_generation(client)
+        print(f"IQ arithmetic smoke passed: {smoke_answer!r}", flush=True)
         history: list[dict] = []
         if not args.interactive:
             history.append({"role": "user", "content": args.prompt})
-            print("IQ:", chat_once(client, history, args.max_tokens), flush=True)
+            print("IQ:", smoke_answer if args.prompt == SMOKE_PROMPT else chat_once(client, history, args.max_tokens), flush=True)
             return
         print("IQ ready. Type /quit or Ctrl+C to stop and cancel the Job.", flush=True)
         while True:
@@ -192,8 +226,12 @@ def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--run-h200", action="store_true", help="Authorize paid H200 inference")
     p.add_argument("--interactive", action="store_true", help="Chat until /quit or Ctrl+C")
+    p.add_argument(
+        "--accept-unvalidated-checkpoint", action="store_true",
+        help="Explicitly acknowledge the existing weight-only transplant did not pass language quality",
+    )
     p.add_argument("--namespace", default="kofecheckmate")
-    p.add_argument("--prompt", default="What is 2 + 2? Answer briefly.")
+    p.add_argument("--prompt", default=SMOKE_PROMPT)
     p.add_argument("--max-tokens", type=int, default=16)
     p.add_argument("--ready-timeout", type=int, default=900)
     p.add_argument("--request-timeout", type=int, default=300)
@@ -202,6 +240,11 @@ def main() -> int:
         p.error("--max-tokens must be 1..64")
     if args.ready_timeout < 1 or args.request_timeout < 1:
         p.error("timeouts must be positive")
+    if args.run_h200 and not args.accept_unvalidated_checkpoint:
+        p.error(
+            "The mounted mocha checkpoint has weight_only calibration and failed "
+            "language generation. Require --accept-unvalidated-checkpoint before any paid H200 run."
+        )
     if args.interactive and not args.run_h200:
         p.error("--interactive requires --run-h200")
     try:
