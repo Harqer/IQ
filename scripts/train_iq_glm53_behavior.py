@@ -18,7 +18,7 @@ import torch
 from safetensors.torch import load_file, save_file
 
 from iq_model import HybridLayerType
-from iq_training.behavior_transfer import causal_response_loss
+from iq_training.behavior_transfer import (SUPPORTED_GLM_TEACHERS, causal_response_loss)
 from iq_training.mohawk import freeze_for_glm53_stage2
 from iq_transfer import load_complete_iq_checkpoint
 
@@ -35,8 +35,8 @@ def inspect_dataset(data: Path, tokenizer_dir: Path) -> dict:
     meta = json.loads((data / "manifest.json").read_text(encoding="utf-8"))
     if meta.get("schema_version") != 1 or meta.get("purpose") != "iq_response_supervision":
         raise ValueError("not a supported IQ behavior-transfer artifact")
-    if meta.get("teacher_source_claim") != "zai-org/GLM-5.3-BF16":
-        raise ValueError("teacher model claim does not match GLM-5.3 BF16")
+    if meta.get("teacher_source_claim") not in SUPPORTED_GLM_TEACHERS:
+        raise ValueError("teacher model claim does not identify GLM-5.3")
     if meta.get("teacher_attribution_verified_by_api") is not False:
         raise ValueError("unexpected teacher authenticity field")
     if digest(tokenizer_dir / "tokenizer.json") != meta.get("tokenizer_json_sha256"):
