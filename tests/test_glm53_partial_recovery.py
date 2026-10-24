@@ -80,6 +80,9 @@ class PartialRecoveryTests(unittest.TestCase):
                 (self.remote / name).write_bytes(
                     f"preexisting {record['stage']} {role}".encode()
                 )
+        for name in ("lexical-input.json", "lexical-input.safetensors",
+                     "final-output.json", "final-output.safetensors"):
+            (self.remote / name).write_bytes(b"existing read-only global map")
 
     def _inspect(self):
         return inspect(
