@@ -85,11 +85,15 @@ def reuse_frozen_mamba_foundation(
         filename = f"model-mamba-{ordinal:03d}.safetensors"
         keys = keys_by_file[filename]
         prefix = f"layers.{physical}."
-        if not keys or not all(
-            key.startswith(prefix) and (
-                key == f"{prefix}norm.weight" or key.startswith(f"{prefix}mamba.core.")
+        if (
+            f"{prefix}norm.weight" not in keys
+            or f"{prefix}mamba.core.out_proj.weight" not in keys
+            or not all(
+                key.startswith(prefix) and (
+                    key == f"{prefix}norm.weight" or key.startswith(f"{prefix}mamba.core.")
+                )
+                for key in keys
             )
-            for key in keys
         ):
             raise FoundationReuseError(f"missing/mismatched original Mamba layer keys: {filename}")
     file_digests: dict[str, str] = {}
