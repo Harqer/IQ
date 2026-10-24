@@ -37,9 +37,26 @@ source scripts/setup_glm53_gpu_worker.sh
 python scripts/check_glm53_gpu_stack.py --require-cuda \
   --min-vram-gib "${IQ_MIN_GPU_VRAM_GIB:-20}" --smoke --pip-check
 mkdir -p "$ROOT/donor"
+# Build a local overlay; saved 28 later stages are referenced read-only and
+# 15 source layers reuse SHA-verified original maps without a ~10 GiB copy.
+# NO partial bucket files are modified by this step.
+EXISTING="/out/calibration78/$RUN_ID"
+PARTIAL_IQ="/out/IQ/runs/$RUN_ID"
+if [[ ! -f "$EXISTING/glm53_calibration.json" || ! -d "$PARTIAL_IQ" ]]; then
+  echo >&2 "BLOCKED: expected partial full78 calibration and checkpoint are absent"
+  exit 3
+fi
+python scripts/reconcile_glm53_partial.py \
+  --partial-calibration "$ROOT/calibration" \
+  --existing-calibration "$EXISTING" \
+  --original-calibration /hf-bucket/legacy/visionboxx-macha/calibration \
+  --partial-checkpoint "$PARTIAL_IQ" \
+  --expected-old-fingerprint 9cba3cfd5aded22306a1c3f52f9096b70c96fb18a87929daeafe7e4c47542611 \
+  --link-overlay
+
 hf download zai-org/GLM-5.3-BF16 config.json model.safetensors.index.json \
   --revision "$DONOR_REV" --local-dir "$ROOT/donor"
-echo "CALIBRATION78_REGENERATING_ALL_MAPS_LOCALLY"
+echo "CALIBRATION78_COMPUTING_ONLY_MISSING_SOURCE_LAYERS"
 python -m iq_transfer.cli glm53-bootstrap-calibration \
   --checkpoint "$ROOT/donor" \
   --output "$ROOT/calibration" \
@@ -47,8 +64,34 @@ python -m iq_transfer.cli glm53-bootstrap-calibration \
   --checkpoint-revision "$DONOR_REV" \
   --donor-license GLM-5.3 \
   --routed-experts 256 --full-78 \
-  --reuse-weight-only /hf-bucket/legacy/visionboxx-macha/calibration \
+  --repair-overlay \
   --warm-device cuda --streaming-source
+# The overlay is ephemeral, and symlinks must NEVER be uploaded. Materialize
+# only after the full 78 stages exist and enough local scratch is available.
+python - "$ROOT/calibration" <<'PY'
+import os, shutil, sys
+from pathlib import Path
+root=Path(sys.argv[1])
+links=[p for p in root.iterdir() if p.is_symlink()]
+need=sum(p.stat().st_size for p in links)
+free=shutil.disk_usage(root).free
+if free < need + 3*1024**3:
+    raise SystemExit(f"BLOCKED_INSUFFICIENT_SCRATCH_TO_MATERIALIZE need={need} free={free}")
+print(f"CALIBRATION_OVERLAY_MATERIALIZING_LINKS={len(links)}_BYTES={need}",flush=True)
+for p in links:
+    target=root/(f".{p.name}.materialize.partial")
+    if target.exists():
+        raise SystemExit(f"unsafe preexisting scratch artifact: {target}")
+    with p.open('rb') as src, target.open('xb') as dst:
+        shutil.copyfileobj(src,dst,length=4*1024*1024)
+        dst.flush()
+        os.fsync(dst.fileno())
+    # The preceding source hash checks and later 866-file receipt prevent
+    # silently adopting changed original 24-stage weights.
+    p.unlink()
+    os.replace(target,p)
+print("CALIBRATION_OVERLAY_MATERIALIZED_WITHOUT_SYMLINKS",flush=True)
+PY
 python - "$ROOT/calibration" <<'PY'
 import json,sys
 from pathlib import Path
@@ -79,7 +122,7 @@ if missing:
 print('ALL78_LOCAL_CALIBRATION_FILES_VERIFIED',len(names),flush=True)
 PY
 python scripts/glm53_calibration_sha256.py make --root "$ROOT/calibration"
-echo "CALIBRATION78_EXPLICIT_BUCKET_SYNC_NO_DELETE"
+echo "CALIBRATION78_EXPLICIT_BUCKET_SYNC_NO_DELETE_AND_NO_OVERWRITE"
 # Explicit upload/sync instead of relying on transient mounted-FUSE flush.
 hf buckets sync "$ROOT/calibration" "$DEST" --ignore-existing
 python - "$ROOT/calibration" "$RUN_ID" <<'PY'
