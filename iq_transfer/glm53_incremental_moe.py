@@ -383,6 +383,13 @@ def save_incremental_moe_stage(
             )
         target = f"layers.{physical}.moe"
         for slot in range(stable.num_experts):
+            expert_name = f"model-moe-{stage.stage:03d}-expert-{slot:03d}.safetensors"
+            if resume_existing and register_saved_shard(
+                output_dir, expert_name, weight_map,
+                expected_keys=expected_expert_keys(physical, slot),
+                layer=physical,
+            ):
+                continue
             zeros: dict[str, torch.Tensor] = {
                 f"{target}.routed_experts.{slot}.gate_proj.weight": torch.zeros(
                     (stable.expert_intermediate_size, stable.latent_size),
