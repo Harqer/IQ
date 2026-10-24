@@ -30,7 +30,7 @@ class ProjectionOps:
         self.row_block, self.min_row_block = row_block, min_row_block
         # Keep the original array alive with cached GPU data to avoid pointer
         # reuse accidentally returning a previous stage's projection basis.
-        self.cache: dict[int, tuple[np.ndarray, torch.Tensor]] = {}
+        self.cache: dict[int, tuple[np.ndarray, np.ndarray, torch.Tensor]] = {}
         if self.cuda:
             torch.backends.cuda.matmul.allow_tf32 = False
 
@@ -40,15 +40,13 @@ class ProjectionOps:
             raise ProjectionComputeError("expected finite rank-2 matrix")
         key = id(array)
         if cache and key in self.cache:
-            previous, tensor = self.cache[key]
-            if previous is array and previous.shape == arr.shape and (
-                np.array_equal(previous, arr)
-            ):
+            original, snapshot, tensor = self.cache[key]
+            if original is array and np.array_equal(snapshot, arr):
                 return tensor
         value = torch.from_numpy(np.ascontiguousarray(arr, dtype=np.float32))
         result = value.to(self.device)
         if cache:
-            self.cache[key] = (array, result)
+            self.cache[key] = (array, np.array(arr, copy=True), result)
         return result
 
     def matmul(self, left: np.ndarray, right: np.ndarray, *,
