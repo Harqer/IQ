@@ -33,7 +33,7 @@ The saved expert SHA256 inventory lives in [`recovery/glm53-full78-20261024-c-ca
 - [Source and output inventory CPU audit](https://huggingface.co/jobs/kofecheckmate/6add37cc1e112550ce7e4b59) — verified all 28 complete late-stage groups, layer-3 expert slots 0–40, no malformed expert headers.
 - [Original WARM reuse SHA-256 CPU audit](https://huggingface.co/jobs/kofecheckmate/6add39ef1e112550ce7e4cf8) — checked **all 166 original candidate map files** against the original calibration's recorded SHA256; assembled a **temporary zero-copy read-only overlay** referencing 312 saved candidate files. This ephemeral overlay is not a persistent new bucket and was not published.
 - [Existing expert SHA256 and original lexical/final boundary audit](https://huggingface.co/jobs/kofecheckmate/6add3a9b046eb82b1ece0850) — hashed all 41 candidate experts and confirmed original calibration/boundary hashes.
-- Independent late-stage overlap verification is separately scripted; its successful result, if obtained, must be recorded before treating additional saved stages as original-equivalent.
+- [Late-stage original overlap SHA-256 verification](https://huggingface.co/jobs/kofecheckmate/6add3b691e112550ce7e4def) — **all 99 map/usage files** from source stages `50,54,57,62,64,66,70,74,77` matched original protected bytes exactly across **6,347,126,421 bytes**. This validates nine saved stages as original-equivalent. The remaining 19 saved stages have no matching original24 source map and remain provenance candidates.
 
 ## Recovery implementation
 
@@ -52,7 +52,7 @@ The repair script's preflight requires verified large-output storage. Source reu
 
 ## Outstanding acceptance gates
 
-1. Verify the nine later-stage calibration overlaps against the protected original where applicable; validate the 19 remaining saved late-stage source mappings before promotion.
+1. The nine later-stage original overlaps have now passed SHA-256 equality; **validate the 19 remaining saved late-stage source mappings** before promotion.
 2. Compute only the 35 absent stages, materialize a complete byte-for-byte consistent 866-file durable snapshot, then verify all SHA256 hashes from a separate read-only worker.
 3. Verify **all 41** saved expert outputs against the pinned donor weights and canonical stage-3 transform in one in-run batched equivalence pass. Do not individually benchmark each expert. Only allow adopting them when exact provenance and numerical fidelity requirements pass.
 4. Obtain an independently verified private storage-capacity attestation and enforce single-writer concurrency before full GPU compilation.
