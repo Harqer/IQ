@@ -133,7 +133,12 @@ def project_routed_batch(
         ]
         # Direct BF16/FP32 tensor -> CUDA FP32; no intermediate NumPy FP64
         # matrices, unnecessary pseudoinverses, or repeated basis uploads.
-        stacked = torch.stack([value.to(ops.device, dtype=torch.float32) for value in raw])
+        # Stack BF16 source tensors once on CPU, then perform one contiguous
+        # host->device transfer per operator kind. Avoid B temporary CUDA
+        # source tensors plus the GPU stack copy per batch.
+        host_batch = torch.stack(raw)
+        stacked = host_batch.to(device=ops.device, dtype=torch.float32)
+        del host_batch
         transformed = batched_projection_math(
             stacked, kind=kind, input_basis=input_basis,
             output_basis_t=output_basis_t,
