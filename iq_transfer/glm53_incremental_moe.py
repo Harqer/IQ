@@ -324,9 +324,9 @@ def save_incremental_moe_stage(
 
     # Existing transform uses the same pinv for every expert. Reusing it
     # avoids repeated multi-GB decompositions.
+    projection_ops = ProjectionOps()
     input_inverse = _inverse(stage.moe_input_map, projection_ops)
     latent_inverse = _inverse(stage.latent_map, projection_ops)
-    projection_ops = ProjectionOps()
     if projection_ops.cuda:
         print(f"GLM53_GPU_PROJECTION stage={stage.stage} device={projection_ops.device}", flush=True)
     if not np.isfinite(input_inverse).all() or not np.isfinite(latent_inverse).all():
@@ -424,6 +424,7 @@ def save_incremental_moe_stage(
         (output_dir / f"model-moe-{stage.stage:03d}-projection.json").write_text(
             json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
+        projection_ops.close()
         return
 
     target = f"layers.{physical}.moe"
