@@ -189,6 +189,30 @@ class ExpertInformedBasisTests(unittest.TestCase):
                 ["train", "train", "train", "validation"],
             )
 
+            # A corrupted per-slot baseline must fail closed before any output.
+            slot_manifest = projected / "slot-003" / "projection_manifest.json"
+            slot_manifest.write_text(slot_manifest.read_text() + " ")
+            with (
+                patch(
+                    "iq_transfer.glm53_expert_informed_basis.canonical_glm53_config",
+                    return_value=fake_config,
+                ),
+                patch(
+                    "iq_transfer.glm53_expert_informed_basis._calibration_map",
+                    return_value=(p, 5, calibration_hashes),
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    ExpertBasisProbeError, "manifest digest mismatch"
+                ):
+                    run_expert_informed_probe(
+                        raw_dir=raw, baseline_dir=projected,
+                        calibration_dir=calibration,
+                        output_dir=root / "candidate-corrupt",
+                        candidate_columns=2, seed=14,
+                    )
+            self.assertFalse((root / "candidate-corrupt").exists())
+
     def test_guardrails_reject_bad_experiments(self):
         with tempfile.TemporaryDirectory() as tmp:
             for value in (0, 33):
