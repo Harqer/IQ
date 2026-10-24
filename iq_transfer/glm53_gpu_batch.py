@@ -125,16 +125,22 @@ def project_routed_batch(
             transformed = torch.matmul(stacked, input_basis)
         if not bool(torch.isfinite(transformed).all()):
             raise ProjectionComputeError(f"nonfinite CUDA output in {kind}")
-        for index, original in enumerate(raw):
-            # Preserve ratio reporting; reductions do not alter saved weights.
-            source_energy = float(original.float().square().sum(dtype=torch.float64))
-            projected_energy = float(
-                transformed[index].square().sum(dtype=torch.float64)
-            )
+        # One batched GPU energy reduction and one BF16 device->host transfer
+        # instead of B extra CPU FP64 scans and B independent D2H copies.
+        original_energy = (
+            stacked.square().sum(dim=(-2, -1), dtype=torch.float64).cpu().tolist()
+        )
+        projected_energy_batch = (
+            transformed.square().sum(dim=(-2, -1), dtype=torch.float64).cpu().tolist()
+        )
+        packed_cpu = transformed.to(dtype=torch.bfloat16).cpu()
+        for index in range(len(raw)):
+            source_energy = float(original_energy[index])
+            projected_energy = float(projected_energy_batch[index])
             if not np.isfinite(source_energy) or not np.isfinite(projected_energy):
                 raise ProjectionComputeError("nonfinite expert projection energy")
             entries[index][0][f"{kind}_proj.weight"] = (
-                transformed[index].to(dtype=torch.bfloat16, device="cpu").contiguous()
+                packed_cpu[index].contiguous()
             )
             entries[index][1][kind] = {
                 "donor_frobenius_sq": source_energy,
@@ -143,5 +149,5 @@ def project_routed_batch(
                     projected_energy / source_energy if source_energy else None
                 ),
             }
-        del stacked, transformed, raw
+        del stacked, transformed, raw, packed_cpu
     return entries
