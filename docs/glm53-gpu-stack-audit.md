@@ -136,7 +136,7 @@ shards without revalidating all dependencies and hashes.
   shapes and BF16 dtype using safetensors headers. Structurally wrong
   shards fail before any new weight work; mere file existence is not a
   sufficient resume criterion.
-- These checks are covered by offline regression tests. Exact byte-wise
+- In-run monitoring additionally separates **prefetch stall**, **GPU-batch transformation + reductions**, and **atomic shard serialization** times, allowing the full run to reveal whether I/O, math or writes dominate without a standalone benchmark.\n- These checks are covered by offline regression tests. Exact byte-wise
   integrity still requires a separately verified content-hash provenance
   receipt; header validation alone does not detect corrupted tensor values.
 
