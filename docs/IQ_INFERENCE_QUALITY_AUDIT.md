@@ -47,6 +47,26 @@
 2. **Provenance gate:** classify `weight_only` as experimental/unvalidated;
    the paid launcher requires explicit acknowledgment and retains the existing
    cancellation/timeout protections.
+If you deliberately approve a new paid diagnostic later, the controller also
+supports `--probe-completion`: if the chat-template canary fails, it performs
+**one additional raw** `2 + 2 =` next-token continuation in that **same Job**
+and reports the result before mandatory cancellation. Passing that raw probe
+is **not** a passing chat-model test, but can isolate an instruction-template
+mismatch from more fundamental loss of language modeling.
+
+CPU-only validation from the canonical detached worktree:
+
+```bash
+python -m unittest discover -s tests -p 'test_iq_checkpoint_quality.py' -v
+python -m unittest discover -s tests -p 'test_iq_hf_chat_protocol.py' -v
+python -m unittest discover -s tests -p 'test_iq_hf_job_cleanup.py' -v
+python scripts/audit_iq_checkpoint.py --bucket kofecheckmate/mocha --json
+```
+
+The last command is **expected to exit nonzero** while the bucket remains
+`weight_only`; that is a correctly detected quality blocker, not a Python
+installation failure.
+
 3. **Next *approved* inference:** record per-layer RMS, first-step entropy,
    top-5 token IDs/probabilities, logit min/max/std, and final-hidden RMS
    during **the same** model forward (no separate standalone GPU job).
