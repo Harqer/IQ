@@ -5,7 +5,6 @@ MLA q_b/kv_b/O refactor is still the original full-tensor implementation.
 """
 from __future__ import annotations
 
-import numpy as np
 import torch
 
 from .checkpoint import SafetensorsSource
