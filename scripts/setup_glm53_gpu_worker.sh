@@ -35,5 +35,6 @@ if [[ "$BEFORE_TORCH" != "$AFTER_TORCH" ]]; then
   echo >&2 "CUDA Torch was replaced during dependency install; refusing transfer"
   return 3 2>/dev/null || exit 3
 fi
-python -m pip check
+# Check only IQ's reachable dependencies, not unrelated image build tools.
+python "$IQ_REPO_ROOT/scripts/check_glm53_gpu_stack.py" --pip-check
 echo "IQ_GLM53_CUDA_TORCH_PRESERVED=$AFTER_TORCH"
