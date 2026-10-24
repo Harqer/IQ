@@ -123,6 +123,23 @@ shards without revalidating all dependencies and hashes.
   BF16 output parity and OOM recovery. Actual full-run speedup is **not yet
   measured**, and complete GLM capability retention remains unproven.
 
+**Follow-up hardening — no extra paid runs:**
+
+- Sparse routed experts now use one contiguous BF16 host-to-device batch copy
+  per gate/up/down operator, rather than creating separate temporary CUDA
+  tensors for each expert and stacking them on the GPU.
+- `RoutedBatchPrefetch` enforces at most two outstanding futures (current
+  and one-ahead); future results are released after consumption so HTTP
+  requests cannot fill a large queued backlog.
+- Resumed routed shards are checked for the exact three canonical tensor
+  names, exact `[intermediate, latent]` / `[latent, intermediate]`
+  shapes and BF16 dtype using safetensors headers. Structurally wrong
+  shards fail before any new weight work; mere file existence is not a
+  sufficient resume criterion.
+- These checks are covered by offline regression tests. Exact byte-wise
+  integrity still requires a separately verified content-hash provenance
+  receipt; header validation alone does not detect corrupted tensor values.
+
 **Execution policy:** One authorized GPU session should make continuous
 progress on all 78 layers, with bounded stages and resumability. Per-expert
 shard writes preserve crash recovery without launching separate jobs.
