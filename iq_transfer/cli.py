@@ -8,7 +8,7 @@ from .capture_runner import load_activation_bundle, save_activation_bundle
 from .checkpoint import SafetensorsSource
 from .complete_transplant import canonical_glm53_config, canonical_glm53_full78_config, compile_complete_iq_checkpoint
 from .glm53 import GLM53Inspector
-from .glm53_calibration import bootstrap_glm53_calibration
+from .glm53_calibration import GLM53CalibrationSolution, bootstrap_glm53_calibration
 from .glm53_compile import compile_glm53_iq_checkpoint
 from .glm53_job import validate_glm53_donor, validate_glm53_streaming_donor
 from .glm53_shards import plan_glm53_bootstrap_shards, plan_glm53_compile_shards
@@ -306,10 +306,7 @@ def main(argv: list[str] | None = None) -> int:
             source_indexer_types=inspector.layout.indexer_types,
             warm_device=args.warm_device,
             reuse_weight_only=(
-                __import__(
-                    "iq_transfer.glm53_calibration",
-                    fromlist=["GLM53CalibrationSolution"]
-                ).GLM53CalibrationSolution.load(args.reuse_weight_only)
+                GLM53CalibrationSolution.load(args.reuse_weight_only)
                 if args.reuse_weight_only else None
             ),
         )
