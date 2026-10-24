@@ -44,7 +44,9 @@ def register_saved_shard(
                     raise GLM53ResumeError(f"incorrect physical layer {key}")
                 if key in weight_map:
                     raise GLM53ResumeError(f"duplicate checkpoint tensor {key}")
-    except (OSError, ValueError) as exc:
+    except Exception as exc:
+        if isinstance(exc, GLM53ResumeError):
+            raise
         raise GLM53ResumeError(f"corrupt existing safetensors: {filename}") from exc
     for key in keys:
         weight_map[key] = filename
