@@ -9,7 +9,7 @@ Status: **preparation only; DO NOT launch a full paid transfer** until every lau
 - All GLM source layers **0..77**, with **75 genuine MoE source stages × 256 experts = 19,200**. The first 3 dense stages have **768 function-neutral IQ routed slots**, hence **19,968 total on-disk expert-slot files**.
 - IQ architecture has **78 context + 78 MoE + 79 Mamba placements**. Only 32 Mamba source layers are pretrained; do not label the other 47 as independently pretrained.
 - Output in `hf://buckets/kofecheckmate/iq-glm53-all256/IQ/runs/<RUN_ID>`.
-- Keep prior run `glm53-full78-20261024-c` immutable except through explicitly approved, independently validated resume; never have two writers.
+- Preserve prior run `glm53-full78-20261024-c` for forensic inspection only. It predates the run-provenance receipt, so **do not automatically reuse its saved experts** after calibration repair. Begin with a new RUN_ID on a fresh output; resume is permitted only for runs created with a matching provenance record. Never have two writers.
 
 ## State machine and mandatory gates
 
@@ -71,7 +71,7 @@ If any name/size/hash differs, do not start transfer. Never replace historical r
 
 ## Full GPU resume (only after gates G0–G3)
 
-Use pinned code and exactly one writable output mount. Job arguments, token permissions, storage volume and CUDA device must be reviewed before launch. GPU priority is **L40S for throughput / VRAM**, then **L4 only after a real one-expert throughput and memory benchmark**, then an A100/H100 if sustained OOM or slower effective cost. Select using **$/completed expert**, not hourly rate alone.
+For the first approved execution, use `scripts/start_glm53_full78_gpu_from_verified_calibration.sh` with a **new** RUN_ID and the verified `CALIBRATION_RUN_ID`. For subsequent segments of that *same provenanced run*, use `scripts/resume_glm53_full78_mounted_cloud.sh` only after independent inventory checks. Use pinned code and exactly one writable output mount. Job arguments, token permissions, storage volume and CUDA device must be reviewed before launch. GPU priority is **L40S for throughput / VRAM**, then **L4 only after a real one-expert throughput and memory benchmark**, then an A100/H100 if sustained OOM or slower effective cost. Select using **$/completed expert**, not hourly rate alone.
 
 The guarded entry point is `scripts/resume_glm53_full78_mounted_cloud.sh`. It requires:
 
