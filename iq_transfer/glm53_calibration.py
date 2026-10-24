@@ -657,7 +657,9 @@ def bootstrap_glm53_calibration(
     source_indexer_types: tuple[str, ...],
     warm_device: str = "cpu",
     reuse_weight_only: GLM53CalibrationSolution | None = None,
-) -> GLM53CalibrationSolution:
+    skip_stages: frozenset[int] = frozenset(),
+    stage_sink: object | None = None,
+) -> GLM53CalibrationSolution | None:
     """Build the GLM->IQ bootstrap from pretrained weight geometry.
 
     With ``source_fit=None`` the bootstrap is fully data-free: WARM supplies
@@ -700,18 +702,28 @@ def bootstrap_glm53_calibration(
             old.source_layer: old for old in reuse_weight_only.stages
         }
     stages: list[GLM53StageCalibration] = []
+    if skip_stages and stage_sink is None:
+        raise GLM53CalibrationError(
+            "skipping stages requires an incremental on-disk stage sink"
+        )
+    if not skip_stages.issubset(set(range(len(stage_positions)))):
+        raise GLM53CalibrationError("skip stages outside mapped GLM layers")
     for stage, (context_physical, moe_physical) in enumerate(stage_positions):
+        if stage in skip_stages:
+            continue
         source_layer = mapping[stage]
         prior = reuse_by_source.get(source_layer)
         if prior is not None:
-            stages.append(
-                replace(
-                    prior,
-                    stage=stage,
-                    context_physical_layer=context_physical,
-                    moe_physical_layer=moe_physical,
-                )
+            calibrated = replace(
+                prior,
+                stage=stage,
+                context_physical_layer=context_physical,
+                moe_physical_layer=moe_physical,
             )
+            if stage_sink is None:
+                stages.append(calibrated)
+            else:
+                stage_sink(calibrated)
             continue
         residual, attention_input, moe_input, latent = _warm_glm_layer_maps(
             source_weights,
@@ -772,24 +784,31 @@ def bootstrap_glm53_calibration(
                     source_weights.get(f"{prefix}.weight"),
                     source_weights.get(f"{prefix}.e_score_correction_bias"),
                 )
-        stages.append(
-            GLM53StageCalibration(
-                stage=stage,
-                source_layer=source_layer,
-                context_physical_layer=context_physical,
-                moe_physical_layer=moe_physical,
-                residual_map=residual,
-                attention_input_map=attention_input,
-                moe_input_map=moe_input,
-                compressed_kv_map=kv,
-                latent_map=latent,
-                expert_usage=usage,
-                dense_intermediate_map=dense_map,
-            )
+        calibrated = GLM53StageCalibration(
+            stage=stage,
+            source_layer=source_layer,
+            context_physical_layer=context_physical,
+            moe_physical_layer=moe_physical,
+            residual_map=residual,
+            attention_input_map=attention_input,
+            moe_input_map=moe_input,
+            compressed_kv_map=kv,
+            latent_map=latent,
+            expert_usage=usage,
+            dense_intermediate_map=dense_map,
         )
+        if stage_sink is None:
+            stages.append(calibrated)
+        else:
+            stage_sink(calibrated)
         clear = getattr(source_weights, "clear_ephemeral_shards", None)
         if callable(clear):
             clear(completed_layer=source_layer)
+
+    # Incremental repair writes each missing stage directly, rather than
+    # retaining all 78 enormous WARM matrices simultaneously in RAM.
+    if stage_sink is not None:
+        return None
 
     # Embeddings enter the first canonical IQ residual frame and the LM head
     # reads from the last one. Reusing those residual maps keeps additions and
