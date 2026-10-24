@@ -54,3 +54,24 @@ def register_saved_shard(
 def expected_expert_keys(physical: int, slot: int) -> set[str]:
     root = f"layers.{physical}.moe.routed_experts.{slot}"
     return {f"{root}.{name}_proj.weight" for name in ("gate", "up", "down")}
+
+
+def validate_legacy_partial(output: Path) -> None:
+    """Explicitly adopt a stopped legacy run. Never use concurrently with writer."""
+    if not output.is_dir():
+        raise GLM53ResumeError("missing previous checkpoint output directory")
+    if (output / "COMPILE_COMPLETE.json").exists():
+        raise GLM53ResumeError("cannot resume a completed checkpoint")
+    known = {"model.safetensors.index.json", "transplant_manifest.json",
+             "iq_config.json", "GLM53_RESUME_MANIFEST.json", "INCOMPLETE"}
+    found = 0
+    for path in output.iterdir():
+        name = path.name
+        if name in known or (name.startswith("model-moe-") and
+                             name.endswith("-projection.json")):
+            continue
+        if path.is_symlink() or not path.is_file() or not _SHARD_RE.fullmatch(name):
+            raise GLM53ResumeError(f"unexpected partial checkpoint file: {name}")
+        found += 1
+    if found == 0:
+        raise GLM53ResumeError("no partial shards to resume")
