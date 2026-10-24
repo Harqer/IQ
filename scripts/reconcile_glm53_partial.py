@@ -198,6 +198,63 @@ def restore_original_maps(full_dir: Path, original: Path, plan: dict) -> int:
     return restored
 
 
+def link_overlay(full_dir: Path, original: Path, existing: Path,
+                 plan: dict) -> dict[str, int]:
+    """Local-only zero-copy workspace; never publish symlinks as durable artifacts.
+
+    Original 24-stage content is checked against its SHA256 integrity receipt.
+    Existing full78 stage-50..77 files remain *unverified provenance candidates*.
+    """
+    if full_dir.resolve() == existing.resolve():
+        raise RecoveryError("overlay workspace cannot equal the original HF bucket")
+    old_integrity = json.loads((original / ".calibration_integrity.json").read_text())
+    originals = legacy_sources(original, integrity=old_integrity)
+    full = json.loads((full_dir / "glm53_calibration.json").read_text())
+    linked_original = 0
+    linked_existing = 0
+    for stage in plan["calibration"]["present_stages"]:
+        record = full["stages"][stage]
+        for name in stage_artifacts(record):
+            dst = full_dir / name
+            source = existing / name
+            if (not source.is_file() or source.is_symlink() or
+                dst.exists() or dst.is_symlink()):
+                raise RecoveryError(f"unsafe existing calibration overlay link {name}")
+            dst.symlink_to(source.resolve())
+            linked_existing += 1
+    for stage in plan["calibration"]["old24_sha256_reusable_stages"]:
+        newer = stage_artifacts(full["stages"][stage])
+        by_role = {
+            role: name
+            for name, role in stage_artifacts(originals[stage]).items()
+        }
+        for dest_name, role in newer.items():
+            old_name = by_role[role]
+            src = original / old_name
+            dst = full_dir / dest_name
+            if (not src.is_file() or src.is_symlink() or
+                dst.exists() or dst.is_symlink()):
+                raise RecoveryError(f"unsafe original calibration overlay link {old_name}")
+            receipt_hash = old_integrity["files"].get(old_name)
+            if not receipt_hash or digest(src) != receipt_hash:
+                raise RecoveryError(f"original map hash mismatch {old_name}")
+            dst.symlink_to(src.resolve())
+            linked_original += 1
+    # Lexical/final maps were already saved in the partial full78 calibration.
+    for prefix in ("lexical-input", "final-output"):
+        for extension in (".json", ".safetensors"):
+            name = prefix + extension
+            dst = full_dir / name
+            src = existing / name
+            if (not src.is_file() or src.is_symlink() or
+                dst.exists() or dst.is_symlink()):
+                raise RecoveryError(f"missing/unsafe full78 global map: {name}")
+            dst.symlink_to(src.resolve())
+            linked_existing += 1
+    return {"hash_verified_original_links": linked_original,
+            "existing_unverified_candidate_links": linked_existing}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--partial-calibration", required=True, type=Path)
@@ -206,8 +263,11 @@ def main() -> int:
                         help="Read-only previously uploaded stages, not copied to staging")
     parser.add_argument("--partial-checkpoint", required=True, type=Path)
     parser.add_argument("--expected-old-fingerprint", default=None)
-    parser.add_argument("--apply-old24", action="store_true",
-                        help="Only copy missing SHA-verified old24 stage maps; no overwrites")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--apply-old24", action="store_true",
+                      help="Copy only missing SHA-verified old maps; no overwrites")
+    mode.add_argument("--link-overlay", action="store_true",
+                      help="Create TEMPORARY symlinks to RO sources; never sync these to HF")
     args = parser.parse_args()
     try:
         plan = inspect(args.partial_calibration, args.original_calibration,
@@ -218,8 +278,15 @@ def main() -> int:
             plan["restored_original_files"] = restore_original_maps(
                 args.partial_calibration, args.original_calibration, plan,
             )
-            # Do not silently declare full calibration complete; other stages
-            # still require WARM and independent 866-file SHA verification.
+        if args.link_overlay:
+            if args.existing_calibration is None:
+                raise RecoveryError("--link-overlay requires --existing-calibration")
+            plan["temporary_overlay_links"] = link_overlay(
+                args.partial_calibration, args.original_calibration,
+                args.existing_calibration, plan,
+            )
+        # Neither mode promotes the existing partial checkpoint. Full
+        # calibration and independent checksums are still mandatory.
         print(json.dumps(plan, indent=2, sort_keys=True))
         return 0
     except (OSError, ValueError, KeyError, RecoveryError) as exc:
