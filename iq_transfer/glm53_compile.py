@@ -33,6 +33,7 @@ from .glm53_moe import (
     transform_glm53_moe_selected,
 )
 from .glm53_stream_capture import HubSafetensorsSource
+from .glm53_incremental_moe import save_incremental_moe_stage
 from .mamba3_direct import (
     compile_official_mamba3_mimo_15b_transplant,
     load_official_mamba3_foundation_globals,
@@ -497,17 +498,29 @@ def compile_glm53_iq_checkpoint(
             ),
             weight_map,
         )
-        _save_shard(
-            output,
-            f"model-moe-{stage.stage:03d}.safetensors",
-            _moe_state(
+        if streaming_source:
+            # Persist each transformed expert before reading the next donor
+            # expert. Avoid holding all routed experts in one stage dictionary.
+            save_incremental_moe_stage(
                 source=source,
                 inspector=inspector,
                 stage=stage,
                 config=config,
-            ),
-            weight_map,
-        )
+                output_dir=output,
+                weight_map=weight_map,
+            )
+        else:
+            _save_shard(
+                output,
+                f"model-moe-{stage.stage:03d}.safetensors",
+                _moe_state(
+                    source=source,
+                    inspector=inspector,
+                    stage=stage,
+                    config=config,
+                ),
+                weight_map,
+            )
         clear = getattr(source, "clear_ephemeral_shards", None)
         if callable(clear):
             clear(completed_layer=stage.source_layer)
