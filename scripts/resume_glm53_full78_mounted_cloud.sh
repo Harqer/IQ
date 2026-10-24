@@ -2,6 +2,7 @@
 # RECOVERY MODE for stopped source job only; full GLM-5.3 -> expanded IQ: all 78 original layers, 75 x 256 routed expert slots.
 # Deploy ONLY to an HF Jobs cloud worker with source:ro and output:rw buckets.
 set -euo pipefail
+python scripts/full78_storage_preflight.py
 if [[ "${IQ_CONFIRM_PREVIOUS_JOB_STOPPED:-}" != "1" ]]; then
   echo 'Refusing to resume while previous run may still write.' >&2
   exit 2
