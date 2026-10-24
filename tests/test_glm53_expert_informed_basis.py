@@ -1,6 +1,7 @@
 """Numerical tests for a matrix-free shared WARM tangent-basis probe."""
 from __future__ import annotations
 
+import hashlib
 import json
 import tempfile
 import unittest
@@ -103,6 +104,45 @@ class ExpertInformedBasisTests(unittest.TestCase):
                      "exported_donor_ids": [77, 87, 246, 131]}
                 ],
             }))
+            # Build real, internally consistent baseline manifests rather than
+            # mocking their verification; provenance checks remain active.
+            def digest(path: Path) -> str:
+                return hashlib.sha256(path.read_bytes()).hexdigest()
+
+            raw_hash = digest(raw / "raw_expert_manifest.json")
+            calibration_hashes = {"stage-01-latent.safetensors": "verified"}
+            stage_entries = []
+            for slot, donor_id in enumerate((77, 87, 246, 131)):
+                slot_dir = projected / f"slot-{slot:03d}"
+                slot_dir.mkdir()
+                (slot_dir / "projection_manifest.json").write_text(json.dumps({
+                    "stage": 1,
+                    "donor_expert_id": donor_id,
+                    "raw_bundle_manifest_sha256": raw_hash,
+                    "calibration_sha256": calibration_hashes,
+                    "projection": {
+                        kind: {"subspace_retained_energy": baseline[slot][kind]}
+                        for kind in ("gate", "up", "down")
+                    },
+                }))
+                stage_entries.append({
+                    "slot": slot,
+                    "donor_expert_id": donor_id,
+                    "relative_path": f"slot-{slot:03d}",
+                    "projection_manifest_sha256": digest(
+                        slot_dir / "projection_manifest.json"
+                    ),
+                })
+            (projected / "stage_projection_manifest.json").write_text(
+                json.dumps({
+                    "schema_version": 1,
+                    "stage": 1,
+                    "not_an_iq_checkpoint": True,
+                    "raw_bundle_manifest_sha256": raw_hash,
+                    "calibration_file_sha256": calibration_hashes,
+                    "entries": stage_entries,
+                })
+            )
             fake_config = SimpleNamespace(
                 fingerprint=fp,
                 stable_moe=SimpleNamespace(expert_intermediate_size=2048),
@@ -117,11 +157,7 @@ class ExpertInformedBasisTests(unittest.TestCase):
                 ),
                 patch(
                     "iq_transfer.glm53_expert_informed_basis._calibration_map",
-                    return_value=(p, 5, {"stage-01-latent.safetensors": "verified"}),
-                ),
-                patch(
-                    "iq_transfer.glm53_expert_informed_basis._read_baseline",
-                    return_value=baseline,
+                    return_value=(p, 5, calibration_hashes),
                 ),
                 patch(
                     "iq_transfer.glm53_expert_informed_basis._donor_operator",
@@ -144,6 +180,14 @@ class ExpertInformedBasisTests(unittest.TestCase):
             self.assertTrue((output / "candidate-stage-latent.safetensors").is_file())
             self.assertTrue((output / "basis_probe_report.json").is_file())
             self.assertEqual(len(report["candidate_results"]["experts"]), 4)
+            self.assertEqual(
+                report["baseline_stage_manifest_sha256"],
+                digest(projected / "stage_projection_manifest.json"),
+            )
+            self.assertEqual(
+                [row["role"] for row in report["candidate_results"]["experts"]],
+                ["train", "train", "train", "validation"],
+            )
 
     def test_guardrails_reject_bad_experiments(self):
         with tempfile.TemporaryDirectory() as tmp:
