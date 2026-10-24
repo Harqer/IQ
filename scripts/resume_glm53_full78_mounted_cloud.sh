@@ -35,7 +35,8 @@ fi
 DONOR_REV=abf42e6c0e53bc29a875511301e7b7fcd220315b
 MAMBA_REV=bc6b5d0f7994fe4cb3478242e92da8daf9ee29ec
 SOURCE_CALIB=/hf-bucket/legacy/visionboxx-macha/calibration
-DEST_CALIB="/out/calibration78/$RUN_ID"
+CALIBRATION_RUN_ID="${CALIBRATION_RUN_ID:?Resume requires the same independently verified calibration RUN_ID used by the fresh job}"
+DEST_CALIB="/out/calibration78/$CALIBRATION_RUN_ID"
 DEST_IQ="/out/IQ/runs/$RUN_ID"
 WORK_ROOT="/tmp/iq-full78-$RUN_ID"
 if [[ ! -f "$DEST_CALIB/glm53_calibration.json" || ! -d "$DEST_IQ" || -e "$WORK_ROOT" ]]; then
@@ -45,6 +46,10 @@ fi
 # Read-only file-by-file verification; the calibration manifest alone is insufficient.
 python scripts/glm53_full78_gate.py calibration --root "$DEST_CALIB"
 python scripts/glm53_calibration_sha256.py verify --root "$DEST_CALIB"
+# Fail closed on missing CUDA, inconsistent packages, or unsupported hardware
+# BEFORE fetching donor tensors or allocating a long-running transfer.
+python scripts/check_glm53_gpu_stack.py --require-cuda \
+  --min-vram-gib "${IQ_MIN_GPU_VRAM_GIB:-20}" --smoke --pip-check
 mkdir -p "$WORK_ROOT/glm53" "$WORK_ROOT/mamba3"
 hf download zai-org/GLM-5.3-BF16 config.json model.safetensors.index.json \
   --revision "$DONOR_REV" --local-dir "$WORK_ROOT/glm53"
