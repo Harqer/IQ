@@ -48,6 +48,7 @@ python scripts/glm53_full78_gate.py calibration --root "$DEST_CALIB"
 python scripts/glm53_calibration_sha256.py verify --root "$DEST_CALIB"
 # Fail closed on missing CUDA, inconsistent packages, or unsupported hardware
 # BEFORE fetching donor tensors or allocating a long-running transfer.
+source scripts/setup_glm53_gpu_worker.sh
 python scripts/check_glm53_gpu_stack.py --require-cuda \
   --min-vram-gib "${IQ_MIN_GPU_VRAM_GIB:-20}" --smoke --pip-check
 mkdir -p "$WORK_ROOT/glm53" "$WORK_ROOT/mamba3"
