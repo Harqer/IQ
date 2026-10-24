@@ -21,6 +21,9 @@ class BehaviorTransferError(ValueError):
 
 
 _SHA40 = re.compile(r"^[0-9a-f]{40}$")
+SUPPORTED_GLM_TEACHERS = frozenset({
+    "zai-org/GLM-5.3-BF16", "zai-org/GLM-5.3", "glm-5.3",
+})
 
 
 @dataclass(frozen=True)
@@ -40,8 +43,8 @@ class TeacherExample:
             raise BehaviorTransferError(f"teacher record must have exactly {needed}")
         if not all(isinstance(record[key], str) and record[key].strip() for key in needed):
             raise BehaviorTransferError("all teacher record fields must be nonempty strings")
-        if record["teacher_model"] != "zai-org/GLM-5.3-BF16":
-            raise BehaviorTransferError("teacher source must be GLM-5.3-BF16")
+        if record["teacher_model"] not in SUPPORTED_GLM_TEACHERS:
+            raise BehaviorTransferError("teacher source must be a declared GLM-5.3 serving model")
         if not _SHA40.fullmatch(record["teacher_revision"].lower()):
             raise BehaviorTransferError("teacher revision must be an immutable 40-character git SHA")
         if len(record["prompt"]) > 16000 or len(record["response"]) > 64000:
@@ -62,8 +65,9 @@ def validate_teacher_examples(records: Iterable[dict[str, Any]]) -> list[Teacher
     prompt_hashes: set[str] = set()
     ids: set[str] = set()
     revisions = {ex.teacher_revision.lower() for ex in examples}
-    if len(revisions) != 1:
-        raise BehaviorTransferError("all records must share a pinned teacher revision")
+    models = {ex.teacher_model for ex in examples}
+    if len(revisions) != 1 or len(models) != 1:
+        raise BehaviorTransferError("all records must share a pinned teacher revision and model identity")
     for ex in examples:
         digest = sha256(ex.prompt.encode("utf-8")).hexdigest()
         if digest in prompt_hashes:
