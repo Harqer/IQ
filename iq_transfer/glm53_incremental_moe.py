@@ -417,18 +417,25 @@ def save_incremental_moe_stage(
         return
 
     target = f"layers.{physical}.moe"
-    report["shared"] = _save_expert(
-        source=source,
-        donor_prefix=f"{root}.shared_experts",
-        output_prefix=f"{target}.shared_experts.0",
-        save_filename=f"model-moe-{stage.stage:03d}-shared.safetensors",
-        output_dir=output_dir,
-        weight_map=weight_map,
-        source_width=source_width,
-        intermediate_width=intermediate_width,
-        target_output_map=stage.residual_map.matrix,
-        input_inverse=input_inverse,
-    )
+    shared_name = f"model-moe-{stage.stage:03d}-shared.safetensors"
+    if resume_existing and register_saved_shard(
+        output_dir, shared_name, weight_map, layer=physical
+    ):
+        report["shared"] = {"resumed_existing_shard": True}
+    else:
+        report["shared"] = _save_expert(
+            source=source,
+            donor_prefix=f"{root}.shared_experts",
+            output_prefix=f"{target}.shared_experts.0",
+            save_filename=f"model-moe-{stage.stage:03d}-shared.safetensors",
+            output_dir=output_dir,
+            weight_map=weight_map,
+            source_width=source_width,
+            intermediate_width=intermediate_width,
+            target_output_map=stage.residual_map.matrix,
+            input_inverse=input_inverse,
+        )
+    
 
     for slot, donor_id in enumerate(selected):
         report["routed"][str(slot)] = {
