@@ -25,6 +25,53 @@ The old checkpoint does not record exact selected donor expert IDs;
 do not claim a new compile preserves each of the previous 32 experts
 until donor selection and serialized weights are compared.
 
+## Original artifacts recovered in Hugging Face bucket
+
+The local `find` output only returned the donor's
+`~/IQ-checkpoints/glm53-1907c8ca8b85f895ce72/model.safetensors.index.json`.
+It does **not** prove shard absence (the search did not include `*.safetensors`).
+
+We confirmed the old reusable calibration on Hugging Face at:
+
+```
+hf://buckets/kofecheckmate/mocha/legacy/visionboxx-macha/calibration/
+```
+
+It includes `glm53_calibration.json`, stage-wise expert-usage `.npy`
+and WARM coordinate-map `.safetensors` artifacts. It is the
+original `weight_only` 24-stage/32-expert calibration, with canonical
+target fingerprint. The official donor Mamba foundation and manifest
+remain under:
+
+```
+hf://buckets/kofecheckmate/mocha/legacy/visionboxx-macha/mamba-foundation/
+```
+
+`scripts/reuse_glm53_calibration.py` can **rebind** this existing
+weight-only calibration to a 64/128/256 expert recipient by changing
+the target-config fingerprint and preserving every coordinate map,
+expert-usage array and physical/source layer mapping. This avoids
+redoing WARM Gram/eigendecomposition merely because expert capacity
+changes. The script validates the source manifest's SHA-256 against
+`.calibration_integrity.json`; `--verify-hashes` additionally verifies
+all original files.
+
+This requires the **original calibration folder accessible locally**,
+with all map/usage files; it does **not** download a remote HF bucket.
+The new directory contains symlinks to the old map files and therefore
+is not self-contained. Keep the source folder unchanged and mounted.
+
+```bash
+python scripts/reuse_glm53_calibration.py \
+  --source /path/to/ORIGINAL/calibration \
+  --output /path/to/NEW/calibration-64 \
+  --routed-experts 64 --verify-hashes
+```
+
+This operation copies **no weight tensors** and performs **no training**
+or activation refinement. An expanded checkpoint must still be compiled
+from the pinned GLM donor and original Mamba donor, then verified.
+
 ## New tools
 
 - `scripts/plan_glm53_weight_extension.py`: fetches GLM and IQ
