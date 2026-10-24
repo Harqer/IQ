@@ -37,6 +37,7 @@ from .glm53_moe import (
 from .glm53_stream_capture import HubSafetensorsSource
 from .glm53_incremental_moe import save_incremental_moe_stage
 from .glm53_resume import register_saved_shard, validate_legacy_partial
+from .glm53_lazy_calibration import LazyGLM53Calibration
 from .glm53_incremental_context import transport_input_projection_rows
 from .mamba3_direct import (
     compile_official_mamba3_mimo_15b_transplant,
@@ -398,7 +399,8 @@ def compile_glm53_iq_checkpoint(
             "to overwrite the original checkpoint or an earlier candidate"
         )
     output.mkdir(parents=True, exist_ok=True)
-    calibration = GLM53CalibrationSolution.load(calibration_dir)
+    calibration = (LazyGLM53Calibration(calibration_dir) if streaming_source
+                   else GLM53CalibrationSolution.load(calibration_dir))
     if resume_existing:
         if not streaming_source or len(calibration.stages) != 78:
             raise GLM53CompileError(
@@ -421,7 +423,7 @@ def compile_glm53_iq_checkpoint(
             "calibration must cover all target stages before weight transport"
         )
     if stage_count == 78 and [
-        entry.source_layer for entry in calibration.stages
+        calibration.source_layer_map[i] for i in range(78)
     ] != list(range(78)):
         raise GLM53CompileError(
             "full-78 transfer requires exact GLM source layers 0..77"
@@ -494,7 +496,7 @@ def compile_glm53_iq_checkpoint(
         "routed_experts_per_sparse_stage": config.stable_moe.num_experts,
         "selected_source_expert_ids": {},
         "source_layer_map": {
-            str(stage.stage): stage.source_layer for stage in calibration.stages
+            str(i): int(source) for i, source in calibration.source_layer_map.items()
         },
         "context": "MLA compressed-latent refactor + DSA direct-token indexer",
         "moe": "usage-selected expert subcloning into Stable LatentMoE",
