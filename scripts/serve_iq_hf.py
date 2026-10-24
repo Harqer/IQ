@@ -29,6 +29,20 @@ def build_model():
     tokenizer = AutoTokenizer.from_pretrained(
         str(tokenizer_root), local_files_only=True
     )
+    # Official Mamba3 donor uses Llama 3.1 token IDs, not GLM token IDs.
+    expected_special_ids = {
+        "<|begin_of_text|>": 128000,
+        "<|end_of_text|>": 128001,
+        "<|start_header_id|>": 128006,
+        "<|end_header_id|>": 128007,
+        "<|eot_id|>": 128009,
+    }
+    for token, expected_id in expected_special_ids.items():
+        actual = tokenizer.convert_tokens_to_ids(token)
+        if actual != expected_id:
+            raise RuntimeError(
+                f"Tokenizer special ID mismatch: {token}={actual}, expected {expected_id}"
+            )
     config = json.loads((root / "iq_config.json").read_text(encoding="utf-8"))
     if len(tokenizer) != config["model"]["vocab_size"]:
         raise RuntimeError(
@@ -42,22 +56,38 @@ def build_model():
     return tokenizer, model
 
 
-def generate(tokenizer, model, messages: list[dict], max_new_tokens: int) -> tuple[str, str, int, int]:
-    try:
-        encoded = tokenizer.apply_chat_template(
-            messages, add_generation_prompt=True, return_tensors="pt"
-        )
-        input_ids = (
-            encoded if isinstance(encoded, torch.Tensor) else encoded["input_ids"]
-        )
-    except (ValueError, AttributeError, KeyError, TypeError):
-        transcript = (
-            "\n".join(
-                f"{message['role']}: {message['content']}" for message in messages
+def generate(
+    tokenizer, model, messages: list[dict], max_new_tokens: int,
+    prompt_format: str = "chat",
+) -> tuple[str, str, int, int]:
+    if prompt_format == "completion":
+        if len(messages) != 1 or messages[0]["role"] != "user":
+            raise ValueError("raw completion requires one user message")
+        input_ids = tokenizer(
+            messages[0]["content"], return_tensors="pt"
+        )["input_ids"]
+    elif prompt_format == "chat":
+        try:
+            encoded = tokenizer.apply_chat_template(
+                messages, add_generation_prompt=True, return_tensors="pt"
             )
-            + "\nassistant:"
-        )
-        input_ids = tokenizer(transcript, return_tensors="pt")["input_ids"]
+            input_ids = (
+                encoded if isinstance(encoded, torch.Tensor)
+                else encoded["input_ids"]
+            )
+        except (ValueError, AttributeError, KeyError, TypeError):
+            transcript = (
+                "\n".join(
+                    f"{message['role']}: {message['content']}"
+                    for message in messages
+                )
+                + "\nassistant:"
+            )
+            input_ids = tokenizer(
+                transcript, return_tensors="pt"
+            )["input_ids"]
+    else:
+        raise ValueError("prompt_format must be chat or completion")
     if (
         input_ids.ndim != 2
         or input_ids.shape[0] != 1
@@ -69,20 +99,85 @@ def generate(tokenizer, model, messages: list[dict], max_new_tokens: int) -> tup
     input_ids = input_ids.to("cuda:0")
     generated: list[int] = []
     finish_reason = "length"
+    diagnostics = os.getenv("IQ_DIAGNOSTICS", "0") == "1"
+    stop_ids = {tokenizer.eos_token_id}
+    eot_id = tokenizer.convert_tokens_to_ids("<|eot_id|>")
+    if isinstance(eot_id, int) and 0 <= eot_id < len(tokenizer):
+        stop_ids.add(eot_id)
     with torch.inference_mode():
         for _ in range(max_new_tokens):
-            result = model(input_ids)
+            if diagnostics and not generated:
+                traced: list[tuple[int, torch.Tensor]] = []
+                handles = []
+
+                def make_probe(index: int):
+                    def probe(_module, _inputs, output):
+                        hidden = (
+                            output if isinstance(output, torch.Tensor)
+                            else getattr(output, "hidden_states", None)
+                        )
+                        if isinstance(hidden, torch.Tensor):
+                            traced.append((index, hidden.detach()[:, -1, :]))
+                    return probe
+
+                for index, layer in enumerate(model.layers):
+                    handles.append(layer.register_forward_hook(make_probe(index)))
+                try:
+                    result = model(input_ids, return_hidden_states=True)
+                finally:
+                    for handle in handles:
+                        handle.remove()
+            else:
+                result = model(input_ids)
             logits = result.logits[:, -1, :].float()
             if not bool(torch.isfinite(logits).all()):
                 raise RuntimeError("non-finite IQ logits")
+            if diagnostics and not generated:
+                probabilities = torch.softmax(logits[0], dim=-1)
+                values, indices = probabilities.topk(5)
+                report = {
+                    "event": "IQ_FIRST_TOKEN",
+                    "prompt_tokens": prompt_tokens,
+                    "logit_range": [
+                        float(logits[0].min().item()),
+                        float(logits[0].max().item()),
+                    ],
+                    "logit_std": float(logits[0].std().item()),
+                    "entropy": float(
+                        -(probabilities * probabilities.clamp_min(1e-30).log())
+                        .sum().item()
+                    ),
+                    "top5": [
+                        {
+                            "id": int(token_id),
+                            "probability": float(probability),
+                            "text": tokenizer.decode([int(token_id)]),
+                        }
+                        for token_id, probability in zip(
+                            indices.tolist(), values.tolist()
+                        )
+                    ],
+                    "layers": [
+                        {
+                            "index": index,
+                            "rms": float(
+                                hidden.float().square().mean().sqrt().item()
+                            ),
+                        }
+                        for index, hidden in traced
+                    ],
+                }
+                if isinstance(result.hidden_states, torch.Tensor):
+                    report["last_hidden_rms"] = float(
+                        result.hidden_states[0, -1]
+                        .float().square().mean().sqrt().item()
+                    )
+                print(json.dumps(report, ensure_ascii=False), flush=True)
             next_token = logits.argmax(dim=-1, keepdim=True)
             token_id = int(next_token[0, 0].item())
             generated.append(token_id)
             input_ids = torch.cat((input_ids, next_token), dim=1)
-            if (
-                tokenizer.eos_token_id is not None
-                and token_id == tokenizer.eos_token_id
-            ):
+            if token_id in stop_ids:
                 finish_reason = "stop"
                 break
     return (tokenizer.decode(generated, skip_special_tokens=True), finish_reason, prompt_tokens, len(generated))
@@ -136,7 +231,12 @@ def create_handler(tokenizer, model):
                 tokens = data.get("max_tokens", 16) if compatible else data.get("max_new_tokens", 16)
                 if type(tokens) is not int or not 1 <= tokens <= MAX_NEW_TOKENS:
                     raise ValueError(f"max_new_tokens must be 1..{MAX_NEW_TOKENS}")
-                response, finish_reason, prompt_tokens, completion_tokens = generate(tokenizer, model, messages, tokens)
+                prompt_format = data.get("prompt_format", "chat")
+                if compatible and prompt_format != "chat":
+                    raise ValueError("prompt_format applies only to legacy /chat")
+                response, finish_reason, prompt_tokens, completion_tokens = generate(
+                    tokenizer, model, messages, tokens, prompt_format
+                )
             except (ValueError, KeyError, TypeError) as exc:
                 self.respond(400, {"error": str(exc)})
                 return
