@@ -84,6 +84,22 @@ The guarded entry point is `scripts/resume_glm53_full78_mounted_cloud.sh`. It re
 
 The compiler checks `IQ_TRANSFER_DEADLINE_EPOCH` before every expert and stops with a clear checkpointed-budget message, leaving all committed expert files eligible for the next run. **It deliberately exits nonzero** on a budget stop. Human/operator checks status and files, verifies the prior job stopped, then explicitly launches the next segment.
 
+## Multi-expert CUDA execution (implemented, not yet cloud-validated)
+
+- Sparse MoE compilation uses a bounded CUDA batched GEMM route by default
+  when `IQ_PROJECTION_DEVICE=cuda`. The actual output remains one atomic
+  safetensors shard per expert for safe resume.
+- `IQ_MOE_GPU_BATCH_EXPERTS=4` is the default requested capacity, capped
+  by a 512 MiB BF16 donor payload budget; CUDA OOM automatically splits the
+  already loaded batch and does not re-download weights.
+- `IQ_MOE_GPU_PREFETCH=1` (default) enables **one** future remote batch
+  using a separate `requests.Session`; set to 0 to disable I/O overlap.
+- Every GPU batch emits source-payload throughput and CUDA peak allocated
+  memory as part of the **real full78 transfer**, not a standalone benchmark.
+- Dense stages, common/router transforms and shared experts retain their
+  original checked processing path. GPU runtime and full model inference
+  correctness are not asserted merely because these tensor kernels run.
+
 ## Full-run efficiency policy
 
 Do not launch separate one-expert or one-layer GPU benchmarks. Once preflight,
@@ -93,9 +109,9 @@ The compiler reads/validates actual donor tensors only as it transforms them;
 there is no extra network read of stage-3 slot-0 or slot-41 on startup.
 Observe stage-level throughput, GPU/CPU transfer time, network throughput and
 peak memory in the same job. Resume only genuinely incomplete shards if a
-worker budget expires. A sequential per-slot compiler is **not** equivalent
-to high-throughput multi-expert batching; optimize that separately using
-measured in-run profiles while preserving atomic outputs and exact shapes.
+worker budget expires. The sparse routed expert CUDA path now uses bounded multi-expert batched GEMMs;
+other portions still use staged per-tensor work. Validate numerical parity
+and sustained full-run progress before promoting the new path.
 
 ## Fallback classification
 
