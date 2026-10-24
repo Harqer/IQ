@@ -148,6 +148,30 @@ def verify_generation(client: InferenceClient) -> str:
     return answer
 
 
+def raw_completion_probe(base: str, token: str) -> str:
+    """Diagnose base-LM completion separately from instruction-style chat."""
+    payload = json.dumps({
+        "prompt": "2 + 2 =",
+        "prompt_format": "completion",
+        "max_new_tokens": 4,
+    }).encode("utf-8")
+    request = Request(
+        f"{base}/chat",
+        data=payload,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    with urlopen(request, timeout=300) as response:
+        result = json.load(response)
+    answer = result.get("response")
+    if not isinstance(answer, str):
+        raise RuntimeError(f"invalid raw-completion response: {result!r}")
+    return answer
+
+
 def run(args: argparse.Namespace) -> None:
     token = get_token()
     if token is None:
@@ -178,7 +202,22 @@ def run(args: argparse.Namespace) -> None:
         base = wait_ready(job_id, namespace, token, args.ready_timeout)
         client = InferenceClient(base_url=base, token=token, timeout=args.request_timeout)
         # Reject a loaded-but-incoherent transplant before offering interaction.
-        smoke_answer = verify_generation(client)
+        try:
+            smoke_answer = verify_generation(client)
+        except RuntimeError:
+            if getattr(args, "probe_completion", False):
+                try:
+                    raw = raw_completion_probe(base, token)
+                    print(
+                        f"IQ RAW COMPLETION DIAGNOSTIC (not a chat pass): {raw!r}",
+                        flush=True,
+                    )
+                except Exception as probe_error:
+                    print(
+                        f"IQ raw completion probe failed: {probe_error}",
+                        file=sys.stderr,
+                    )
+            raise
         print(f"IQ arithmetic smoke passed: {smoke_answer!r}", flush=True)
         history: list[dict] = []
         if not args.interactive:
@@ -226,6 +265,10 @@ def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--run-h200", action="store_true", help="Authorize paid H200 inference")
     p.add_argument("--interactive", action="store_true", help="Chat until /quit or Ctrl+C")
+    p.add_argument(
+        "--probe-completion", action="store_true",
+        help="If chat smoke fails, try one raw causal-LM completion in the SAME job",
+    )
     p.add_argument(
         "--accept-unvalidated-checkpoint", action="store_true",
         help="Explicitly acknowledge the existing weight-only transplant did not pass language quality",
