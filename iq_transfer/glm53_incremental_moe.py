@@ -590,6 +590,10 @@ def save_incremental_moe_stage(
             with RoutedBatchPrefetch(source, donor_root=root) as prefetch:
                 started_at = time.perf_counter()
                 completed = 0
+                # Check the paid-worker deadline *before* scheduling the
+                # first prefetch, avoiding a needless outstanding network
+                # read if this job must checkpoint/stop immediately.
+                _check_runtime_budget(stage.stage, pending[0].slot)
                 future = prefetch.submit(pending[:batch_size])
                 while completed < len(pending):
                     specs = pending[completed:completed + batch_size]
