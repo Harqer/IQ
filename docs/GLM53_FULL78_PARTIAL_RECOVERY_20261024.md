@@ -50,6 +50,14 @@ As observed during this audit, `mocha` contains ~78.0 **GB**, `iq-glm53-all256` 
 
 The repair script's preflight requires verified large-output storage. Source reuse avoids recomputing the 15 original calibrated stages and 28 saved late stages, and a zero-copy workspace avoids unnecessary extra copies before final publication. New WARM computation is needed for **35 stages**, not 78.
 
+## Hugging Face workflow start — 2026-10-24
+
+[Read-only Hugging Face recovery/storage-gate job](https://huggingface.co/jobs/kofecheckmate/6add44a4046eb82b1ece0d3c) **completed successfully** (`cpu-basic`). It verified the 28 existing calibrated stages, the 15 original-24 reuse sources, the **35 missing WARM stages** and the **41 preserved expert shards**. It confirmed the missing full78 SHA256 receipt and missing partial run provenance. The run correctly reported `BLOCKED_STORAGE` and did **not** launch CUDA, overwrite original shards or generate unpersistable weights.
+
+At verification, four visible private HF buckets contained **99,977,407,435 bytes** against the Free plan's nominal **100,000,000,000 byte** private allowance — at most **22,592,565 bytes** remain, excluding any other private repositories. The account was confirmed Free by HF identity inspection. Do not treat scratch filesystem free space, setting `IQ_CONFIRMED_PRIVATE_STORAGE_GIB`, or successful read-only bucket mounts as provider evidence of 600 GiB durable private output space.
+
+To proceed, the user must provision or authorize adequate private durable storage (Hugging Face PRO includes 1 TB private, subject to verified available usage; alternate external storage needs an explicitly implemented and vetted destination). Once visible/attested, run the full **35-missing-stage** calibration repair as a CUDA job, publish and independently verify the 866-file receipt, then only continue the full checkpoint under single-writer protection. Never silently adopt the 41 expert candidates without donor numerical equivalence evidence.
+
 ## Outstanding acceptance gates
 
 1. The nine later-stage original overlaps have now passed SHA-256 equality; **validate the 19 remaining saved late-stage source mappings** before promotion.
