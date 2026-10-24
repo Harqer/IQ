@@ -16,7 +16,6 @@ import tempfile
 from pathlib import Path
 
 import numpy as np
-import torch
 from huggingface_hub import hf_hub_download
 
 from iq_transfer.glm53_stream_capture import capture_glm53_bootstrap_streaming
