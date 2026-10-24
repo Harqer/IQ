@@ -524,11 +524,14 @@ def save_incremental_moe_stage(
             from .glm53_batch_prefetch import RoutedBatchPrefetch
 
             device_batch_limit = batch_size
+            stage_compute_s = 0.0
+            stage_save_s = 0.0
+            stage_prefetch_wait_s = 0.0
 
             def commit_batch(
                 specs: list[ExpertSpec], planned_source: Any,
             ) -> None:
-                nonlocal device_batch_limit
+                nonlocal device_batch_limit, stage_compute_s, stage_save_s
                 # Preserve already staged HTTP tensors across CUDA OOM retries.
                 if len(specs) > device_batch_limit:
                     cursor = 0
@@ -537,6 +540,7 @@ def save_incremental_moe_stage(
                         commit_batch(part, planned_source)
                         cursor += len(part)
                     return
+                compute_started = time.perf_counter()
                 try:
                     results = project_routed_batch(
                         source=planned_source,
@@ -565,8 +569,10 @@ def save_incremental_moe_stage(
                     commit_batch(specs[:left_count], planned_source)
                     commit_batch(specs[left_count:], planned_source)
                     return
+                stage_compute_s += time.perf_counter() - compute_started
                 # Individual atomic shards are the recovery boundary even
                 # when several experts share one GPU batched operation.
+                save_started = time.perf_counter()
                 for spec, (weights, metrics) in zip(specs, results):
                     prefix = f"{target}.routed_experts.{spec.slot}"
                     state = {
@@ -582,6 +588,7 @@ def save_incremental_moe_stage(
                         "donor_expert_id": spec.donor_id,
                         "operators": metrics,
                     }
+                stage_save_s += time.perf_counter() - save_started
                 del results
 
             # Read the NEXT bounded remote batch while CUDA computes/saves the
@@ -604,7 +611,9 @@ def save_incremental_moe_stage(
                         if next_offset < len(pending) else []
                     )
                     next_future = prefetch.submit(upcoming)
+                    wait_started = time.perf_counter()
                     staged_source = prefetch.source_for(future, source)
+                    stage_prefetch_wait_s += time.perf_counter() - wait_started
                     commit_batch(specs, staged_source)
                     del staged_source
                     completed += len(specs)
@@ -622,6 +631,9 @@ def save_incremental_moe_stage(
                         f"planned_batch={len(specs)} gpu_batch={device_batch_limit} "
                         f"elapsed_s={elapsed_s:.1f} "
                         f"source_mib_per_s={processed_mib/elapsed_s:.1f} "
+                        f"prefetch_wait_s={stage_prefetch_wait_s:.2f} "
+                        f"batch_compute_s={stage_compute_s:.2f} "
+                        f"shard_save_s={stage_save_s:.2f} "
                         f"cuda_peak_allocated_mib="
                         f"{torch.cuda.max_memory_allocated()/(1024*1024):.0f}",
                         flush=True,
