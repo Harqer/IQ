@@ -34,6 +34,7 @@ from .glm53_moe import (
 )
 from .glm53_stream_capture import HubSafetensorsSource
 from .glm53_incremental_moe import save_incremental_moe_stage
+from .glm53_incremental_context import transport_input_projection_rows
 from .mamba3_direct import (
     compile_official_mamba3_mimo_15b_transplant,
     load_official_mamba3_foundation_globals,
@@ -129,9 +130,15 @@ def _context_state(
         ),
     )
 
-    q_a = _transport_input_only(
-        _tensor(source, f"{prefix}.self_attn.q_a_proj.weight"),
-        stage.attention_input_map,
+    q_a_key = f"{prefix}.self_attn.q_a_proj.weight"
+    q_a = (
+        transport_input_projection_rows(
+            source=source,
+            key=q_a_key,
+            residual_map=stage.attention_input_map,
+        )
+        if isinstance(source, HubSafetensorsSource)
+        else _transport_input_only(_tensor(source, q_a_key), stage.attention_input_map)
     )
     state: dict[str, torch.Tensor] = {
         f"layers.{physical}.norm.weight": torch.ones(
