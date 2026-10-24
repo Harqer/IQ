@@ -827,6 +827,7 @@ def _translate_mamba_overlay(
     config: IQHybridConfig,
     output_dir: Path,
     weight_map: dict[str, str],
+    resume_existing: bool = False,
 ) -> dict[int, str]:
     try:
         from safetensors.torch import load_file
@@ -859,6 +860,19 @@ def _translate_mamba_overlay(
     provenance: dict[int, str] = {}
     for ordinal, physical in enumerate(positions):
         original_ordinal = target_to_source.get(ordinal)
+        if resume_existing:
+            from .glm53_resume import register_saved_shard
+            saved = register_saved_shard(
+                output_dir, f"model-mamba-{ordinal:03d}.safetensors",
+                weight_map, layer=physical,
+            )
+            if saved:
+                provenance[physical] = (
+                    "recipient_native_identity" if original_ordinal is None
+                    or original_ordinal in identity else
+                    f"{MAMBA3_MIMO_15B_REPO}:layer:{placements[original_ordinal]['source_layer']}"
+                )
+                continue
         if original_ordinal is not None and original_ordinal in placements:
             item = placements[original_ordinal]
             source = load_file(str(overlay_dir / item["shard"]), device="cpu")

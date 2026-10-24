@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import requests
+import time
 from huggingface_hub import get_token, hf_hub_url
 
 from scripts.probe_glm53_remote_ranges import (
@@ -184,13 +185,29 @@ class HubSafetensorsSource(SafetensorsSource):
             raise DonorError("remote tensor byte range lies outside shard")
         for offset in range(0, size, self.max_request_bytes):
             length = min(self.max_request_bytes, size - offset)
-            try:
-                payload, remote_total = fetch_exact_range(
-                    self._session, url, start + offset, start + offset + length - 1,
-                    token=self.token,
-                )
-            except (RangeProbeError, requests.RequestException, ValueError) as exc:
-                raise DonorError(f"remote tensor-range request rejected: {exc}") from exc
+            # Network timeouts may be transient, but never retry malformed
+            # Range headers or wrong bytes: only complete HTTP 206 payloads pass.
+            for attempt in range(3):
+                try:
+                    payload, remote_total = fetch_exact_range(
+                        self._session, url,
+                        start + offset, start + offset + length - 1,
+                        token=self.token,
+                    )
+                    break
+                except (requests.Timeout, requests.ConnectionError) as exc:
+                    if attempt == 2:
+                        raise DonorError(
+                            f"remote GLM tensor range failed after 3 attempts: {exc}"
+                        ) from exc
+                    print(
+                        f"GLM53_HTTP_RETRY attempt={attempt + 1} "
+                        f"shard={shard} offset={start + offset}",
+                        flush=True,
+                    )
+                    time.sleep(2 ** attempt)
+                except (RangeProbeError, requests.RequestException, ValueError) as exc:
+                    raise DonorError(f"remote tensor-range request rejected: {exc}") from exc
             if remote_total != total:
                 raise DonorError("shard size changed between header and tensor reads")
             result[offset:offset + length] = payload

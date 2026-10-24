@@ -36,6 +36,8 @@ from .glm53_moe import (
 )
 from .glm53_stream_capture import HubSafetensorsSource
 from .glm53_incremental_moe import save_incremental_moe_stage
+from .glm53_resume import register_saved_shard, validate_legacy_partial
+from .glm53_lazy_calibration import LazyGLM53Calibration
 from .glm53_incremental_context import transport_input_projection_rows
 from .mamba3_direct import (
     compile_official_mamba3_mimo_15b_transplant,
@@ -377,6 +379,7 @@ def compile_glm53_iq_checkpoint(
     glm53_repo_id: str = "zai-org/GLM-5.3-BF16",
     target_config: IQHybridConfig | None = None,
     reuse_foundation_checkpoint: str | Path | None = None,
+    resume_existing: bool = False,
 ) -> GLM53CompileResult:
     if (mamba3_checkpoint is None) == (reuse_foundation_checkpoint is None):
         raise GLM53CompileError(
@@ -389,13 +392,21 @@ def compile_glm53_iq_checkpoint(
         and config.stable_moe.num_experts > 32
         and output.exists()
         and (not output.is_dir() or any(output.iterdir()))
+        and not resume_existing
     ):
         raise GLM53CompileError(
             "expanded GLM compile requires a NEW empty directory; refusing "
             "to overwrite the original checkpoint or an earlier candidate"
         )
     output.mkdir(parents=True, exist_ok=True)
-    calibration = GLM53CalibrationSolution.load(calibration_dir)
+    calibration = (LazyGLM53Calibration(calibration_dir) if streaming_source
+                   else GLM53CalibrationSolution.load(calibration_dir))
+    if resume_existing:
+        if not streaming_source or len(calibration.stages) != 78:
+            raise GLM53CompileError(
+                "restart requires a full78 streaming donor compilation"
+            )
+        validate_legacy_partial(output)
     if config.stable_moe is None or config.stable_moe.num_experts not in (32, 64, 128, 256):
         raise GLM53CompileError("unsupported GLM routed expert capacity")
     stage_count = len(donor_layer_positions(config))
@@ -412,7 +423,7 @@ def compile_glm53_iq_checkpoint(
             "calibration must cover all target stages before weight transport"
         )
     if stage_count == 78 and [
-        entry.source_layer for entry in calibration.stages
+        calibration.source_layer_map[i] for i in range(78)
     ] != list(range(78)):
         raise GLM53CompileError(
             "full-78 transfer requires exact GLM source layers 0..77"
@@ -440,6 +451,7 @@ def compile_glm53_iq_checkpoint(
             # Cloud-only compilation needs full dense-prefix GLM MLP tensors
             # (larger than 128 MiB); HTTP requests remain capped at 4 MiB.
             max_tensor_bytes=512 * 1024 * 1024,
+            max_request_bytes=16 * 1024 * 1024,
         )
         if streaming_source
         else SafetensorsSource(donor.checkpoint_dir)
@@ -484,7 +496,7 @@ def compile_glm53_iq_checkpoint(
         "routed_experts_per_sparse_stage": config.stable_moe.num_experts,
         "selected_source_expert_ids": {},
         "source_layer_map": {
-            str(stage.stage): stage.source_layer for stage in calibration.stages
+            str(i): int(source) for i, source in calibration.source_layer_map.items()
         },
         "context": "MLA compressed-latent refactor + DSA direct-token indexer",
         "moe": "usage-selected expert subcloning into Stable LatentMoE",
@@ -506,7 +518,11 @@ def compile_glm53_iq_checkpoint(
             weight_map=weight_map,
         )
         provenance["frozen_mamba_foundation_reuse"] = reused_foundation
-    else:
+    elif not (
+        resume_existing and register_saved_shard(
+            output, "model-global.safetensors", weight_map
+        )
+    ):
         assert mamba3_checkpoint is not None
         foundation_globals = load_official_mamba3_foundation_globals(
             checkpoint=mamba3_checkpoint,
@@ -540,17 +556,24 @@ def compile_glm53_iq_checkpoint(
             if len(chosen_ids) != config.stable_moe.num_experts:
                 raise GLM53CompileError("selected routed expert count mismatch")
             provenance["selected_source_expert_ids"][str(stage.stage)] = list(chosen_ids)
-        _save_shard(
-            output,
-            f"model-context-{stage.stage:03d}.safetensors",
-            _context_state(
-                source=source,
-                inspector=inspector,
-                stage=stage,
-                config=config,
-            ),
-            weight_map,
-        )
+        context_name = f"model-context-{stage.stage:03d}.safetensors"
+        if not (
+            resume_existing and register_saved_shard(
+                output, context_name, weight_map,
+                layer=stage.context_physical_layer,
+            )
+        ):
+            _save_shard(
+                output,
+                context_name,
+                _context_state(
+                    source=source,
+                    inspector=inspector,
+                    stage=stage,
+                    config=config,
+                ),
+                weight_map,
+            )
         if streaming_source:
             # Persist each transformed expert before reading the next donor
             # expert. Avoid holding all routed experts in one stage dictionary.
@@ -561,6 +584,7 @@ def compile_glm53_iq_checkpoint(
                 config=config,
                 output_dir=output,
                 weight_map=weight_map,
+                resume_existing=resume_existing,
             )
         else:
             _save_shard(
@@ -593,14 +617,20 @@ def compile_glm53_iq_checkpoint(
                 config=config,
                 output_dir=output,
                 weight_map=weight_map,
+                resume_existing=resume_existing,
             )
 
-    _save_shard(
-        output,
-        "model-native.safetensors",
-        _native_controller_state(config),
-        weight_map,
-    )
+    if not (
+        resume_existing and register_saved_shard(
+            output, "model-native.safetensors", weight_map
+        )
+    ):
+        _save_shard(
+            output,
+            "model-native.safetensors",
+            _native_controller_state(config),
+            weight_map,
+        )
 
     expected = expected_complete_state_keys(config)
     actual = frozenset(weight_map)

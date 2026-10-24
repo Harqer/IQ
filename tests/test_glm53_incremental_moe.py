@@ -216,6 +216,37 @@ class TestIncrementalMoE(unittest.TestCase):
             ],
         )
 
+    def test_resume_only_missing_sparse_expert_without_rewriting_saved_files(self):
+        import hashlib
+        source, stage, config, inspector = _donor(sparse=True)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original_index = {}
+            save_incremental_moe_stage(
+                source=source, inspector=inspector, stage=stage,
+                config=config, output_dir=root, weight_map=original_index,
+            )
+            all_files = {p.name: hashlib.sha256(p.read_bytes()).hexdigest()
+                         for p in root.glob("*.safetensors")}
+            missing = "model-moe-000-expert-001.safetensors"
+            (root / missing).unlink()
+            source.read_keys.clear()
+            resumed_index = {}
+            save_incremental_moe_stage(
+                source=source, inspector=inspector, stage=stage,
+                config=config, output_dir=root, weight_map=resumed_index,
+                resume_existing=True,
+            )
+            self.assertEqual(resumed_index, original_index)
+            for name, digest in all_files.items():
+                self.assertEqual(hashlib.sha256((root / name).read_bytes()).hexdigest(),
+                                 digest)
+            self.assertEqual(set(source.read_keys), {
+                "model.layers.3.mlp.experts.25.gate_proj.weight",
+                "model.layers.3.mlp.experts.25.up_proj.weight",
+                "model.layers.3.mlp.experts.25.down_proj.weight",
+            })
+
     def test_orthogonal_subcloning_inverse_skips_svd(self):
         from unittest.mock import patch
 

@@ -24,6 +24,8 @@ from .complete_transplant import _save_shard
 from .glm53 import GLM53Inspector
 from .glm53_calibration import GLM53StageCalibration
 from .glm53_moe import select_experts_by_usage
+from .glm53_resume import register_saved_shard, expected_expert_keys
+from .glm53_gpu_projection import ProjectionOps
 from .transport import CoordinateMap
 from iq_model import IQHybridConfig
 
@@ -72,7 +74,7 @@ def _convert(arr: np.ndarray, *, dtype: torch.dtype = torch.bfloat16) -> torch.T
     return torch.from_numpy(np.ascontiguousarray(arr)).to(dtype=dtype)
 
 
-def _inverse(map_: CoordinateMap) -> np.ndarray:
+def _inverse(map_: CoordinateMap, projection_ops: ProjectionOps | None = None) -> np.ndarray:
     # The canonical weight-only subcloning maps have orthonormal one-hot
     # columns. Their Moore-Penrose transpose equals the original matrix.
     # Recognize that exact case in linear memory/time and skip a huge SVD.
@@ -87,6 +89,10 @@ def _inverse(map_: CoordinateMap) -> np.ndarray:
     # Verify the full Gram matrix by small column blocks before exploiting
     # pinv(P).T == P. This uses O(k * block_cols) scratch, not O(k*k).
     if matrix.size > _INVERSE_DENSE_THRESHOLD:
+        if projection_ops is not None and projection_ops.cuda:
+            if not projection_ops.check_orthonormal(matrix):
+                raise GLM53IncrementalMoEError("GPU WARM basis not orthonormal")
+            return matrix
         if matrix.shape[0] < matrix.shape[1]:
             raise GLM53IncrementalMoEError(
                 "large wide coordinate map requires a bounded inverse solver"
@@ -119,6 +125,7 @@ def _save_expert(
     input_inverse: np.ndarray,
     middle_map: np.ndarray | None = None,
     middle_inverse: np.ndarray | None = None,
+    projection_ops: ProjectionOps | None = None,
 ) -> dict[str, dict[str, float | None]]:
     metrics: dict[str, dict[str, float | None]] = {}
     if (middle_map is None) != (middle_inverse is None):
@@ -159,12 +166,12 @@ def _save_expert(
                 source_energy += _energy(chunk)
                 projected += middle_map[row:stop].T @ chunk
                 del chunk
-            result = projected @ input_inverse
+            result = projection_ops.matmul(projected, input_inverse, cache_right=True) if projection_ops else projected @ input_inverse
             del projected
         else:
             w = _finite(source.get(key), shape, key)
             source_energy = _energy(w)
-            result = w @ input_inverse
+            result = projection_ops.matmul(w, input_inverse, cache_right=True) if projection_ops else w @ input_inverse
             del w
         metrics[kind] = _energy_ratio(source_energy, _energy(result))
         state[f"{output_prefix}.{kind}_proj.weight"] = _convert(result)
@@ -198,7 +205,7 @@ def _save_expert(
     else:
         down = _finite(source.get(key), shape, key)
         source_energy = _energy(down)
-        result = target_output_map.T @ down
+        result = projection_ops.matmul(target_output_map.T, down, cache_left=True) if projection_ops else target_output_map.T @ down
         del down
     metrics["down"] = _energy_ratio(source_energy, _energy(result))
     state[f"{output_prefix}.down_proj.weight"] = _convert(result)
@@ -274,6 +281,7 @@ def save_incremental_moe_stage(
     config: IQHybridConfig,
     output_dir: Path,
     weight_map: dict[str, str],
+    resume_existing: bool = False,
 ) -> None:
     """Write common, shared, and each routed expert to independently indexed shards.
 
@@ -316,8 +324,11 @@ def save_incremental_moe_stage(
 
     # Existing transform uses the same pinv for every expert. Reusing it
     # avoids repeated multi-GB decompositions.
-    input_inverse = _inverse(stage.moe_input_map)
-    latent_inverse = _inverse(stage.latent_map)
+    projection_ops = ProjectionOps()
+    input_inverse = _inverse(stage.moe_input_map, projection_ops)
+    latent_inverse = _inverse(stage.latent_map, projection_ops)
+    if projection_ops.cuda:
+        print(f"GLM53_GPU_PROJECTION stage={stage.stage} device={projection_ops.device}", flush=True)
     if not np.isfinite(input_inverse).all() or not np.isfinite(latent_inverse).all():
         raise GLM53IncrementalMoEError("nonfinite coordinate pseudoinverse")
 
@@ -333,47 +344,62 @@ def save_incremental_moe_stage(
         ),
         "routed": {},
     }
-    common = _common(
-        source=source,
-        stage=stage,
-        stable=stable,
-        physical=physical,
-        sparse=sparse,
-        selected=selected,
-        source_width=source_width,
-        input_inverse=input_inverse,
-        latent_inverse=latent_inverse,
-    )
-    _save_shard(
-        output_dir,
-        f"model-moe-{stage.stage:03d}-common.safetensors",
-        common,
-        weight_map,
-    )
-    del common
+    common_name = f"model-moe-{stage.stage:03d}-common.safetensors"
+    if not (
+        resume_existing and register_saved_shard(
+            output_dir, common_name, weight_map, layer=physical
+        )
+    ):
+        common = _common(
+            source=source,
+            stage=stage,
+            stable=stable,
+            physical=physical,
+            sparse=sparse,
+            selected=selected,
+            source_width=source_width,
+            input_inverse=input_inverse,
+            latent_inverse=latent_inverse,
+        )
+        _save_shard(output_dir, common_name, common, weight_map)
+        del common
     root = f"model.layers.{source_layer}.mlp"
     if not sparse:
         # The actual dense donor function is retained in the shared expert;
         # all routed experts are deliberately zero, matching the old compiler.
         middle = stage.dense_intermediate_map
         assert middle is not None
-        middle_inverse = _inverse(middle)
-        report["shared"] = _save_expert(
-            source=source,
-            donor_prefix=root,
-            output_prefix=f"layers.{physical}.moe.shared_experts.0",
-            save_filename=f"model-moe-{stage.stage:03d}-shared.safetensors",
-            output_dir=output_dir,
-            weight_map=weight_map,
-            source_width=source_width,
-            intermediate_width=middle.matrix.shape[0],
-            target_output_map=stage.residual_map.matrix,
-            input_inverse=input_inverse,
-            middle_map=middle.matrix,
-            middle_inverse=middle_inverse,
-        )
+        middle_inverse = _inverse(middle, projection_ops)
+        shared_name = f"model-moe-{stage.stage:03d}-shared.safetensors"
+        if resume_existing and register_saved_shard(
+            output_dir, shared_name, weight_map, layer=physical
+        ):
+            report["shared"] = {"resumed_existing_shard": True}
+        else:
+            report["shared"] = _save_expert(
+                source=source,
+                donor_prefix=root,
+                output_prefix=f"layers.{physical}.moe.shared_experts.0",
+                save_filename=f"model-moe-{stage.stage:03d}-shared.safetensors",
+                output_dir=output_dir,
+                weight_map=weight_map,
+                source_width=source_width,
+                intermediate_width=middle.matrix.shape[0],
+                target_output_map=stage.residual_map.matrix,
+                input_inverse=input_inverse,
+                middle_map=middle.matrix,
+                middle_inverse=middle_inverse,
+                projection_ops=projection_ops,
+            )
         target = f"layers.{physical}.moe"
         for slot in range(stable.num_experts):
+            expert_name = f"model-moe-{stage.stage:03d}-expert-{slot:03d}.safetensors"
+            if resume_existing and register_saved_shard(
+                output_dir, expert_name, weight_map,
+                expected_keys=expected_expert_keys(physical, slot),
+                layer=physical,
+            ):
+                continue
             zeros: dict[str, torch.Tensor] = {
                 f"{target}.routed_experts.{slot}.gate_proj.weight": torch.zeros(
                     (stable.expert_intermediate_size, stable.latent_size),
@@ -398,23 +424,43 @@ def save_incremental_moe_stage(
         (output_dir / f"model-moe-{stage.stage:03d}-projection.json").write_text(
             json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
+        projection_ops.close()
         return
 
     target = f"layers.{physical}.moe"
-    report["shared"] = _save_expert(
-        source=source,
-        donor_prefix=f"{root}.shared_experts",
-        output_prefix=f"{target}.shared_experts.0",
-        save_filename=f"model-moe-{stage.stage:03d}-shared.safetensors",
-        output_dir=output_dir,
-        weight_map=weight_map,
-        source_width=source_width,
-        intermediate_width=intermediate_width,
-        target_output_map=stage.residual_map.matrix,
-        input_inverse=input_inverse,
-    )
+    shared_name = f"model-moe-{stage.stage:03d}-shared.safetensors"
+    if resume_existing and register_saved_shard(
+        output_dir, shared_name, weight_map, layer=physical
+    ):
+        report["shared"] = {"resumed_existing_shard": True}
+    else:
+        report["shared"] = _save_expert(
+            source=source,
+            donor_prefix=f"{root}.shared_experts",
+            output_prefix=f"{target}.shared_experts.0",
+            save_filename=f"model-moe-{stage.stage:03d}-shared.safetensors",
+            output_dir=output_dir,
+            weight_map=weight_map,
+            source_width=source_width,
+            intermediate_width=intermediate_width,
+            target_output_map=stage.residual_map.matrix,
+            input_inverse=input_inverse,
+            projection_ops=projection_ops,
+        )
+
 
     for slot, donor_id in enumerate(selected):
+        expert_name = f"model-moe-{stage.stage:03d}-expert-{slot:03d}.safetensors"
+        if resume_existing and register_saved_shard(
+            output_dir, expert_name, weight_map,
+            expected_keys=expected_expert_keys(physical, slot),
+            layer=physical,
+        ):
+            report["routed"][str(slot)] = {
+                "donor_expert_id": int(donor_id),
+                "resumed_existing_shard": True,
+            }
+            continue
         report["routed"][str(slot)] = {
             "donor_expert_id": int(donor_id),
             "operators": _save_expert(
@@ -428,9 +474,13 @@ def save_incremental_moe_stage(
             intermediate_width=intermediate_width,
             target_output_map=stage.latent_map.matrix,
             input_inverse=latent_inverse,
+            projection_ops=projection_ops,
             ),
         }
+        if slot % 8 == 0:
+            print(f"GLM53_PROGRESS layer={stage.stage} expert={slot + 1}/{len(selected)}", flush=True)
         gc.collect()
+    projection_ops.close()
     (output_dir / f"model-moe-{stage.stage:03d}-projection.json").write_text(
         json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
