@@ -66,7 +66,8 @@ class ProjectionOps:
         if not self.cuda:
             raise ProjectionComputeError("GPU basis verification requested on CPU")
         with torch.inference_mode():
-            gpu = self._to_device(p, cache=True)
+            # Revalidate the actual basis; cached GPU views may be stale after edits.
+            gpu = self._to_device(p, cache=False)
             for j in range(0, p.shape[1], 128):
                 k = min(j + 128, p.shape[1])
                 gram = gpu.T @ gpu[:, j:k]
