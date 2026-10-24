@@ -34,9 +34,14 @@ def sha256_file(path: Path) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--text", action="append", required=True,
-        help="text to tokenize; may repeat for several separate short examples",
+    examples = parser.add_mutually_exclusive_group(required=True)
+    examples.add_argument(
+        "--text", action="append",
+        help="text to tokenize; may repeat for separate short examples",
+    )
+    examples.add_argument(
+        "--texts-file", type=Path,
+        help="UTF-8 file containing one separate sample per nonempty line (max 8)",
     )
     parser.add_argument(
         "--output", type=Path, required=True,
@@ -47,11 +52,22 @@ def main() -> int:
         help="max tokens per text (1..256); recommended initial smoke: 16",
     )
     args = parser.parse_args()
+    if args.texts_file is not None:
+        try:
+            texts = [
+                line.strip() for line in args.texts_file.read_text(
+                    encoding="utf-8"
+                ).splitlines() if line.strip()
+            ]
+        except (OSError, UnicodeError) as exc:
+            parser.error(f"unable to read texts-file: {exc}")
+    else:
+        texts = args.text or []
     if (
         args.output.suffix != ".npy"
-        or len(args.text) > 8
+        or not 1 <= len(texts) <= 8
         or not 1 <= args.max_tokens <= 256
-        or any(not item.strip() for item in args.text)
+        or any(not item.strip() for item in texts)
     ):
         parser.error(
             "require .npy output, 1..8 nonempty texts, and max-tokens 1..256"
@@ -66,7 +82,7 @@ def main() -> int:
             REPO, revision=REVISION, trust_remote_code=False
         )
         encoded = tokenizer(
-            args.text, return_tensors="pt", truncation=True,
+            texts, return_tensors="pt", truncation=True,
             max_length=args.max_tokens, padding=True,
         )
         ids = encoded["input_ids"].cpu()
@@ -127,7 +143,7 @@ def main() -> int:
             "tap_position": "after post_attention_layernorm, before sparse MoE",
             "executed_layers": [0, 1, 2, 3],
             "routed_experts_executed": 0,
-            "input_texts_count": len(args.text),
+            "input_texts_count": len(texts),
             "num_valid_tokens": int(values.shape[0]),
             "hidden_width": 6144,
             "dtype": "float32",
