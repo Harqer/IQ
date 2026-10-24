@@ -56,22 +56,38 @@ def build_model():
     return tokenizer, model
 
 
-def generate(tokenizer, model, messages: list[dict], max_new_tokens: int) -> tuple[str, str, int, int]:
-    try:
-        encoded = tokenizer.apply_chat_template(
-            messages, add_generation_prompt=True, return_tensors="pt"
-        )
-        input_ids = (
-            encoded if isinstance(encoded, torch.Tensor) else encoded["input_ids"]
-        )
-    except (ValueError, AttributeError, KeyError, TypeError):
-        transcript = (
-            "\n".join(
-                f"{message['role']}: {message['content']}" for message in messages
+def generate(
+    tokenizer, model, messages: list[dict], max_new_tokens: int,
+    prompt_format: str = "chat",
+) -> tuple[str, str, int, int]:
+    if prompt_format == "completion":
+        if len(messages) != 1 or messages[0]["role"] != "user":
+            raise ValueError("raw completion requires one user message")
+        input_ids = tokenizer(
+            messages[0]["content"], return_tensors="pt"
+        )["input_ids"]
+    elif prompt_format == "chat":
+        try:
+            encoded = tokenizer.apply_chat_template(
+                messages, add_generation_prompt=True, return_tensors="pt"
             )
-            + "\nassistant:"
-        )
-        input_ids = tokenizer(transcript, return_tensors="pt")["input_ids"]
+            input_ids = (
+                encoded if isinstance(encoded, torch.Tensor)
+                else encoded["input_ids"]
+            )
+        except (ValueError, AttributeError, KeyError, TypeError):
+            transcript = (
+                "\n".join(
+                    f"{message['role']}: {message['content']}"
+                    for message in messages
+                )
+                + "\nassistant:"
+            )
+            input_ids = tokenizer(
+                transcript, return_tensors="pt"
+            )["input_ids"]
+    else:
+        raise ValueError("prompt_format must be chat or completion")
     if (
         input_ids.ndim != 2
         or input_ids.shape[0] != 1
@@ -215,7 +231,12 @@ def create_handler(tokenizer, model):
                 tokens = data.get("max_tokens", 16) if compatible else data.get("max_new_tokens", 16)
                 if type(tokens) is not int or not 1 <= tokens <= MAX_NEW_TOKENS:
                     raise ValueError(f"max_new_tokens must be 1..{MAX_NEW_TOKENS}")
-                response, finish_reason, prompt_tokens, completion_tokens = generate(tokenizer, model, messages, tokens)
+                prompt_format = data.get("prompt_format", "chat")
+                if compatible and prompt_format != "chat":
+                    raise ValueError("prompt_format applies only to legacy /chat")
+                response, finish_reason, prompt_tokens, completion_tokens = generate(
+                    tokenizer, model, messages, tokens, prompt_format
+                )
             except (ValueError, KeyError, TypeError) as exc:
                 self.respond(400, {"error": str(exc)})
                 return
