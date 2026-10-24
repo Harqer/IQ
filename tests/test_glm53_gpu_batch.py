@@ -14,7 +14,7 @@ from safetensors.torch import load_file
 from iq_transfer.glm53_gpu_batch import ExpertSpec, batch_capacity, device_bases
 from iq_transfer.glm53_gpu_projection import ProjectionOps, ProjectionComputeError
 from iq_transfer.glm53_incremental_moe import save_incremental_moe_stage
-from tests.test_glm53_incremental_moe import _donor
+from test_glm53_incremental_moe import _donor
 
 
 class BatchCapacityTests(unittest.TestCase):
