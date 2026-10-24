@@ -29,6 +29,8 @@ def main() -> int:
     p.add_argument("--activations", type=Path, help="optional real pre-expert GLM [N,6144] .npy")
     p.add_argument("--router-topk", type=Path,
                    help="optional verified official layer-3 top-8 .npy; filters each expert's tokens")
+    p.add_argument("--diagnose-error-floor", action="store_true",
+                   help="measure output subspace floor, projected-input oracle, and BF16 gap")
     p.add_argument("--report", type=Path, required=True,
                    help="NEW output JSON file; existing report will not be overwritten")
     c = p.add_mutually_exclusive_group(required=True)
@@ -47,6 +49,7 @@ def main() -> int:
             seed=args.seed,
             captured_activations=args.activations,
             router_topk=args.router_topk,
+            diagnose_error_floor=args.diagnose_error_floor,
         )
 
     try:
@@ -63,6 +66,7 @@ def main() -> int:
             "input_origin": report["input_origin"],
             "routing_conditioned": report["routing_conditioned"],
             "routing_coverage": report["routing_coverage"],
+            "error_floor_diagnostics": report["error_floor_diagnostics"],
             "validation_donor_id": report["source_expert_ids"][
                 report["validation_slot"]
             ],
@@ -77,6 +81,13 @@ def main() -> int:
                         key: value["relative_rmse_improvement"]
                         for key, value in entry["scenarios"].items()
                     },
+                    "error_budget": (
+                        {
+                            name: data["error_budget"]
+                            for name, data in entry["scenarios"].items()
+                        }
+                        if args.diagnose_error_floor else None
+                    ),
                 }
                 for entry in report["experts"]
             ],

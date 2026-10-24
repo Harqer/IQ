@@ -335,6 +335,28 @@ class FunctionalComparisonTests(unittest.TestCase):
         ):
             self._run(captured_activations=capture, router_topk=routed)
 
+    def test_router_error_budget_on_selected_experts_only(self):
+        capture, routed = self._routing_fixture()
+        report = self._run(
+            captured_activations=capture, router_topk=routed,
+            diagnose_error_floor=True,
+        )
+        self.assertTrue(report["error_floor_diagnostics"])
+        self.assertEqual(report["experts"][1]["scenarios"], {})
+        for row in report["experts"]:
+            if row["routed_token_count"] == 0:
+                continue
+            record = row["scenarios"]["captured_glm_pre_expert_hidden_states"]
+            for label in ("original_warm", "expert_informed_candidate"):
+                budget = record["error_budget"][label]
+                self.assertLessEqual(
+                    budget["output_subspace_floor_relative_rmse"],
+                    budget["actual_relative_rmse"] + 5e-5,
+                )
+                self.assertLess(
+                    budget["squared_error_decomposition_abs_gap"], 5e-4,
+                )
+
     def test_router_capture_mismatch_is_rejected(self):
         capture, routed = self._routing_fixture()
         mismatch = capture.with_suffix(".json")

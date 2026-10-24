@@ -24,6 +24,7 @@ from .glm53_single_expert_projection import (
     _sha_tensor,
 )
 from .glm53_expert_informed_basis import _read_baseline
+from .glm53_basis_error_floor import output_error_budget
 from .glm53_routed_fidelity import read_verified_router_pairs
 from scripts.probe_glm53_remote_ranges import REPO, REVISION
 
@@ -152,6 +153,7 @@ def compare_basis_functions(
     seed: int = 77,
     captured_activations: str | Path | None = None,
     router_topk: str | Path | None = None,
+    diagnose_error_floor: bool = False,
 ) -> dict[str, Any]:
     if type(stage) is not int or not 1 <= stage <= 23:
         raise ExpertBasisFunctionalError("stage must be 1..23")
@@ -279,6 +281,23 @@ def compare_basis_functions(
                     new_metrics["relative_rmse"] < old_metrics["relative_rmse"]
                 ),
             }
+            if diagnose_error_floor:
+                scenarios_report[label]["error_budget"] = {
+                    "original_warm": output_error_budget(
+                        donor=donor,
+                        input_activations=x,
+                        reference=reference,
+                        estimate=y_original,
+                        basis=p0,
+                    ),
+                    "expert_informed_candidate": output_error_budget(
+                        donor=donor,
+                        input_activations=x,
+                        reference=reference,
+                        estimate=y_candidate,
+                        basis=p1,
+                    ),
+                }
         results.append({
             "slot": slot, "donor_expert_id": donor_id,
             "role": "validation" if slot == probe["validation_slot"] else "train",
@@ -316,6 +335,7 @@ def compare_basis_functions(
         "capture_sha256": capture_sha,
         "router_topk_sha256": router_sha,
         "routing_conditioned": router_topk is not None,
+        "error_floor_diagnostics": bool(diagnose_error_floor),
         "routing_coverage": (
             {str(row["donor_expert_id"]): row["routed_token_count"] for row in results}
             if selected is not None else None
@@ -338,6 +358,10 @@ def compare_basis_functions(
             "Synthetic test inputs do not establish actual GLM input distributions. "
             "Router-conditioned metrics only include tokens assigned to each expert; "
             "missing assignments mean missing evidence, never zero error. "
+            "The fixed-basis output floor is conditional on each chosen "
+            "subspace, not a universal model limit. The float32 compressed-input "
+            "oracle also reflects nonlinear input projection and should not be "
+            "interpreted as a guaranteed optimized error bound. "
             "Real GLM states with broader coverage and end-to-end IQ evaluations "
             "are required."
         ),
