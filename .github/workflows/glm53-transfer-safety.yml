@@ -13,8 +13,6 @@ on:
       - "requirements-transfer.txt"
       - "requirements-model.txt"
       - ".github/workflows/glm53-transfer-safety.yml"
-      - "Dockerfile.glm53-hf-gpu"
-      - ".github/workflows/glm53-hf-container.yml"
   workflow_dispatch:
 
 permissions:
@@ -58,39 +56,3 @@ jobs:
           python -m unittest discover -s tests -p 'test_glm53_storage_policy.py' -v
           python -m unittest discover -s tests -p 'test_glm53_full78_architecture.py' -v
 
-  hf-cuda-container:
-    name: Verify HF CUDA container and complete unit suite
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Build PyTorch 2.10 CUDA 12.8 image with full IQ dependencies
-        run: |
-          docker build --progress=plain \
-            --file Dockerfile.glm53-hf-gpu \
-            --tag iq-glm53-hf-gpu:ci .
-
-      - name: Execute tests inside the CUDA container (CPU CI host)
-        run: |
-          docker run --rm --entrypoint /bin/bash \
-            iq-glm53-hf-gpu:ci -lc '
-              set -euo pipefail
-              python scripts/check_glm53_gpu_stack.py --model-runtime --pip-check
-              python -m unittest discover -s tests -p "test_*.py" -q
-              python -m compileall -q iq_transfer scripts
-              echo IQ_HF_CUDA_CONTAINER_DEPENDENCIES_AND_TESTS_PASS
-            '
-
-      - name: Explicitly reject GPU transfer without CUDA hardware
-        run: |
-          docker run --rm --entrypoint /bin/bash \
-            iq-glm53-hf-gpu:ci -lc '
-              set -euo pipefail
-              python -c "import torch; assert torch.version.cuda == \"12.8\""
-              if python scripts/check_glm53_gpu_stack.py --require-cuda --model-runtime --smoke --pip-check; then
-                echo "CPU runner unexpectedly has CUDA hardware"
-                exit 3
-              fi
-              echo CUDA_WORKER_REQUIRED_BEFORE_FULL78_GPU_EXECUTION
-            '
