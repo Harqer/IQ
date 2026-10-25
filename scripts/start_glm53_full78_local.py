@@ -40,8 +40,17 @@ def digest(path: Path) -> str:
 def require_space(directory: Path, calibration_bytes: int) -> None:
     directory.mkdir(parents=True, exist_ok=True)
     available = shutil.disk_usage(directory).free
-    # Checkpoint safety reserve + separate storage for calibration and pinned Mamba donor.
-    required = required_private_bytes() + calibration_bytes + 5_000_000_000
+    # Count existing files toward the required durable BF16 volume on resume.
+    calib = directory / "calibration"
+    checkpoints = directory / "IQ" / "runs"
+    existing_calib_bytes = sum(p.stat().st_size for p in calib.iterdir() if p.is_file()) if calib.is_dir() else 0
+    existing_shard_bytes = sum(
+        p.stat().st_size for d in checkpoints.iterdir() if d.is_dir()
+        for p in d.iterdir() if p.is_file()
+    ) if checkpoints.is_dir() else 0
+    required = max(0, required_private_bytes() - existing_shard_bytes) + max(
+        0, calibration_bytes - existing_calib_bytes
+    ) + 5_000_000_000
     print(
         f"IQ_LOCAL_DISK_FREE_GB={available/1e9:.1f} "
         f"MINIMUM_REQUIRED_GB={required/1e9:.1f}", flush=True
@@ -157,7 +166,9 @@ def run(args: argparse.Namespace) -> None:
     glm, mamba = fetch_donors(root)
 
     # Limit GPU RAM allocations while processing thousands of genuine experts.
-    os.environ.setdefault("IQ_PROJECTION_DEVICE", "cuda")
+    if os.getenv("IQ_PROJECTION_DEVICE", "cuda") != "cuda":
+        raise RuntimeError("IQ_PROJECTION_DEVICE must be cuda")
+    os.environ["IQ_PROJECTION_DEVICE"] = "cuda"
     os.environ.setdefault("IQ_MOE_GPU_BATCH_EXPERTS", "2")
     os.environ.setdefault("IQ_MOE_GPU_BATCH_SOURCE_MIB", "256")
     os.environ.setdefault("IQ_MOE_GPU_PREFETCH", "0")
@@ -182,7 +193,7 @@ def run(args: argparse.Namespace) -> None:
     ]
     if args.resume:
         command.append("--resume")
-    print(f"IQ_ACTUAL_GLm53_WEIGHT_COMPILATION_START={args.run_id}", flush=True)
+    print(f"IQ_ACTUAL_GLM53_WEIGHT_COMPILATION_START={args.run_id}", flush=True)
     subprocess.run(command, check=True)
 
     manifest = json.loads((output / "transplant_manifest.json").read_text())
@@ -223,6 +234,20 @@ def run(args: argparse.Namespace) -> None:
         fp.write("\n")
         fp.flush()
         os.fsync(fp.fileno())
+    from scripts.glm53_full78_gate import expected_stage_shards
+    physical = set()
+    for stage_number in range(78):
+        physical.update(expected_stage_shards(stage_number))
+    physical.update(("model-global.safetensors", "model-native.safetensors",
+                     "transplant_manifest.json", "iq_config.json"))
+    physical.update(f"model-mamba-{n:03d}.safetensors" for n in range(79))
+    missing = [
+        name for name in sorted(physical) if not (output / name).is_file()
+        or (output / name).stat().st_size < 1
+    ]
+    if missing:
+        temp.unlink(missing_ok=True)
+        raise RuntimeError(f"Output missing {len(missing)} checkpoint files: {missing[:8]}")
     os.replace(temp, output / "COMPILE_COMPLETE.json")
     status = check_checkpoint_complete(output)
     if not status["ready"]:
