@@ -1,15 +1,9 @@
 name: IQ CUDA 12.8 HF Container Validation
 
+# The push-triggered publish workflow now builds/tests the exact same CUDA
+# image before publishing. This manual-only workflow remains available for
+# independent validation without doubling every GPU image build.
 on:
-  pull_request:
-    paths:
-      - "Dockerfile.glm53-hf-gpu"
-      - "requirements-transfer.txt"
-      - "requirements-model.txt"
-      - "iq_transfer/**"
-      - "scripts/check_glm53_gpu_stack.py"
-      - "tests/**"
-      - ".github/workflows/glm53-hf-container.yml"
   workflow_dispatch:
 
 permissions:
