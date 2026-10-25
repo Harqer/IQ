@@ -27,10 +27,40 @@ class BatchCapacityTests(unittest.TestCase):
             source_width=6144, intermediate_width=2048,
             expert_count=3, maximum=16), 3)
 
+    def test_auto_profile_scales_entire_transfer_on_h200_and_blackwell(self):
+        shape = dict(source_width=6144, intermediate_width=2048, expert_count=256)
+        with patch.dict(os.environ, {
+            "IQ_MOE_GPU_BATCH_EXPERTS": "auto",
+            "IQ_MOE_GPU_BATCH_SOURCE_MIB": "auto",
+        }):
+            self.assertEqual(batch_capacity(**shape, device_memory_gib=141), 24)
+            self.assertEqual(batch_capacity(**shape, device_memory_gib=96), 16)
+            self.assertEqual(batch_capacity(**shape, device_memory_gib=48), 8)
+            self.assertEqual(batch_capacity(**shape, device_memory_gib=24), 4)
+            self.assertEqual(batch_capacity(**shape, device_memory_gib=8), 4)
+
+    def test_explicit_batch_parameters_stay_bounded(self):
+        shape = dict(source_width=6144, intermediate_width=2048, expert_count=256)
+        with patch.dict(os.environ, {
+            "IQ_MOE_GPU_BATCH_EXPERTS": "32",
+            "IQ_MOE_GPU_BATCH_SOURCE_MIB": "2048",
+        }):
+            self.assertEqual(batch_capacity(**shape, device_memory_gib=141), 28)
+        with patch.dict(os.environ, {
+            "IQ_MOE_GPU_BATCH_SOURCE_MIB": "4096",
+        }):
+            with self.assertRaises(ProjectionComputeError):
+                batch_capacity(**shape, device_memory_gib=141)
+        with patch.dict(os.environ, {
+            "IQ_MOE_GPU_BATCH_EXPERTS": "33",
+        }):
+            with self.assertRaises(ProjectionComputeError):
+                batch_capacity(**shape, device_memory_gib=141)
+
     def test_invalid_capacity_fails_closed(self):
         with self.assertRaises(ProjectionComputeError):
             batch_capacity(source_width=6144, intermediate_width=2048,
-                           expert_count=256, maximum=17)
+                           expert_count=256, maximum=33)
         with self.assertRaises(ProjectionComputeError):
             batch_capacity(source_width=6144, intermediate_width=2048,
                            expert_count=256, maximum=4, bytes_limit=1024)
