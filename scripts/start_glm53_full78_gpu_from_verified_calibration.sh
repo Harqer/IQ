@@ -2,20 +2,10 @@
 # FRESH GPU COMPILATION ONLY from a previously published, hash-verified 78-stage calibration.
 # Deploy ONLY to an HF Jobs cloud worker with source:ro and output:rw buckets.
 set -euo pipefail
-# The BF16 full78 output is over 500 GiB including routed experts and
-# calibration. Never start a paid run against the free 100-GB private quota.
-CAPACITY_GIB="${IQ_CONFIRMED_PRIVATE_STORAGE_GIB:-0}"
-if [[ ! "$CAPACITY_GIB" =~ ^[0-9]+$ ]] || (( CAPACITY_GIB < 600 )); then
-  echo "BLOCKED: full78 BF16 needs verified >=600 GiB free private durable storage; current HF Free tier offers only 100 GB." >&2
-  echo "Upgrade storage or configure an authorized durable output with enough capacity, then explicitly set IQ_CONFIRMED_PRIVATE_STORAGE_GIB." >&2
-  exit 3
-fi
-python scripts/full78_storage_preflight.py
-: "${IQ_STORAGE_ATTESTATION:?Fail-closed: provide recent provider-verified free-space evidence}"
-REQUIRED_BYTES="$(python -c 'from scripts.full78_storage_preflight import required_private_bytes;print(required_private_bytes())')"
-python scripts/glm53_full78_gate.py storage \
-  --attestation "$IQ_STORAGE_ATTESTATION" \
-  --required-bytes "$REQUIRED_BYTES"
+# Resolve actual bucket visibility via Hugging Face, not a private-only quota
+# assumption. Public output requires explicit best-effort acknowledgement;
+# this is NOT permission to use billable GPU Jobs.
+python scripts/check_glm53_storage_policy.py
 if [[ "${IQ_PROJECTION_DEVICE:-}" != cuda ]]; then
   echo "BLOCKED: production GPU resume requires IQ_PROJECTION_DEVICE=cuda; CPU is diagnostics-only" >&2
   exit 3
@@ -25,7 +15,7 @@ if [[ "${IQ_CONFIRM_NO_OTHER_WRITER:-}" != "1" ]]; then
   exit 2
 fi
 if [[ "${IQ_CLOUD_WORKER:-}" != 1 || ! -d /hf-bucket/legacy/visionboxx-macha/calibration || ! -d /out ]]; then
-  echo "FULL78 REQUIREMENT: cloud worker with immutable calibration mount and writable private bucket" >&2
+  echo "FULL78 REQUIREMENT: cloud worker with immutable calibration mount and writable authorized bucket" >&2
   exit 2
 fi
 RUN_ID="${RUN_ID:?Unique run id required}"
