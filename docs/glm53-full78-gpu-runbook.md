@@ -16,14 +16,14 @@ Status: **preparation only; DO NOT launch a full paid transfer** until every lau
 | Gate | Must pass before proceeding | On failure |
 |---|---|---|
 | G0 — identity | Code commit, pinned donor revisions, canonical target fingerprint, run ID, previous job stopped | Refuse to adopt old shards; investigate mismatch |
-| G1 — capacity | Verified provider/account evidence of **free** durable bucket bytes at least `required_private_bytes()` (approximately 630 GB); evidence for the exact target bucket not older than 24 h | **STOP**, no GPU allocation. Raise capacity or select a properly configured alternate store; do not bluff using environment variables |
+| G1 — capacity | Verify the actual output bucket with `scripts/check_glm53_storage_policy.py`: private requires current provider attestation for ~630 GB; public requires `IQ_ACKNOWLEDGE_PUBLIC_BEST_EFFORT=1` and accepts that HF **does not guarantee** 600 GB under free fair use | **STOP** if visibility cannot be confirmed, the chosen policy is not acknowledged, or durable writes fail |
 | G2 — calibration | 78 strictly ordered source mappings, 75 usage vectors, expected **866 artifacts**, all nonempty, plus `calibration_sha256.json` verified for EVERY file from a separate read-only worker | **STOP**, run calibration-only repair and republish, never compile against a partial manifest |
 | G3 — GPU preflight | CUDA present, tiny device math smoke, sufficient VRAM; bounded range and tensor checks are performed inline by the full compiler | Retry bounded transient range errors during the real job; for OOM reduce tile/L4→L40S→A100; **never silently switch to CPU** |
 | G4 — transfer | One writer, exact historical source IDs, atomic shard writes, per-slot progress and a paid-worker deadline | Exit with error after safe shard boundary; keep completed files; resume only after job is confirmed stopped |
 | G5 — stage durability | All 256 routed slots, shared/common/context, projection report per source layer independently checked; no missing or corrupt shards | Recompute ONLY the missing stage/slot, do not overwrite valid shards |
 | G6 — final | Strict expected model state keys, 78 context, 78 MoE, 79 Mamba, **19,968 expert slots**, final index and manifest, independent re-read from a different worker | Fail release; fix missing files and resume; checkpoint is not yet inference-validated |
 
-The old `COMPLETED` job status or a local `/out` file alone is **not durability evidence**. Hugging Face Jobs discard the worker filesystem at exit; bucket volumes are durable but their persistence must be independently confirmed.
+The old `COMPLETED` job status or a local `/out` file alone is **not durability evidence**. Public bucket visibility does **not** make Hugging Face GPU Jobs free. Hugging Face Jobs discard the worker filesystem at exit; bucket volumes are durable but their persistence must be independently confirmed.
 
 ## Before spending on any GPU
 
@@ -71,13 +71,13 @@ If any name/size/hash differs, do not start transfer. Never replace historical r
 
 ## Full GPU resume (only after gates G0–G3)
 
-For the first approved execution, use `scripts/start_glm53_full78_gpu_from_verified_calibration.sh` with a **new** RUN_ID and the verified `CALIBRATION_RUN_ID`. For subsequent segments of that *same provenanced run*, use `scripts/resume_glm53_full78_mounted_cloud.sh` only after independent inventory checks. Use pinned code and exactly one writable output mount. Job arguments, token permissions, storage volume and CUDA device must be reviewed before launch. GPU priority is **L40S for throughput / VRAM**, then A100/H100 if sustained OOM or slower effective cost. Consider L4 only if its usable memory and throughput are sufficient for the full job. Record **$/completed validated stage** within the ongoing run, not a separate one-expert benchmark.
+For the first approved execution, use `scripts/start_glm53_full78_gpu_from_verified_calibration.sh` with a **new** RUN_ID and the verified `CALIBRATION_RUN_ID`. For subsequent segments of that *same provenanced run*, use `scripts/resume_glm53_full78_mounted_cloud.sh` only after independent inventory checks. Use pinned code and exactly one writable output mount. Job arguments, token permissions, storage volume and CUDA device must be reviewed before launch. Under the user's strict **$0** compute constraint, never launch a billable HF Jobs H200 (currently $5/hour) or any other GPU Job unless credits/grants are verified to cover the *entire scheduled run*. H200 (141 GB) and RTX Pro 6000 Blackwell (96 GB) are preferred if donated/credit-funded. Free ZeroGPU offers only short daily Gradio allocations, not a long-lived H200 worker. Record completed source stages and bytes written during the continuous full transfer, never isolated benchmarks. See `docs/GLM53_ZERO_COST_GPU_RUNBOOK.md`.
 
 The guarded entry point is `scripts/resume_glm53_full78_mounted_cloud.sh`. It requires:
 
 - `RUN_ID`: ID of the validated incomplete output.
 - `IQ_CLOUD_WORKER=1`, `IQ_CONFIRM_PREVIOUS_JOB_STOPPED=1`, `IQ_PROJECTION_DEVICE=cuda`.
-- `IQ_CONFIRMED_PRIVATE_STORAGE_GIB` and `IQ_CONFIRMED_FREE_PRIVATE_GB`: values based on verified available **free** storage, not total provisioned size.
+- For a private destination: the actual verified free capacity attestation. For the current **public** bucket: `IQ_ACKNOWLEDGE_PUBLIC_BEST_EFFORT=1`, acknowledging fair-use refusal risk. The script checks the actual provider bucket visibility.
 - `IQ_STORAGE_ATTESTATION`: path to the private, recent attestation **inside** the worker.
 - `IQ_MAX_RUN_SECONDS=14400` (4-hour segment; allowed 900–82800 seconds), independent of the Hugging Face job's hard timeout.
 - Correct read-only source calibration mount `/hf-bucket`, writable output mount `/out`, and HF credentials with only required access.
@@ -89,9 +89,7 @@ The compiler checks `IQ_TRANSFER_DEADLINE_EPOCH` before every expert and stops w
 - Sparse MoE compilation uses a bounded CUDA batched GEMM route by default
   when `IQ_PROJECTION_DEVICE=cuda`. The actual output remains one atomic
   safetensors shard per expert for safe resume.
-- `IQ_MOE_GPU_BATCH_EXPERTS=4` is the default requested capacity, capped
-  by a 512 MiB BF16 donor payload budget; CUDA OOM automatically splits the
-  already loaded batch and does not re-download weights.
+- `IQ_MOE_GPU_BATCH_EXPERTS=auto` automatically requests **24** experts per H200 batch, **16** on 96 GB Blackwell, **8** on L40S, or **4** on smaller GPUs. The corresponding bounded BF16 donor source staging budgets are **2048/1536/1024/512 MiB**. Geometry may reduce each batch, and CUDA OOM automatically splits already downloaded tensors without repeating network reads.
 - `IQ_MOE_GPU_PREFETCH=1` (default) enables **one** future remote batch
   using a separate `requests.Session`; set to 0 to disable I/O overlap.
 - Every GPU batch emits source-payload throughput and CUDA peak allocated
