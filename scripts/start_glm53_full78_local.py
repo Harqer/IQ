@@ -162,9 +162,11 @@ def verify_hf_output_mount(mount: Path, run_id: str) -> None:
     if bucket_info(OUTPUT).private:
         raise RuntimeError("HF output bucket changed visibility; recheck capacity/policy")
     prefix = f"IQ/runs/{run_id}"
+    run_dir = mount / run_id
+    run_dir.mkdir(exist_ok=True)
     suffix = uuid.uuid4().hex
-    temp = mount / f".iq-{suffix}.partial"
-    final = mount / f".iq-{suffix}.probe"
+    temp = run_dir / f".iq-{suffix}.partial"
+    final = run_dir / f".iq-{suffix}.probe"
     data = os.urandom(65536)
     try:
         with temp.open("xb") as f:
@@ -231,12 +233,13 @@ def run(args: argparse.Namespace) -> None:
     root.mkdir(parents=True, exist_ok=True)
     calibration = root / "calibration"
     remote_output = args.hf_output_mount is not None
+    mount = args.hf_output_mount.expanduser().resolve() if remote_output else None
     output = (
-        args.hf_output_mount.expanduser().resolve()
-        if remote_output else root / "IQ" / "runs" / args.run_id
+        mount / args.run_id
+        if mount is not None else root / "IQ" / "runs" / args.run_id
     )
-    if remote_output:
-        verify_hf_output_mount(output, args.run_id)
+    if mount is not None:
+        verify_hf_output_mount(mount, args.run_id)
     if args.resume:
         if not (output / "run-provenance.json").is_file():
             raise RuntimeError("No provenanced partial local checkpoint; --resume refused")
@@ -357,8 +360,8 @@ def main() -> None:
     p.add_argument("--resume", action="store_true")
     p.add_argument(
         "--hf-output-mount", type=Path,
-        help="ACTIVE official hf-mount FUSE mount of the exact "
-             "kofecheckmate/iq-glm53-all256/IQ/runs/<run-id> prefix; "
+        help="ACTIVE official hf-mount FUSE mount of the "
+             "kofecheckmate/iq-glm53-all256/IQ/runs prefix; "
              "requires external HF storage capacity/fair-use agreement",
     )
     p.add_argument("--prepare-only", action="store_true")
