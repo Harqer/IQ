@@ -42,5 +42,9 @@ RUN python -m compileall -q iq_transfer scripts && \
 # CUDA kernels are checked at invocation time, not at Docker build time:
 # the build host may have no NVIDIA GPU. This entrypoint fails closed
 # without CUDA on actual HF GPU workers; it does not silently run CPU.
-ENTRYPOINT ["/bin/bash"]
-CMD ["-lc", "python scripts/check_glm53_gpu_stack.py --require-cuda --model-runtime --smoke --pip-check && echo IQ_GPU_CONTAINER_READY"]
+# No ENTRYPOINT: HF Jobs executes its user-provided command directly.
+# A shell ENTRYPOINT here would turn a legitimate `python ...` Job command
+# into invalid bash arguments and waste GPU time before any work begins.
+# The default command is a GPU-required smoke check; actual workers supply
+# the full78 recovery/compile command explicitly.
+CMD ["python", "scripts/check_glm53_gpu_stack.py", "--require-cuda", "--model-runtime", "--smoke", "--pip-check"]
