@@ -162,7 +162,11 @@ def verify_hf_output_mount(mount: Path, run_id: str) -> None:
     if bucket_info(OUTPUT).private:
         raise RuntimeError("HF output bucket changed visibility; recheck capacity/policy")
     prefix = f"IQ/runs/{run_id}"
-    run_dir = mount / run_id
+    # Mount the BUCKET ROOT, not an implicit subfolder. The HF Bucket's
+    # IQ/runs may be an implicit prefix (no stat'able directory object).
+    runs_dir = mount / "IQ" / "runs"
+    runs_dir.mkdir(parents=True, exist_ok=True)
+    run_dir = runs_dir / run_id
     run_dir.mkdir(exist_ok=True)
     suffix = uuid.uuid4().hex
     temp = run_dir / f".iq-{suffix}.partial"
@@ -235,7 +239,7 @@ def run(args: argparse.Namespace) -> None:
     remote_output = args.hf_output_mount is not None
     mount = args.hf_output_mount.expanduser().resolve() if remote_output else None
     output = (
-        mount / args.run_id
+        mount / "IQ" / "runs" / args.run_id
         if mount is not None else root / "IQ" / "runs" / args.run_id
     )
     if mount is not None:
@@ -361,7 +365,7 @@ def main() -> None:
     p.add_argument(
         "--hf-output-mount", type=Path,
         help="ACTIVE official hf-mount FUSE mount of the "
-             "kofecheckmate/iq-glm53-all256/IQ/runs prefix; "
+             "kofecheckmate/iq-glm53-all256 BUCKET ROOT; "
              "requires external HF storage capacity/fair-use agreement",
     )
     p.add_argument("--prepare-only", action="store_true")
