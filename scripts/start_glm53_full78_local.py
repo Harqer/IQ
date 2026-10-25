@@ -184,7 +184,17 @@ def verify_hf_output_mount(mount: Path, run_id: str) -> None:
                         raise RuntimeError("HF mount upload SHA mismatch")
                     observed = True
                     break
-                except (FileNotFoundError, OSError, ValueError):
+                except Exception as exc:
+                    if isinstance(exc, RuntimeError) and "SHA mismatch" in str(exc):
+                        raise
+                    # A newly written advanced-FUSE file may still be queued
+                    # for remote upload. Retry missing/rate-limited reads,
+                    # not authentication or permission failures.
+                    error = str(exc).lower()
+                    if not any(x in error for x in (
+                        "404", "not found", "does not exist", "429", "rate limit",
+                    )):
+                        raise
                     destination.unlink(missing_ok=True)
                     time.sleep(3)
             if not observed:
