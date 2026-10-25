@@ -110,7 +110,7 @@ def inventory(full: dict, work: Path) -> set[int]:
         int(m.group(1))
         for name in remote
         if (m := re.fullmatch(
-            re.escape(RECOVERY_PREFIX) + r"/stage-(\\d{2})/[^/]+", name
+            re.escape(RECOVERY_PREFIX) + r"/stage-(\d{2})/[^/]+", name
         ))
     }
     if any(i not in range(50) for i in seen_folders):
