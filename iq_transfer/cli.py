@@ -59,6 +59,10 @@ def _parser() -> argparse.ArgumentParser:
         "--repair-overlay", action="store_true",
         help="regenerate only missing stage groups inside a verified temporary full78 overlay",
     )
+    glm_bootstrap.add_argument(
+        "--repair-max-stages", type=int,
+        help="limit a genuine multi-stage WARM recovery session on a free CUDA worker; 1..78",
+    )
     glm_bootstrap.add_argument("--checkpoint-revision", required=True)
     glm_bootstrap.add_argument("--repo-id", default="zai-org/GLM-5.3-BF16")
     glm_bootstrap.add_argument("--donor-license", required=True)
@@ -307,9 +311,18 @@ def main(argv: list[str] | None = None) -> int:
             sink = PartialCalibrationStageWriter(
                 args.output, target_config=target_config,
             )
+            if args.repair_max_stages is not None and not (
+                1 <= args.repair_max_stages <= 78
+            ):
+                parser.error("--repair-max-stages must be in 1..78")
             already_present = len(sink.skip_stages)
+            selected = sink.missing_stages[
+                :args.repair_max_stages
+            ] if args.repair_max_stages else list(sink.missing_stages)
+            selected_ids = frozenset(selected)
             print(json.dumps({
                 "calibration_repair_existing_stages": already_present,
+                "calibration_repair_selected_stages": selected,
                 "calibration_repair_missing_stages": sink.missing_stages,
                 "mode": "incremental_streaming",
             }, sort_keys=True), flush=True)
@@ -323,12 +336,19 @@ def main(argv: list[str] | None = None) -> int:
                 source_num_experts=inspector.layout.n_routed_experts,
                 source_indexer_types=inspector.layout.indexer_types,
                 warm_device=args.warm_device,
-                skip_stages=sink.skip_stages,
+                skip_stages=frozenset(range(78)).difference(selected_ids),
                 stage_sink=sink.write_stage,
             )
+            if selected_ids.intersection(sink.missing_stages):
+                raise RuntimeError("selected WARM stages were not durably written")
             if sink.missing_stages:
-                raise RuntimeError("incremental calibration repair left missing stages")
-            print("GLM53_ALL_78_STAGE_FILES_PRESENT_AFTER_REPAIR", flush=True)
+                print(json.dumps({
+                    "status": "PARTIAL_STAGE_RECOVERY_COMPLETE",
+                    "stages_completed_this_session": selected,
+                    "remaining_missing_stages": sink.missing_stages,
+                }, sort_keys=True), flush=True)
+            else:
+                print("GLM53_ALL_78_STAGE_FILES_PRESENT_AFTER_REPAIR", flush=True)
             # Never claim receipt validity: symlinked overlay files must be
             # materialized and verified remotely before full checkpoint run.
             return 0
