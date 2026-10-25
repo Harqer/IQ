@@ -8,6 +8,9 @@ on:
       - Dockerfile.glm53-hf-gpu
       - requirements-model.txt
       - requirements-transfer.txt
+      - iq_transfer/**
+      - scripts/** 
+      - tests/test_glm53_*.py
       - .github/workflows/glm53-publish-container.yml
   workflow_dispatch:
 
@@ -54,6 +57,7 @@ jobs:
               python -c "import torch; assert torch.__version__.startswith(\"2.10.0+cu128\"); assert torch.version.cuda == \"12.8\""
               python scripts/check_glm53_gpu_stack.py --model-runtime --pip-check
               python -m unittest discover -s tests -p "test_*.py" -q
+              bash -n scripts/run_glm53_gpu_calibration_batch.sh
             '
 
       - name: Verify deployment refuses CPU rather than silently training without CUDA
