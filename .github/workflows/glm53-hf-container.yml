@@ -1,0 +1,57 @@
+name: IQ CUDA 12.8 HF Container Validation
+
+on:
+  pull_request:
+    paths:
+      - "Dockerfile.glm53-hf-gpu"
+      - "requirements-transfer.txt"
+      - "requirements-model.txt"
+      - "iq_transfer/**"
+      - "scripts/check_glm53_gpu_stack.py"
+      - "tests/**"
+      - ".github/workflows/glm53-hf-container.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout transfer code
+        uses: actions/checkout@v4
+
+      - name: Build official CUDA 12.8 / PyTorch 2.10 container
+        run: |
+          docker build --progress=plain \
+            --file Dockerfile.glm53-hf-gpu \
+            --tag iq-glm53-hf-gpu:validation .
+
+      - name: Validate dependencies and full unit suite inside container
+        run: |
+          docker run --rm --entrypoint /bin/bash \
+            iq-glm53-hf-gpu:validation -lc '
+              set -euo pipefail
+              python scripts/check_glm53_gpu_stack.py --model-runtime --pip-check
+              python -m unittest discover -s tests -p "test_*.py" -q
+              bash -n scripts/setup_glm53_gpu_worker.sh
+              bash -n scripts/repair_glm53_full78_calibration.sh
+              bash -n scripts/start_glm53_full78_gpu_from_verified_calibration.sh
+              bash -n scripts/resume_glm53_full78_mounted_cloud.sh
+              echo IQ_HF_CUDA_CONTAINER_DEPENDENCIES_AND_TESTS_PASS
+            '
+
+      - name: Verify CUDA is never silently replaced with CPU
+        run: |
+          docker run --rm --entrypoint /bin/bash \
+            iq-glm53-hf-gpu:validation -lc '
+              set -euo pipefail
+              python -c "import torch; assert torch.version.cuda == \"12.8\""
+              if python scripts/check_glm53_gpu_stack.py --require-cuda --model-runtime --smoke --pip-check; then
+                echo "Unexpected CUDA hardware on the CPU CI runner"
+                exit 3
+              fi
+              echo IQ_GPU_REQUIRED_GATE_BLOCKED_WITHOUT_ACTUAL_GPU
+            '
