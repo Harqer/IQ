@@ -52,24 +52,35 @@ python scripts/check_glm53_storage_policy.py
 python scripts/check_glm53_gpu_stack.py --require-cuda \
   --min-vram-gib "${IQ_MIN_GPU_VRAM_GIB:-20}" --smoke --pip-check
 
-mkdir -p "$WORK/donor"
-python scripts/reconcile_glm53_partial.py \
-  --partial-calibration "$WORK/overlay" \
-  --existing-calibration "$PUBLIC" \
-  --original-calibration "$ORIGINAL" \
-  --partial-checkpoint "$CHECKPOINT" \
-  --expected-old-fingerprint 9cba3cfd5aded22306a1c3f52f9096b70c96fb18a87929daeafe7e4c47542611 \
-  --link-overlay
+# Prior CPU Jobs independently SHA256-verified all 166 reusable original
+# maps and 99 saved overlap maps. H200 should NEVER re-read ~16 GiB merely
+# to choose which 35 still-uncomputed source stages need CUDA WARM.
+# All original/reused maps are independently rehashed before final compile.
+mkdir -p "$WORK/donor" "$WORK/overlay"
+cp "$PUBLIC/glm53_calibration.json" "$WORK/overlay/glm53_calibration.json"
+SELECTED="$(python scripts/select_glm53_missing_gpu_stages.py \
+  --original "$ORIGINAL" \
+  --public "$PUBLIC" \
+  --checkpoint "$CHECKPOINT" \
+  --max-stages "$MAX_STAGES")"
 
-# Verify and relink already completed stage batches from earlier GPU sessions.
-python -m iq_transfer.glm53_partial_recovery_receipts \
-  --overlay "$WORK/overlay" \
-  --public-calibration "$PUBLIC"
+# Use the library, not `hf download` CLI: its Typer/Click parser raises
+# AttributeError: 'Sentinel' object has no attribute 'strip' on this image.
+python - "$WORK/donor" "$DONOR_REV" <<'PY'
+import sys
+from huggingface_hub import hf_hub_download
+destination, revision = sys.argv[1:]
+for filename in ("config.json", "model.safetensors.index.json"):
+    path = hf_hub_download(
+        repo_id="zai-org/GLM-5.3-BF16",
+        filename=filename,
+        revision=revision,
+        local_dir=destination,
+    )
+    print("IQ_PINNED_DONOR_METADATA_READY", filename, path, flush=True)
+PY
 
-hf download zai-org/GLM-5.3-BF16 config.json model.safetensors.index.json \
-  --revision "$DONOR_REV" --local-dir "$WORK/donor"
-
-echo "IQ_REAL_CUDA_WARM_BATCH stages=$MAX_STAGES donor_rev=$DONOR_REV"
+echo "IQ_REAL_CUDA_WARM_BATCH source_layers=$SELECTED donor_rev=$DONOR_REV"
 python -m iq_transfer.cli glm53-bootstrap-calibration \
   --checkpoint "$WORK/donor" \
   --output "$WORK/overlay" \
@@ -77,7 +88,7 @@ python -m iq_transfer.cli glm53-bootstrap-calibration \
   --checkpoint-revision "$DONOR_REV" \
   --donor-license GLM-5.3 \
   --routed-experts 256 --full-78 \
-  --repair-overlay --repair-max-stages "$MAX_STAGES" \
+  --repair-overlay --repair-stage-ids "$SELECTED" \
   --repair-publish-directory "$PUBLIC/recovery-stage-uploads" \
   --warm-device cuda --streaming-source
 
