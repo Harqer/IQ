@@ -10,19 +10,10 @@ python - <<'PY'
 import torch
 assert torch.cuda.is_available(), "BLOCKED: no CUDA on calibration worker"
 PY
-CAPACITY_GIB="${IQ_CONFIRMED_PRIVATE_STORAGE_GIB:-0}"
-if [[ ! "$CAPACITY_GIB" =~ ^[0-9]+$ ]] || (( CAPACITY_GIB < 600 )); then
-  echo "BLOCKED: verify >=600GiB free private durable storage before compute." >&2
-  exit 3
-fi
-# Require actual provider-evidenced free capacity, matching the fresh/resume
-# GPU workers; a self-declared 600GiB environment variable alone is not proof.
-python scripts/full78_storage_preflight.py
-: "${IQ_STORAGE_ATTESTATION:?Provider-verified capacity evidence required}"
-REQUIRED_BYTES="$(python -c 'from scripts.full78_storage_preflight import required_private_bytes;print(required_private_bytes())')"
-python scripts/glm53_full78_gate.py storage \
-  --attestation "$IQ_STORAGE_ATTESTATION" \
-  --required-bytes "$REQUIRED_BYTES"
+# Resolve actual bucket visibility via Hugging Face, not a private-only quota
+# assumption. Public output requires explicit best-effort acknowledgement;
+# this is NOT permission to use billable GPU Jobs.
+python scripts/check_glm53_storage_policy.py
 if [[ "${IQ_CONFIRM_NO_OTHER_WRITER:-}" != 1 ]]; then
   echo >&2 "BLOCKED: independently verify no other full78 calibration writer is active"
   exit 3
