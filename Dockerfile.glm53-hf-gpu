@@ -1,0 +1,38 @@
+# Reproducible Hugging Face Jobs CUDA image for the full-78 GLM-5.3 -> IQ transfer.
+# The parent image contains CUDA 12.8, cuDNN 9 and PyTorch 2.10.0.
+# Digest pinned to a published PyTorch linux/amd64 runtime manifest.
+# This image does NOT itself reserve or charge for a GPU.
+FROM pytorch/pytorch:2.10.0-cuda12.8-cudnn9-runtime@sha256:b85566342b86d13a67712e9315d40cdc2dad7f8d86df1aff3831f80835edbcca
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    HF_HUB_DISABLE_TELEMETRY=1 \
+    IQ_PROJECTION_DEVICE=cuda \
+    IQ_MOE_GPU_BATCH_EXPERTS=auto \
+    IQ_MOE_GPU_BATCH_SOURCE_MIB=auto \
+    IQ_MOE_GPU_PREFETCH=1
+
+WORKDIR /workspace/IQ
+
+# Install exactly IQ's declared Python dependencies. This preserves
+# the CUDA-enabled Torch that ships with the pinned base image.
+COPY requirements-transfer.txt requirements-model.txt ./
+RUN python -m pip install --no-cache-dir -r requirements-model.txt && \
+    python - <<'PY'
+import torch
+from packaging.version import Version
+assert Version(torch.__version__.split('+')[0]) == Version('2.10.0')
+assert torch.version.cuda == '12.8', (torch.__version__, torch.version.cuda)
+print('IQ_CUDA_IMAGE_TORCH_PRESERVED', torch.__version__, torch.version.cuda)
+PY
+
+COPY . .
+RUN python -m compileall -q iq_transfer scripts && \
+    python scripts/check_glm53_gpu_stack.py --model-runtime --pip-check
+
+# CUDA kernels are checked at invocation time, not at Docker build time:
+# the build host may have no NVIDIA GPU. This entrypoint fails closed
+# without CUDA on actual HF GPU workers; it does not silently run CPU.
+ENTRYPOINT ["/bin/bash"]
+CMD ["-lc", "python scripts/check_glm53_gpu_stack.py --require-cuda --model-runtime --smoke --pip-check && echo IQ_GPU_CONTAINER_READY"]
