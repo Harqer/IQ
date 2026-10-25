@@ -19,13 +19,7 @@ WORKDIR /workspace/IQ
 # the CUDA-enabled Torch that ships with the pinned base image.
 COPY requirements-transfer.txt requirements-model.txt ./
 RUN python -m pip install --no-cache-dir -r requirements-model.txt && \
-    python - <<'PY'
-import torch
-from packaging.version import Version
-assert Version(torch.__version__.split('+')[0]) == Version('2.10.0')
-assert torch.version.cuda == '12.8', (torch.__version__, torch.version.cuda)
-print('IQ_CUDA_IMAGE_TORCH_PRESERVED', torch.__version__, torch.version.cuda)
-PY
+    python -c "import torch; from packaging.version import Version; assert_=lambda p: (_ for _ in ()).throw(RuntimeError(p)) if p else None; assert_(Version(torch.__version__.split('+')[0]) != Version('2.10.0')); assert_(torch.version.cuda != '12.8'); print('IQ_CUDA_IMAGE_TORCH_PRESERVED', torch.__version__, torch.version.cuda)"
 
 COPY . .
 RUN python -m compileall -q iq_transfer scripts && \
