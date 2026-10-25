@@ -21,8 +21,12 @@ WORKDIR /workspace/IQ
 # Install exactly IQ's declared Python dependencies. This preserves
 # the CUDA-enabled Torch that ships with the pinned base image.
 COPY requirements-transfer.txt requirements-model.txt ./
-# Respect PEP 668: create a venv that inherits the official CUDA Torch.
-# Do not use pip --break-system-packages and do not replace Torch.
+# PyTorch's Ubuntu runtime does not bundle python3.12-venv/ensurepip.
+# Install that OS package rather than bypassing PEP 668 or touching Torch.
+RUN apt-get update -qq && \
+    apt-get install -y --no-install-recommends python3.12-venv && \
+    rm -rf /var/lib/apt/lists/*
+# Respect PEP 668: inherit preinstalled CUDA Torch into our isolated venv.
 RUN python -m venv --system-site-packages "$VIRTUAL_ENV" && \
     python -m pip install --no-cache-dir -r requirements-model.txt && \
     python -c "import torch; from packaging.version import Version; assert_=lambda p: (_ for _ in ()).throw(RuntimeError(p)) if p else None; assert_(Version(torch.__version__.split('+')[0]) != Version('2.10.0')); assert_(torch.version.cuda != '12.8'); print('IQ_CUDA_IMAGE_TORCH_PRESERVED', torch.__version__, torch.version.cuda)"
