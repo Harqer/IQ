@@ -33,7 +33,7 @@ jobs:
           python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
       - name: Strict code/shell syntax
         run: |
-          python -m compileall -q iq_transfer scripts/glm53_full78_gate.py scripts/glm53_calibration_sha256.py
+          python -m compileall -q iq_transfer scripts/glm53_full78_gate.py scripts/glm53_calibration_sha256.py scripts/start_glm53_full78_local.py scripts/verify_glm53_full78_remote_local.py scripts/assemble_glm53_full78_calibration_local.py
           bash -n scripts/setup_glm53_gpu_worker.sh
           bash -n scripts/repair_glm53_full78_calibration.sh
           bash -n scripts/start_glm53_full78_gpu_from_verified_calibration.sh
