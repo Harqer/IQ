@@ -4,7 +4,10 @@
 The prior 866-file calibration receipt is independently verified as files are
 downloaded, so the 35 freshly computed WARM maps are NEVER recomputed.
 Creates an entirely new checkpoint output; --resume uses original provenance.
-This process does NOT upload compiled checkpoint shards to HF.
+If --hf-output-mount points to a separately verified official hf-mount FUSE
+bucket mount, compiler shards are written remotely without accumulating a
+full BF16 checkpoint on the local SSD. Remote completeness still needs an
+independent read-only audit before declaring durable success.
 """
 from __future__ import annotations
 
@@ -17,6 +20,9 @@ import re
 import shutil
 import subprocess
 import sys
+import time
+import tempfile
+import uuid
 
 from huggingface_hub import HfApi, hf_hub_download
 from scripts.assemble_glm53_full78_calibration_local import OUTPUT, PREFIX, RECEIPT, inventory, read
@@ -63,7 +69,7 @@ def require_space(directory: Path, calibration_bytes: int) -> None:
         )
 
 
-def checked_calibration(directory: Path) -> None:
+def checked_calibration(directory: Path, *, remote_output: bool = False) -> None:
     directory.mkdir(parents=True, exist_ok=True)
     receipt = read(OUTPUT, RECEIPT, directory / "calibration_sha256.json")
     manifest = read(OUTPUT, f"{PREFIX}/glm53_calibration.json",
@@ -89,7 +95,21 @@ def checked_calibration(directory: Path) -> None:
     # The output checkpoint must live on the same volume as the calibration
     # working root for this conservative complete-BF16 disk-space preflight.
     base = directory.parent
-    require_space(base, needed)
+    if remote_output:
+        # Preserve local space for calibration, pinned Mamba donor and CPU/GPU
+        # scratch. The complete BF16 checkpoint is stored on a verified mount.
+        local_calib_bytes = sum(p.stat().st_size for p in directory.iterdir() if p.is_file())
+        needed_local = max(0, needed - local_calib_bytes) + 20_000_000_000
+        available_local = shutil.disk_usage(base).free
+        print(
+            f"IQ_LOCAL_REMOTE_OUTPUT_FREE_GB={available_local / 1e9:.1f} "
+            f"MIN_LOCAL_REQUIRED_GB={needed_local / 1e9:.1f}",
+            flush=True,
+        )
+        if available_local < needed_local:
+            raise RuntimeError("Insufficient space for local calibration and scratch")
+    else:
+        require_space(base, needed)
 
     for i, name in enumerate(sorted(expected), 1):
         remote = f"{PREFIX}/{name}"
@@ -127,6 +147,57 @@ def fetch_donors(root: Path) -> tuple[Path, Path]:
     return glm, mamba
 
 
+def verify_hf_output_mount(mount: Path, run_id: str) -> None:
+    """Fail closed unless a real mount maps to the exact intended HF run.
+
+    The probe uses the same create-temp, fsync, rename semantics as the model
+    shard writer. A SEPARATE HF API read must see the exact bytes before
+    compilers may use the mount. The probe is removed before compilation.
+    """
+    if not mount.is_dir() or not os.path.ismount(mount):
+        raise RuntimeError(
+            "HF remote output must be an ACTIVE mountpoint, not a local directory"
+        )
+    from huggingface_hub import bucket_info
+    if bucket_info(OUTPUT).private:
+        raise RuntimeError("HF output bucket changed visibility; recheck capacity/policy")
+    prefix = f"IQ/runs/{run_id}"
+    suffix = uuid.uuid4().hex
+    temp = mount / f".iq-{suffix}.partial"
+    final = mount / f".iq-{suffix}.probe"
+    data = os.urandom(65536)
+    try:
+        with temp.open("xb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temp, final)
+        # Advanced-write FUSE flushes asynchronously. Confirm actual remote
+        # persistence through an independent Hugging Face client.
+        with tempfile.TemporaryDirectory(prefix="iq-hf-mount-verify-") as root:
+            destination = Path(root) / "hf-confirmed.bin"
+            observed = False
+            for attempt in range(30):
+                try:
+                    read(OUTPUT, f"{prefix}/{final.name}", destination)
+                    if destination.read_bytes() != data:
+                        raise RuntimeError("HF mount upload SHA mismatch")
+                    observed = True
+                    break
+                except (FileNotFoundError, OSError, ValueError):
+                    destination.unlink(missing_ok=True)
+                    time.sleep(3)
+            if not observed:
+                raise RuntimeError(
+                    "HF mount created local file, but independent bucket "
+                    "readback could not verify its durability; refusing compile"
+                )
+        print("IQ_HF_OUTPUT_MOUNT_REMOTE_READBACK_VERIFIED", flush=True)
+    finally:
+        temp.unlink(missing_ok=True)
+        final.unlink(missing_ok=True)
+
+
 def run(args: argparse.Namespace) -> None:
     if os.getenv("IQ_CONFIRM_NO_OTHER_WRITER") != "1":
         raise RuntimeError("Set IQ_CONFIRM_NO_OTHER_WRITER=1 after checking no other writer")
@@ -149,20 +220,28 @@ def run(args: argparse.Namespace) -> None:
     root = args.root.expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
     calibration = root / "calibration"
-    output = root / "IQ" / "runs" / args.run_id
+    remote_output = args.hf_output_mount is not None
+    output = (
+        args.hf_output_mount.expanduser().resolve()
+        if remote_output else root / "IQ" / "runs" / args.run_id
+    )
+    if remote_output:
+        verify_hf_output_mount(output, args.run_id)
     if args.resume:
         if not (output / "run-provenance.json").is_file():
             raise RuntimeError("No provenanced partial local checkpoint; --resume refused")
         if (output / "COMPILE_COMPLETE.json").exists():
             raise RuntimeError("Output already complete; refusing resume")
-    elif output.exists():
+    elif output.exists() and (
+        not remote_output or any(output.iterdir())
+    ):
         raise RuntimeError(
-            f"Output already exists: {output}. Use --resume ONLY for this "
-            "new provenanced run, or choose a new run ID."
+            f"Output already contains files: {output}. Use --resume ONLY "
+            "for a provenanced run, or choose a fresh run ID."
         )
     if calibration.exists() and calibration.is_symlink():
         raise RuntimeError("Unsafe calibration symlink")
-    checked_calibration(calibration)
+    checked_calibration(calibration, remote_output=remote_output)
     glm, mamba = fetch_donors(root)
 
     # Limit GPU RAM allocations while processing thousands of genuine experts.
@@ -252,7 +331,13 @@ def run(args: argparse.Namespace) -> None:
     status = check_checkpoint_complete(output)
     if not status["ready"]:
         raise RuntimeError("Full compiler exited, but expected checkpoint shards are missing")
-    print(f"IQ_FULL78_LOCAL_COMPILE_COMPLETE={args.run_id} inference_ready=False", flush=True)
+    if remote_output:
+        print(
+            f"IQ_FULL78_LOCAL_COMPILE_ENDED_PENDING_REMOTE_DURABILITY_AUDIT="
+            f"{args.run_id}", flush=True,
+        )
+    else:
+        print(f"IQ_FULL78_LOCAL_COMPILE_COMPLETE={args.run_id} inference_ready=False", flush=True)
 
 
 def main() -> None:
@@ -260,6 +345,12 @@ def main() -> None:
     p.add_argument("--root", type=Path, default=Path.home() / "IQ-transfer-full78")
     p.add_argument("--run-id", default="glm53-full78-local-20261025a")
     p.add_argument("--resume", action="store_true")
+    p.add_argument(
+        "--hf-output-mount", type=Path,
+        help="ACTIVE official hf-mount FUSE mount of the exact "
+             "kofecheckmate/iq-glm53-all256/IQ/runs/<run-id> prefix; "
+             "requires external HF storage capacity/fair-use agreement",
+    )
     p.add_argument("--prepare-only", action="store_true")
     options = p.parse_args()
     if options.resume and options.prepare_only:
