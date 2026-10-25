@@ -64,6 +64,10 @@ def _parser() -> argparse.ArgumentParser:
         help="limit a genuine multi-stage WARM recovery session on a free CUDA worker; 1..78",
     )
     glm_bootstrap.add_argument(
+        "--repair-stage-ids",
+        help="comma-separated verified missing source-layer IDs; compute only these stages without re-reading saved WARM maps",
+    )
+    glm_bootstrap.add_argument(
         "--repair-publish-directory",
         help="write each complete stage into a remote bucket staging namespace with SHA receipt last",
     )
@@ -323,9 +327,21 @@ def main(argv: list[str] | None = None) -> int:
             ):
                 parser.error("--repair-max-stages must be in 1..78")
             already_present = len(sink.skip_stages)
-            selected = sink.missing_stages[
-                :args.repair_max_stages
-            ] if args.repair_max_stages else list(sink.missing_stages)
+            if args.repair_stage_ids:
+                if args.repair_max_stages is not None:
+                    parser.error("--repair-stage-ids is exclusive with --repair-max-stages")
+                try:
+                    selected = [int(v.strip()) for v in args.repair_stage_ids.split(",")]
+                except ValueError:
+                    parser.error("--repair-stage-ids must contain integer source layers")
+                if (not selected or len(selected) > 8 or
+                    len(set(selected)) != len(selected) or
+                    any(stage not in sink.missing_stages for stage in selected)):
+                    parser.error("repair stage IDs must be unique, currently missing, and 1..8 total")
+            else:
+                selected = sink.missing_stages[
+                    :args.repair_max_stages
+                ] if args.repair_max_stages else list(sink.missing_stages)
             selected_ids = frozenset(selected)
             print(json.dumps({
                 "calibration_repair_existing_stages": already_present,
