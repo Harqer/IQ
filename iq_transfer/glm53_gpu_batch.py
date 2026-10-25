@@ -25,30 +25,85 @@ class ExpertSpec:
     donor_id: int
 
 
-# A conservative bound on the incoming BF16 donor tensors staged on the CPU.
-_DEFAULT_BATCH_BYTES = 512 * 1024 * 1024
+# GPU memory is the initial scheduling heuristic, not a guarantee that
+# scratch CPU RAM or available CUDA memory can fit the request. Runtime CUDA
+# OOM recovery halves each staged batch without repeating HTTP downloads.
+_MIB = 1024 * 1024
+_MAX_BATCH_EXPERTS = 32
+_MAX_SOURCE_MIB = 2048
 
 
-def batch_capacity(*, source_width: int, intermediate_width: int,
-                   expert_count: int, maximum: int | None = None,
-                   bytes_limit: int = _DEFAULT_BATCH_BYTES) -> int:
-    """Select a bounded number of routed experts, never drop donor coverage."""
+def _gpu_batch_profile(device_memory_gib: float) -> tuple[int, int]:
+    """(requested experts, BF16 source MiB) for one CUDA device."""
+    if device_memory_gib >= 120:
+        return (24, 2048)  # H200 141 GiB or larger
+    if device_memory_gib >= 80:
+        return (16, 1536)  # RTX PRO 6000 Blackwell 96 GiB
+    if device_memory_gib >= 40:
+        return (8, 1024)   # L40S 48 GiB
+    return (4, 512)        # L4 / T4 / local cards
+
+
+def _cuda_total_gib() -> float:
+    if not torch.cuda.is_available():
+        return 0.0
+    try:
+        device = torch.cuda.current_device()
+        return torch.cuda.get_device_properties(device).total_memory / 1024**3
+    except (RuntimeError, AssertionError) as exc:
+        raise ProjectionComputeError("cannot inspect CUDA capacity") from exc
+
+
+def batch_capacity(
+    *, source_width: int, intermediate_width: int,
+    expert_count: int, maximum: int | None = None,
+    bytes_limit: int | None = None,
+    device_memory_gib: float | None = None,
+) -> int:
+    """Choose a memory-bounded multi-expert CUDA batch; no singleton probes.
+
+    Auto selection scales a FULL transfer across different worker GPUs,
+    not across additional paid Jobs. Both overrides are bounded. Requests
+    that cannot fit one complete BF16 expert fail explicitly.
+    """
+    if source_width <= 0 or intermediate_width <= 0 or expert_count <= 0:
+        raise ProjectionComputeError("invalid expert batch geometry/count")
+    if device_memory_gib is None:
+        device_memory_gib = _cuda_total_gib()
+    if not np.isfinite(device_memory_gib) or device_memory_gib < 0:
+        raise ProjectionComputeError("invalid CUDA device VRAM")
+    suggested_experts, suggested_mib = _gpu_batch_profile(device_memory_gib)
     if maximum is None:
-        raw = os.environ.get("IQ_MOE_GPU_BATCH_EXPERTS", "4")
-        try:
-            maximum = int(raw)
-        except ValueError as exc:
-            raise ProjectionComputeError("invalid IQ_MOE_GPU_BATCH_EXPERTS") from exc
-    if not (1 <= maximum <= 16) or source_width <= 0 or intermediate_width <= 0:
-        raise ProjectionComputeError("invalid expert batch geometry/capacity")
-    if bytes_limit <= 0 or expert_count <= 0:
-        raise ProjectionComputeError("invalid expert byte budget/count")
+        raw = os.environ.get("IQ_MOE_GPU_BATCH_EXPERTS", "auto")
+        if raw.strip().lower() == "auto":
+            maximum = suggested_experts
+        else:
+            try:
+                maximum = int(raw)
+            except ValueError as exc:
+                raise ProjectionComputeError("invalid IQ_MOE_GPU_BATCH_EXPERTS") from exc
+    if not (1 <= maximum <= _MAX_BATCH_EXPERTS):
+        raise ProjectionComputeError("IQ_MOE_GPU_BATCH_EXPERTS must be in 1..32")
+    if bytes_limit is None:
+        raw_mib = os.environ.get("IQ_MOE_GPU_BATCH_SOURCE_MIB", "auto")
+        if raw_mib.strip().lower() == "auto":
+            budget_mib = suggested_mib
+        else:
+            try:
+                budget_mib = int(raw_mib)
+            except ValueError as exc:
+                raise ProjectionComputeError("invalid IQ_MOE_GPU_BATCH_SOURCE_MIB") from exc
+        if not 1 <= budget_mib <= _MAX_SOURCE_MIB:
+            raise ProjectionComputeError("GPU batch BF16 staging limit must be in 1..2048 MiB")
+        bytes_limit = budget_mib * _MIB
+    if bytes_limit <= 0 or bytes_limit > _MAX_SOURCE_MIB * _MIB:
+        raise ProjectionComputeError("invalid expert batch BF16 byte budget")
     source_bytes = 3 * source_width * intermediate_width * 2
     if source_bytes > bytes_limit:
         raise ProjectionComputeError(
             "one BF16 donor expert exceeds GPU batch host-memory limit"
         )
-    return min(maximum, expert_count, max(1, bytes_limit // source_bytes))
+    return min(maximum, expert_count, bytes_limit // source_bytes)
 
 
 def device_bases(ops: ProjectionOps, *, input_inverse: np.ndarray,
@@ -111,7 +166,7 @@ def project_routed_batch(
     Computation uses FP32 CUDA and one batched GEMM per gate/up/down kind.
     No writes occur here; caller commits shards in slot order, atomically.
     """
-    if not ops.cuda or not specs or len(specs) > 16:
+    if not ops.cuda or not specs or len(specs) > _MAX_BATCH_EXPERTS:
         raise ProjectionComputeError("invalid CUDA expert batch")
     if (tuple(input_basis.shape)[0] != source_width or
         tuple(output_basis_t.shape)[1] != source_width or
