@@ -42,10 +42,25 @@ source scripts/setup_glm53_gpu_worker.sh
 python scripts/check_glm53_gpu_stack.py --require-cuda \
   --min-vram-gib "${IQ_MIN_GPU_VRAM_GIB:-20}" --smoke --pip-check
 mkdir -p "$WORK_ROOT/glm53" "$WORK_ROOT/mamba3"
-hf download zai-org/GLM-5.3-BF16 config.json model.safetensors.index.json \
-  --revision "$DONOR_REV" --local-dir "$WORK_ROOT/glm53"
-hf download state-spaces/mamba3-mimo-1.5b config.json pytorch_model.bin \
-  --revision "$MAMBA_REV" --local-dir "$WORK_ROOT/mamba3"
+# The official image's hf CLI download path previously failed with a
+# Typer/Click Sentinel error on paid H200 hardware. Use the library API,
+# preserving the exact immutable donor revisions instead.
+python - "$WORK_ROOT/glm53" "$WORK_ROOT/mamba3" "$DONOR_REV" "$MAMBA_REV" <<'PY'
+from pathlib import Path
+import sys
+from huggingface_hub import hf_hub_download
+
+glm_dir, mamba_dir, glm_revision, mamba_revision = sys.argv[1:]
+for repo_id, revision, local_dir, files in (
+    ("zai-org/GLM-5.3-BF16", glm_revision, glm_dir, ("config.json", "model.safetensors.index.json")),
+    ("state-spaces/mamba3-mimo-1.5b", mamba_revision, mamba_dir, ("config.json", "pytorch_model.bin")),
+):
+    for filename in files:
+        path = Path(hf_hub_download(repo_id=repo_id, filename=filename, revision=revision, local_dir=local_dir))
+        if not path.is_file() or path.stat().st_size == 0:
+            raise RuntimeError(f"Missing or empty pinned donor file: {repo_id}/{filename}")
+        print("IQ_PINNED_DONOR_READY", repo_id, revision, filename, flush=True)
+PY
 # The official Mamba-3 language model uses the Meta-Llama 3.1 tokenizer,
 # which is separately gated. It is NOT required to transform donor weights.
 # Never block all 78 layers of weight compilation on a tokenizer permission.
