@@ -63,6 +63,10 @@ def _parser() -> argparse.ArgumentParser:
         "--repair-max-stages", type=int,
         help="limit a genuine multi-stage WARM recovery session on a free CUDA worker; 1..78",
     )
+    glm_bootstrap.add_argument(
+        "--repair-publish-directory",
+        help="write each complete stage into a remote bucket staging namespace with SHA receipt last",
+    )
     glm_bootstrap.add_argument("--checkpoint-revision", required=True)
     glm_bootstrap.add_argument("--repo-id", default="zai-org/GLM-5.3-BF16")
     glm_bootstrap.add_argument("--donor-license", required=True)
@@ -304,12 +308,15 @@ def main(argv: list[str] | None = None) -> int:
             if args.full_78
             else canonical_glm53_config(routed_experts=args.routed_experts)
         )
+        if args.repair_publish_directory and not args.repair_overlay:
+            parser.error("--repair-publish-directory requires --repair-overlay")
         if args.repair_overlay:
             if not args.full_78 or args.source_activations or args.reuse_weight_only:
                 parser.error("--repair-overlay requires full78 weight-only bootstrap without original reuse")
             from .glm53_partial_repair import PartialCalibrationStageWriter
             sink = PartialCalibrationStageWriter(
                 args.output, target_config=target_config,
+                publish_directory=args.repair_publish_directory,
             )
             if args.repair_max_stages is not None and not (
                 1 <= args.repair_max_stages <= 78
