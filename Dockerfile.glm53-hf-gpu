@@ -15,6 +15,7 @@ ENV PYTHONUNBUFFERED=1 \
     IQ_HF_CONTAINER_PROVISIONED=1 \
     VIRTUAL_ENV=/opt/iq-hf-venv
 ENV PATH="/opt/iq-hf-venv/bin:${PATH}"
+ENV PYTHONPATH="/workspace/IQ"
 
 LABEL org.opencontainers.image.source="https://github.com/Harqer/IQ" \
       org.opencontainers.image.title="IQ GLM-5.3 CUDA transfer worker" \
