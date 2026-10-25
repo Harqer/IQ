@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Recover missing WARM maps into a full durable all-78 calibration snapshot.
-# Run ONLY after private storage capacity >=600GiB has been confirmed.
+# Run only with independently verified public best-effort or private-capacity policy.
+# This script never authorizes billable GPU compute; execute only on sponsored/$0 worker.
 set -euo pipefail
 if [[ "${IQ_PROJECTION_DEVICE:-}" != cuda ]]; then
   echo "BLOCKED: calibration repair requires a CUDA worker, no silent CPU downgrade" >&2
