@@ -28,7 +28,7 @@ RUN apt-get update -qq && \
     rm -rf /var/lib/apt/lists/*
 # Respect PEP 668: inherit preinstalled CUDA Torch into our isolated venv.
 RUN python -m venv --system-site-packages "$VIRTUAL_ENV" && \
-    python -m pip install --no-cache-dir -r requirements-model.txt && \
+    python -m pip install --no-cache-dir -r requirements-model.txt 'click>=8.1,<8.4' && \
     python -c "import torch; from packaging.version import Version; assert_=lambda p: (_ for _ in ()).throw(RuntimeError(p)) if p else None; assert_(Version(torch.__version__.split('+')[0]) != Version('2.10.0')); assert_(torch.version.cuda != '12.8'); print('IQ_CUDA_IMAGE_TORCH_PRESERVED', torch.__version__, torch.version.cuda)"
 
 COPY . .
