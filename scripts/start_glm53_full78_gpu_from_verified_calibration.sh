@@ -38,8 +38,12 @@ python scripts/glm53_full78_gate.py calibration --root "$DEST_CALIB"
 python scripts/glm53_calibration_sha256.py verify --root "$DEST_CALIB"
 # Fail closed on missing CUDA, inconsistent packages, or unsupported hardware
 # BEFORE fetching donor tensors or allocating a long-running transfer.
-source scripts/setup_glm53_gpu_worker.sh
-python scripts/check_glm53_gpu_stack.py --require-cuda \
+# The pinned OCI worker already has the transfer/model venv provisioned.
+# Do not recreate a second virtualenv or reinstall dependencies on paid GPU time.
+if [[ "${IQ_HF_CONTAINER_PROVISIONED:-}" != 1 ]]; then
+  source scripts/setup_glm53_gpu_worker.sh
+fi
+python scripts/check_glm53_gpu_stack.py --require-cuda --model-runtime \
   --min-vram-gib "${IQ_MIN_GPU_VRAM_GIB:-20}" --smoke --pip-check
 mkdir -p "$WORK_ROOT/glm53" "$WORK_ROOT/mamba3"
 # The official image's hf CLI download path previously failed with a
