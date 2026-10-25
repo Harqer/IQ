@@ -8,7 +8,9 @@ published, one stage at a time, to avoid holding all 78 WARM matrices in RAM.
 from __future__ import annotations
 
 import gc
+import hashlib
 import json
+import shutil
 import os
 import tempfile
 from pathlib import Path
@@ -39,8 +41,17 @@ def _files(record: dict) -> set[str]:
 
 
 class PartialCalibrationStageWriter:
-    def __init__(self, output: str | Path, *, target_config):
+    def __init__(self, output: str | Path, *, target_config,
+                 publish_directory: str | Path | None = None):
         self.output = Path(output)
+        self.publish_directory = (
+            Path(publish_directory) if publish_directory is not None else None
+        )
+        if self.publish_directory is not None:
+            if not self.publish_directory.parent.is_dir():
+                raise GLM53CalibrationError("missing authorized recovery destination parent")
+            if self.publish_directory.exists() and self.publish_directory.is_symlink():
+                raise GLM53CalibrationError("recovery upload destination cannot be a symlink")
         self.manifest = json.loads(
             (self.output / "glm53_calibration.json").read_text(encoding="utf-8")
         )
@@ -131,9 +142,63 @@ class PartialCalibrationStageWriter:
                 with (staging / name).open("rb") as fh:
                     os.fsync(fh.fileno())
                 os.replace(staging / name, destination)
+        if self.publish_directory is not None:
+            self._publish_verified_stage(stage.stage, record)
         self.missing_stages.remove(stage.stage)
         print(f"GLM53_CALIBRATION_REPAIRED_SOURCE_LAYER={stage.stage}", flush=True)
         del stage
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+
+    def _publish_verified_stage(self, stage_number: int, record: dict) -> None:
+        """Publish one complete WARM stage, receipt last, preserving old bytes.
+
+        If interrupted, an uncommitted stage directory stays untrusted and a
+        subsequent session refuses to silently overwrite it.
+        """
+        from .glm53_partial_recovery_receipts import sha256_digest
+
+        base = self.publish_directory
+        if base is None:
+            return
+        base.mkdir(parents=True, exist_ok=True)
+        stage_root = base / f"stage-{stage_number:02d}"
+        if stage_root.exists() or stage_root.is_symlink():
+            raise GLM53CalibrationError(
+                f"stage {stage_number} already has remote upload artifacts"
+            )
+        stage_root.mkdir(exist_ok=False)
+        expected = sorted(_files(record))
+        hashes = {}
+        for filename in expected:
+            source = self.output / filename
+            destination = stage_root / filename
+            if source.is_symlink() or not source.is_file():
+                raise GLM53CalibrationError(
+                    f"missing local computed stage artifact: {filename}"
+                )
+            with source.open("rb") as inp, destination.open("xb") as out:
+                shutil.copyfileobj(inp, out, length=4 * 1024 * 1024)
+                out.flush()
+                os.fsync(out.fileno())
+            digest = sha256_digest(source)
+            if sha256_digest(destination) != digest:
+                raise GLM53CalibrationError(
+                    f"remote stage {stage_number} hash mismatch: {filename}"
+                )
+            hashes[filename] = digest
+        receipt = {
+            "schema_version": 1,
+            "source_layer": stage_number,
+            "target_fingerprint": self.manifest["target_config_fingerprint"],
+            "donor_revision": "abf42e6c0e53bc29a875511301e7b7fcd220315b",
+            "sha256": hashes,
+        }
+        # Create the completion marker only after remote data read-back.
+        with (stage_root / "receipt.json").open("x", encoding="utf-8") as out:
+            json.dump(receipt, out, sort_keys=True)
+            out.write("\n")
+            out.flush()
+            os.fsync(out.fileno())
+        print(f"GLM53_GPU_DURABLE_STAGE_COMMIT={stage_number} files={len(hashes)}", flush=True)
