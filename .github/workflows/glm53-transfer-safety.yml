@@ -53,4 +53,5 @@ jobs:
           python -m unittest discover -s tests -p 'test_glm53_batch_prefetch.py' -v
           python -m unittest discover -s tests -p 'test_glm53_partial_recovery.py' -v
           python -m unittest discover -s tests -p 'test_glm53_partial_stage_writer.py' -v
+          python -m unittest discover -s tests -p 'test_glm53_storage_policy.py' -v
           python -m unittest discover -s tests -p 'test_glm53_full78_architecture.py' -v
