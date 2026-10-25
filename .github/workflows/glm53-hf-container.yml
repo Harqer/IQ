@@ -31,7 +31,7 @@ jobs:
 
       - name: Validate dependencies and full unit suite inside container
         run: |
-          docker run --rm --entrypoint /bin/bash \
+          docker run --rm --env IQ_PROJECTION_DEVICE=cpu --entrypoint /bin/bash \
             iq-glm53-hf-gpu:validation -lc '
               set -euo pipefail
               python scripts/check_glm53_gpu_stack.py --model-runtime --pip-check
