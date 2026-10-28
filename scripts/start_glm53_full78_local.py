@@ -148,70 +148,43 @@ def fetch_donors(root: Path) -> tuple[Path, Path]:
 
 
 def verify_hf_output_mount(mount: Path, run_id: str) -> None:
-    """Fail closed unless a real mount maps to the exact intended HF run.
+    """Require correct bucket mount; independently test Hub API durability.
 
-    The probe uses the same create-temp, fsync, rename semantics as the model
-    shard writer. A SEPARATE HF API read must see the exact bytes before
-    compilers may use the mount. The probe is removed before compilation.
+    NEVER write/rename through hf-mount: both NFS and advanced FUSE uploads
+    are asynchronous. An existing run may safely be mounted READ ONLY.
     """
     if not mount.is_dir() or not os.path.ismount(mount):
-        raise RuntimeError(
-            "HF remote output must be an ACTIVE mountpoint, not a local directory"
-        )
-    from huggingface_hub import bucket_info
+        raise RuntimeError("HF output must be an ACTIVE bucket mountpoint")
+    if not (mount / "calibration78").is_dir() or not (mount / "IQ").is_dir():
+        raise RuntimeError("Mount does not show the expected HF bucket ROOT")
+    from huggingface_hub import (
+        batch_bucket_files, bucket_info, download_bucket_files,
+        get_bucket_paths_info,
+    )
     if bucket_info(OUTPUT).private:
-        raise RuntimeError("HF output bucket changed visibility; recheck capacity/policy")
-    prefix = f"IQ/runs/{run_id}"
-    # Mount the BUCKET ROOT, not an implicit subfolder. The HF Bucket's
-    # IQ/runs may be an implicit prefix (no stat'able directory object).
-    runs_dir = mount / "IQ" / "runs"
-    runs_dir.mkdir(parents=True, exist_ok=True)
-    run_dir = runs_dir / run_id
-    run_dir.mkdir(exist_ok=True)
-    suffix = uuid.uuid4().hex
-    temp = run_dir / f".iq-{suffix}.partial"
-    final = run_dir / f".iq-{suffix}.probe"
-    data = os.urandom(65536)
-    try:
-        with temp.open("xb") as f:
-            f.write(data)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(temp, final)
-        # Advanced-write FUSE flushes asynchronously. Confirm actual remote
-        # persistence through an independent Hugging Face client.
-        with tempfile.TemporaryDirectory(prefix="iq-hf-mount-verify-") as root:
-            destination = Path(root) / "hf-confirmed.bin"
-            observed = False
-            for attempt in range(30):
-                try:
-                    read(OUTPUT, f"{prefix}/{final.name}", destination)
-                    if destination.read_bytes() != data:
-                        raise RuntimeError("HF mount upload SHA mismatch")
-                    observed = True
-                    break
-                except Exception as exc:
-                    if isinstance(exc, RuntimeError) and "SHA mismatch" in str(exc):
-                        raise
-                    # A newly written advanced-FUSE file may still be queued
-                    # for remote upload. Retry missing/rate-limited reads,
-                    # not authentication or permission failures.
-                    error = str(exc).lower()
-                    if not any(x in error for x in (
-                        "404", "not found", "does not exist", "429", "rate limit",
-                    )):
-                        raise
-                    destination.unlink(missing_ok=True)
-                    time.sleep(3)
-            if not observed:
-                raise RuntimeError(
-                    "HF mount created local file, but independent bucket "
-                    "readback could not verify its durability; refusing compile"
-                )
-        print("IQ_HF_OUTPUT_MOUNT_REMOTE_READBACK_VERIFIED", flush=True)
-    finally:
-        temp.unlink(missing_ok=True)
-        final.unlink(missing_ok=True)
+        raise RuntimeError("HF output bucket visibility changed; review policy")
+    name = f"IQ/_write-probes/{run_id}/{uuid.uuid4().hex}.bin"
+    payload = os.urandom(65536)
+    with tempfile.TemporaryDirectory(prefix="iq-hf-api-probe-") as tmp:
+        original = Path(tmp) / "original.bin"
+        copy = Path(tmp) / "readback.bin"
+        original.write_bytes(payload)
+        try:
+            batch_bucket_files(OUTPUT, add=[(str(original), name)])
+            listed = list(get_bucket_paths_info(OUTPUT, [name]))
+            if len(listed) != 1 or listed[0].size != len(payload):
+                raise RuntimeError("HF API probe was not independently committed")
+            download_bucket_files(
+                OUTPUT, files=[(name, str(copy))],
+                raise_on_missing_files=True,
+            )
+            if not copy.is_file() or copy.read_bytes() != payload:
+                raise RuntimeError("HF API probe independent SHA256 readback failed")
+            print("IQ_HF_BUCKET_API_REMOTE_READBACK_VERIFIED", flush=True)
+        finally:
+            # This path is a fresh UUID, unrelated to the existing checkpoint.
+            batch_bucket_files(OUTPUT, delete=[name])
+
 
 
 def run(args: argparse.Namespace) -> None:
