@@ -62,7 +62,7 @@ def _sha256(path: Path) -> str:
     return h.hexdigest()
 
 
-def publish_file(output: Path, filename: str, local: Path) -> None:
+def publish_file(output: Path, filename: str, local: Path, *, idempotent: bool = False) -> None:
     """Upload a NEW final object; verify independently from Hub, not from NFS.
 
     Never accept a missing/short/mismatched remote object as complete.
@@ -80,10 +80,11 @@ def publish_file(output: Path, filename: str, local: Path) -> None:
     if source_size < 16:
         raise BucketCheckpointError(f"Invalid local shard: {filename}")
     digest = _sha256(local)
-    if any(get_bucket_paths_info(bucket, [remote])):
+    prior = list(get_bucket_paths_info(bucket, [remote]))
+    if prior and not idempotent:
         raise BucketCheckpointError(f"Refusing to overwrite existing remote shard: {filename}")
-
-    batch_bucket_files(bucket, add=[(str(local), remote)])
+    if not prior:
+        batch_bucket_files(bucket, add=[(str(local), remote)])
 
     infos = list(get_bucket_paths_info(bucket, [remote]))
     if len(infos) != 1 or infos[0].path != remote or infos[0].size != source_size:
@@ -104,14 +105,25 @@ def publish_file(output: Path, filename: str, local: Path) -> None:
     print(f"IQ_DURABLE_HF_SHA256_OK={filename} bytes={source_size}", flush=True)
 
 
-def write_checkpoint_text(output: Path, filename: str, content: str) -> None:
+def write_checkpoint_text(
+    output: Path, filename: str, content: str, *, preserve_existing: bool = False
+) -> None:
     if not durable_output(output):
         (output / filename).write_text(content, encoding="utf-8")
         return
+    if preserve_existing:
+        from huggingface_hub import get_bucket_paths_info
+        bucket, prefix, _ = _settings(output)
+        existing = list(get_bucket_paths_info(bucket, [f"{prefix}/{filename}"]))
+        if existing:
+            if len(existing) != 1 or existing[0].size < 16:
+                raise BucketCheckpointError(f"Invalid existing receipt: {filename}")
+            print(f"IQ_DURABLE_RECEIPT_REUSED={filename}", flush=True)
+            return
     with local_stage_dir(output) as td:
         path = Path(td) / filename
         path.write_text(content, encoding="utf-8")
-        publish_file(output, filename, path)
+        publish_file(output, filename, path, idempotent=True)
 
 
 def remote_checkpoint_sizes(output: Path, filenames: set[str] | list[str]) -> dict[str, int]:
