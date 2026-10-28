@@ -816,8 +816,9 @@ def _save_shard(
     except ImportError as exc:
         raise CompleteTransplantError("safetensors is required") from exc
     path = output_dir / filename
-    path.parent.mkdir(parents=True, exist_ok=True)
     from .glm53_bucket_persistence import durable_output
+    if not durable_output(output_dir):
+        path.parent.mkdir(parents=True, exist_ok=True)
     # hf-mount may hold stale positive/negative entries; for durable HF
     # publication, only the independent Hub API establishes existence.
     if not durable_output(output_dir) and (path.exists() or path.is_symlink()):
