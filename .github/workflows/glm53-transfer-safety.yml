@@ -43,6 +43,7 @@ jobs:
           python scripts/check_glm53_gpu_stack.py --pip-check
       - name: No-cloud-cost failure injection and lineage tests
         run: |
+          python -m unittest discover -s tests -p 'test_glm53_bucket_persistence.py' -v
           python -m unittest discover -s tests -p 'test_glm53_gpu_stack.py' -v
           python -m unittest discover -s tests -p 'test_glm53_full78_gate.py' -v
           python -m unittest discover -s tests -p 'test_glm53_atomic_shards.py' -v
