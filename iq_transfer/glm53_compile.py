@@ -338,7 +338,11 @@ def _copy_tokenizer_assets(source_dir: Path, output_dir: Path) -> None:
     ):
         source = source_dir / name
         if source.is_file():
-            shutil.copy2(source, output_dir / name)
+            from .glm53_bucket_persistence import durable_output, publish_file
+            if durable_output(output_dir):
+                publish_file(output_dir, name, source, idempotent=True)
+            else:
+                shutil.copy2(source, output_dir / name)
 
 
 def _validate_expanded_calibration(
@@ -399,7 +403,9 @@ def compile_glm53_iq_checkpoint(
             "expanded GLM compile requires a NEW empty directory; refusing "
             "to overwrite the original checkpoint or an earlier candidate"
         )
-    output.mkdir(parents=True, exist_ok=True)
+    from .glm53_bucket_persistence import durable_output
+    if not durable_output(output):
+        output.mkdir(parents=True, exist_ok=True)
     calibration = (LazyGLM53Calibration(calibration_dir) if streaming_source
                    else GLM53CalibrationSolution.load(calibration_dir))
     if resume_existing:
