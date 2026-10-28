@@ -40,7 +40,7 @@ class TestMetadataFinalizer(unittest.TestCase):
     def test_bad_header_is_rejected(self):
         with tempfile.TemporaryDirectory() as temp:
             file = Path(temp) / "bad.safetensors"
-            file.write_bytes(struct.pack("<Q", 1024) + b"none")
+            file.write_bytes(struct.pack("<Q", 1024) + b"none" * 4)
             with self.assertRaisesRegex(RuntimeError, "Invalid safetensors header length"):
                 safetensors_header(file)
 
