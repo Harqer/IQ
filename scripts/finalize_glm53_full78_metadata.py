@@ -261,6 +261,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--publish", action="store_true",
                         help="Upload index/manifest/completion after full dry-run checks")
+    parser.add_argument("--probe-headers", action="store_true",
+                        help="Read only two remote safetensors headers to verify the "
+                             "HF streaming backend without scanning the checkpoint")
     parser.add_argument("--read-mode", choices=("auto", "hub", "mount"),
                         default="auto",
                         help="auto: mounted reads + authenticated streaming HF fallback on EIO; "
@@ -281,6 +284,20 @@ def main() -> None:
     # One client per finalization. HF direct reads are streamed and never
     # deserialize model weights. No new S3 credentials or GPU are required.
     fs = HfFileSystem(token=os.environ.get("HF_TOKEN"), live_follow=False)
+    if args.probe_headers:
+        from huggingface_hub import get_bucket_paths_info
+        probe_names = ["model-context-000.safetensors", "model-mamba-018.safetensors"]
+        prefix = f"IQ/runs/{RUN}"
+        infos = {item.path.removeprefix(prefix + "/"): item.size for item in
+                 get_bucket_paths_info(
+                     BUCKET, [f"{prefix}/{n}" for n in probe_names]
+                 )}
+        if set(infos) != set(probe_names):
+            raise RuntimeError(f"Missing remote probe shards: {sorted(set(probe_names)-set(infos))}")
+        for name in probe_names:
+            header = remote_header(fs, name, infos[name])
+            print(f"IQ_HF_STREAMING_HEADER_PROBE_OK={name} tensors={len(header)}", flush=True)
+        return
     config = checkpoint_json(fs, output, "iq_config.json", read_mode=args.read_mode)
     fingerprint = sha256(json.dumps(config, sort_keys=True, separators=(",", ":")).encode())
     run_provenance = checkpoint_json(
