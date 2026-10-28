@@ -817,7 +817,10 @@ def _save_shard(
         raise CompleteTransplantError("safetensors is required") from exc
     path = output_dir / filename
     path.parent.mkdir(parents=True, exist_ok=True)
-    if path.exists() or path.is_symlink():
+    from .glm53_bucket_persistence import durable_output
+    # hf-mount may hold stale positive/negative entries; for durable HF
+    # publication, only the independent Hub API establishes existence.
+    if not durable_output(output_dir) and (path.exists() or path.is_symlink()):
         raise CompleteTransplantError(
             f"output shard already exists; resume must validate, not overwrite: {filename}"
         )
