@@ -106,20 +106,50 @@ def validate_bucket(root: Path, *, api_sizes: dict[str, int],
             if set(entries) != {"embed_tokens.weight", "norm.weight", "lm_head.weight"}:
                 raise RuntimeError("Invalid lexical foundation tensor keys")
         elif name == "model-native.safetensors":
-            if any(key.startswith("layers.") for key in entries):
-                raise RuntimeError("Unexpected layer tensors in native-controller shard")
+            if any(not key.startswith(("attnres.", "reasoning.", "reasoning_injector.")) for key in entries):
+                raise RuntimeError("Unexpected tensor in native-controller shard")
+            if not all(any(key.startswith(prefix) for key in entries)
+                       for prefix in ("attnres.", "reasoning.", "reasoning_injector.")):
+                raise RuntimeError("Incomplete native-controller inventory")
         elif name.startswith("model-mamba-"):
             ordinal = int(name[12:15])
             physical = [i for i, kind in enumerate(schedule) if kind == "mamba3"][ordinal]
             prefix = f"layers.{physical}."
-            if len(entries) != 12 or any(not key.startswith(prefix) for key in entries):
-                raise RuntimeError(f"Invalid Mamba physical placement: {name}")
+            suffixes = {
+                "norm.weight",
+                "mamba.core.in_proj.weight", "mamba.core.dt_bias",
+                "mamba.core.B_bias", "mamba.core.C_bias",
+                "mamba.core.B_norm.weight", "mamba.core.C_norm.weight",
+                "mamba.core.mimo_x", "mamba.core.mimo_z",
+                "mamba.core.mimo_o", "mamba.core.D",
+                "mamba.core.out_proj.weight",
+            }
+            if set(entries) != {prefix + suffix for suffix in suffixes}:
+                raise RuntimeError(f"Invalid Mamba physical placement/tensor inventory: {name}")
         elif name.startswith("model-context-"):
             stage = stages[int(name[14:17])]
             physical = int(stage["context_physical_layer"])
-            if (schedule[physical] not in ("csa", "hca") or
-                any(not k.startswith(f"layers.{physical}.") for k in entries)):
-                raise RuntimeError(f"Invalid context physical placement: {name}")
+            mode = schedule[physical]
+            base = f"layers.{physical}"
+            attn = base + ".attention."
+            common = {
+                base + ".norm.weight",
+                *(attn + suffix for suffix in (
+                    "q_a_proj.weight", "q_a_norm.weight", "q_b_proj.weight",
+                    "kv_proj.weight", "kv_norm.weight",
+                    "compressor_gate_proj.weight", "compressor_position_bias",
+                    "compressor_kv_norm.weight", "compressor_kv_proj.weight",
+                    "sinks", "output.weight", "output.out_proj.weight",
+                )),
+            }
+            if mode == "csa":
+                common.update(attn + suffix for suffix in (
+                    "index_kv_proj.weight", "index_kv_norm.weight",
+                    "index_kv_norm.bias", "index_q_proj.weight",
+                    "index_weight_proj.weight",
+                ))
+            if mode not in ("csa", "hca") or set(entries) != common:
+                raise RuntimeError(f"Invalid context physical placement/tensor inventory: {name}")
         elif name.startswith("model-moe-"):
             stage = stages[int(name[10:13])]
             physical = int(stage["moe_physical_layer"])
