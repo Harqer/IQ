@@ -115,9 +115,9 @@ def validate_legacy_partial(output: Path) -> None:
         if (
             os.environ.get("IQ_HF_DURABLE_OUTPUT")
             and re.fullmatch(
-                r"\\.model-(?:global|native|context-\\d{3}|mamba-\\d{3}|"
-                r"moe-\\d{3}(?:-common|-shared|-expert-\\d{3})?)"
-                r"\\.safetensors\\.[a-zA-Z0-9_]{8}\\.partial", name
+                r"\.model-(?:global|native|context-\d{3}|mamba-\d{3}|"
+                r"moe-\d{3}(?:-common|-shared|-expert-\d{3})?)"
+                r"\.safetensors\.[a-zA-Z0-9_]{8}\.partial", name
             )
             and path.is_file() and not path.is_symlink()
         ):
