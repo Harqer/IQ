@@ -29,7 +29,7 @@ FINAL = "model-mamba-018.safetensors"
 ORPHAN = ".model-mamba-018.safetensors.mgbn0e4t.partial"
 
 
-def expected_mamba_shapes(config: IQHybridConfig) -> dict[str, tuple[tuple[int, ...], str]]:
+def expected_mamba_shapes(config: IQHybridConfig) -> dict[str, tuple[tuple[int, ...], str | frozenset[str]]]:
     positions = config.schedule.positions(HybridLayerType.MAMBA3)
     if len(positions) != 79:
         raise RuntimeError("Not the pinned full78 / 79-Mamba schedule")
@@ -39,21 +39,29 @@ def expected_mamba_shapes(config: IQHybridConfig) -> dict[str, tuple[tuple[int, 
         headdim=c.headdim, ngroups=1, rope_fraction=c.rope_fraction,
         is_mimo=True, mimo_rank=c.mimo_rank,
     )
+    # Source layer 7 maps to ordinal 18 under the compiler's documented
+    # round(i * 78 / 31) placement. Unlike identity Mamba slots, the
+    # pretrained slot preserves the ORIGINAL donor tensor dtypes.
+    source_to_target = {round(i * (len(positions) - 1) / 31): i
+                        for i in range(32)}
+    if source_to_target.get(18) != 7:
+        raise RuntimeError("Unexpected Mamba source mapping for ordinal 018")
+    donor_float = frozenset({"BF16", "F32"})
     base = f"layers.{positions[18]}"
     core = f"{base}.mamba.core"
     n = layout.nheads
     return {
         f"{base}.norm.weight": ((c.d_model,), "BF16"),
         f"{core}.in_proj.weight": (layout.in_proj_shape, "BF16"),
-        f"{core}.dt_bias": ((n,), "F32"),
-        f"{core}.B_bias": ((n, c.mimo_rank, c.d_state), "F32"),
-        f"{core}.C_bias": ((n, c.mimo_rank, c.d_state), "F32"),
+        f"{core}.dt_bias": ((n,), donor_float),
+        f"{core}.B_bias": ((n, c.mimo_rank, c.d_state), donor_float),
+        f"{core}.C_bias": ((n, c.mimo_rank, c.d_state), donor_float),
         f"{core}.B_norm.weight": ((c.d_state,), "BF16"),
         f"{core}.C_norm.weight": ((c.d_state,), "BF16"),
-        f"{core}.mimo_x": ((n, c.mimo_rank, c.headdim), "F32"),
-        f"{core}.mimo_z": ((n, c.mimo_rank, c.headdim), "F32"),
-        f"{core}.mimo_o": ((n, c.mimo_rank, c.headdim), "F32"),
-        f"{core}.D": ((n,), "F32"),
+        f"{core}.mimo_x": ((n, c.mimo_rank, c.headdim), donor_float),
+        f"{core}.mimo_z": ((n, c.mimo_rank, c.headdim), donor_float),
+        f"{core}.mimo_o": ((n, c.mimo_rank, c.headdim), donor_float),
+        f"{core}.D": ((n,), donor_float),
         f"{core}.out_proj.weight": (layout.out_proj_shape, "BF16"),
     }
 
@@ -71,8 +79,15 @@ def validate_local_shard(path: Path, config: IQHybridConfig) -> None:
             )
         for key, (shape, dtype) in expected.items():
             item = reader.get_slice(key)
-            if tuple(item.get_shape()) != tuple(shape) or item.get_dtype() != dtype:
-                raise RuntimeError(f"Incorrect tensor metadata in orphan: {key}")
+            actual_shape = tuple(item.get_shape())
+            actual_dtype = item.get_dtype()
+            acceptable = {dtype} if isinstance(dtype, str) else dtype
+            if actual_shape != tuple(shape) or actual_dtype not in acceptable:
+                raise RuntimeError(
+                    f"Incorrect tensor metadata in orphan: {key}: "
+                    f"got shape={actual_shape} dtype={actual_dtype}; "
+                    f"expected shape={tuple(shape)} dtype={sorted(acceptable)}"
+                )
     print(f"IQ_MAMBA018_ORPHAN_HEADER_VALID={path.stat().st_size}", flush=True)
 
 
