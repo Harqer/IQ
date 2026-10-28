@@ -464,7 +464,8 @@ def save_incremental_moe_stage(
             )
             del zeros
         write_checkpoint_text(output_dir, f"model-moe-{stage.stage:03d}-projection.json",
-            json.dumps(report, indent=2, sort_keys=True) + "\n"
+            json.dumps(report, indent=2, sort_keys=True) + "\n",
+        preserve_existing=resume_existing
         )
         projection_ops.close()
         return
@@ -673,5 +674,6 @@ def save_incremental_moe_stage(
             }
     projection_ops.close()
     write_checkpoint_text(output_dir, f"model-moe-{stage.stage:03d}-projection.json",
-        json.dumps(report, indent=2, sort_keys=True) + "\n"
+        json.dumps(report, indent=2, sort_keys=True) + "\n",
+        preserve_existing=resume_existing
     )
