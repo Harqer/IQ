@@ -577,7 +577,21 @@ def compile_glm53_iq_checkpoint(
                   for i in range(config.stable_moe.num_experts)),
             ]
             report = output / (prefix + "projection.json")
-            if report.is_file() and all((output / name).is_file() for name in names):
+            mounted_ready = report.is_file() and all(
+                (output / name).is_file() for name in names
+            )
+            if durable_output(output) and not mounted_ready:
+                # Remote durability audit is authoritative. A stale NFS view
+                # must NEVER fall through into multi-GiB pseudoinverses.
+                from .glm53_bucket_persistence import remote_checkpoint_sizes
+                remote_checkpoint_sizes(
+                    output, names + [prefix + "projection.json"]
+                )
+                raise GLM53CompileError(
+                    f"HF bucket has all stage {stage_id} shards, but read-only "
+                    "NFS mount is stale. Refresh mount; do not recompute."
+                )
+            if mounted_ready:
                 if source_layer < inspector.layout.first_k_dense_replace:
                     provenance["selected_source_expert_ids"][str(stage_id)] = None
                 else:
@@ -666,7 +680,15 @@ def compile_glm53_iq_checkpoint(
             f"model-mamba-{ordinal:03d}.safetensors"
             for ordinal in range(len(positions))
         ]
-        if resume_existing and all((output / name).is_file() for name in mamba_files):
+        mamba_mounted_ready = all((output / name).is_file() for name in mamba_files)
+        if resume_existing and durable_output(output) and not mamba_mounted_ready:
+            from .glm53_bucket_persistence import remote_checkpoint_sizes
+            remote_checkpoint_sizes(output, mamba_files)
+            raise GLM53CompileError(
+                "All 79 Mamba shards are durable in HF but mount metadata "
+                "is stale. Refresh the read-only mount; do not reload donor."
+            )
+        if resume_existing and mamba_mounted_ready:
             # Do not torch.load() the complete 1.5B Mamba donor on a
             # metadata-only continuation. Reuse and validate saved headers.
             for ordinal, name in enumerate(mamba_files):
