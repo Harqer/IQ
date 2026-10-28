@@ -77,8 +77,8 @@ def publish_file(output: Path, filename: str, local: Path, *, idempotent: bool =
         raise BucketCheckpointError("Only single safe checkpoint filenames are permitted")
     remote = f"{prefix}/{filename}"
     source_size = local.stat().st_size
-    if source_size < 16:
-        raise BucketCheckpointError(f"Invalid local shard: {filename}")
+    if source_size < (16 if filename.endswith(".safetensors") else 1):
+        raise BucketCheckpointError(f"Invalid local checkpoint file: {filename}")
     digest = _sha256(local)
     prior = list(get_bucket_paths_info(bucket, [remote]))
     if prior and not idempotent:
@@ -116,7 +116,7 @@ def write_checkpoint_text(
         bucket, prefix, _ = _settings(output)
         existing = list(get_bucket_paths_info(bucket, [f"{prefix}/{filename}"]))
         if existing:
-            if len(existing) != 1 or existing[0].size < 16:
+            if len(existing) != 1 or existing[0].size < 1:
                 raise BucketCheckpointError(f"Invalid existing receipt: {filename}")
             print(f"IQ_DURABLE_RECEIPT_REUSED={filename}", flush=True)
             return
