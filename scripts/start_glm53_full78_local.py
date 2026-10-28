@@ -244,6 +244,16 @@ def run(args: argparse.Namespace) -> None:
     )
     if mount is not None:
         verify_hf_output_mount(mount, args.run_id)
+        # The mount is READ ONLY for existing-shard inspection. Newly
+        # published files bypass it and use independently verified Hub API.
+        os.environ["IQ_HF_DURABLE_OUTPUT"] = str(output)
+        os.environ["IQ_HF_DURABLE_BUCKET"] = "kofecheckmate/iq-glm53-all256"
+        os.environ["IQ_HF_DURABLE_PREFIX"] = f"IQ/runs/{args.run_id}"
+        os.environ["IQ_HF_DURABLE_STAGING"] = str(root / "shard-staging")
+        from iq_transfer.glm53_bucket_persistence import (
+            durable_output, read_checkpoint_json,
+            remote_checkpoint_sizes, write_checkpoint_text,
+        )
     if args.resume:
         if not (output / "run-provenance.json").is_file():
             raise RuntimeError("No provenanced partial local checkpoint; --resume refused")
@@ -292,7 +302,9 @@ def run(args: argparse.Namespace) -> None:
     print(f"IQ_ACTUAL_GLM53_WEIGHT_COMPILATION_START={args.run_id}", flush=True)
     subprocess.run(command, check=True)
 
-    manifest = json.loads((output / "transplant_manifest.json").read_text())
+    manifest = (read_checkpoint_json(output, "transplant_manifest.json")
+                if remote_output else
+                json.loads((output / "transplant_manifest.json").read_text()))
     source_layers = {int(v) for v in manifest["source_layer_map"].values()}
     if source_layers != set(range(78)):
         raise RuntimeError("Incomplete GLM source layer coverage")
@@ -324,12 +336,6 @@ def run(args: argparse.Namespace) -> None:
         "inference_ready": False,
         "end_to_end_knowledge_retention_proven": False,
     }
-    temp = output / "COMPILE_COMPLETE.json.partial"
-    with temp.open("x", encoding="utf-8") as fp:
-        json.dump(complete, fp, sort_keys=True)
-        fp.write("\n")
-        fp.flush()
-        os.fsync(fp.fileno())
     from scripts.glm53_full78_gate import expected_stage_shards
     physical = set()
     for stage_number in range(78):
@@ -337,17 +343,39 @@ def run(args: argparse.Namespace) -> None:
     physical.update(("model-global.safetensors", "model-native.safetensors",
                      "transplant_manifest.json", "iq_config.json"))
     physical.update(f"model-mamba-{n:03d}.safetensors" for n in range(79))
-    missing = [
-        name for name in sorted(physical) if not (output / name).is_file()
-        or (output / name).stat().st_size < 1
-    ]
-    if missing:
-        temp.unlink(missing_ok=True)
-        raise RuntimeError(f"Output missing {len(missing)} checkpoint files: {missing[:8]}")
-    os.replace(temp, output / "COMPILE_COMPLETE.json")
-    status = check_checkpoint_complete(output)
-    if not status["ready"]:
-        raise RuntimeError("Full compiler exited, but expected checkpoint shards are missing")
+
+    if remote_output:
+        # NEVER publish a success marker using NFS's async rename path.
+        # All physical objects and index must be visible through the actual
+        # Hub bucket API, rather than the mount's possibly stale stat cache.
+        remote_checkpoint_sizes(
+            output, physical | {"model.safetensors.index.json"}
+        )
+        write_checkpoint_text(
+            output, "COMPILE_COMPLETE.json",
+            json.dumps(complete, sort_keys=True) + "\n",
+        )
+        remote_checkpoint_sizes(output, physical | {
+            "model.safetensors.index.json", "COMPILE_COMPLETE.json"
+        })
+    else:
+        temp = output / "COMPILE_COMPLETE.json.partial"
+        with temp.open("x", encoding="utf-8") as fp:
+            json.dump(complete, fp, sort_keys=True)
+            fp.write("\n")
+            fp.flush()
+            os.fsync(fp.fileno())
+        missing = [
+            name for name in sorted(physical) if not (output / name).is_file()
+            or (output / name).stat().st_size < 1
+        ]
+        if missing:
+            temp.unlink(missing_ok=True)
+            raise RuntimeError(f"Output missing {len(missing)} checkpoint files: {missing[:8]}")
+        os.replace(temp, output / "COMPILE_COMPLETE.json")
+        status = check_checkpoint_complete(output)
+        if not status["ready"]:
+            raise RuntimeError("Full compiler exited, but expected checkpoint shards are missing")
     if remote_output:
         print(
             f"IQ_FULL78_LOCAL_COMPILE_ENDED_PENDING_REMOTE_DURABILITY_AUDIT="
