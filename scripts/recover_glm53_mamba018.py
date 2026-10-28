@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import os
 from pathlib import Path
 import tempfile
@@ -98,13 +99,27 @@ def recover(*, publish: bool) -> None:
             BUCKET, files=[
                 (f"{PREFIX}/{ORPHAN}", str(orphan)),
                 (f"{PREFIX}/iq_config.json", str(conf)),
+                (f"{PREFIX}/run-provenance.json", str(td / "provenance.json")),
             ], raise_on_missing_files=True,
         )
         if orphan.stat().st_size != orphan_info.size:
             raise RuntimeError("Orphan size changed during download")
         config = IQHybridConfig.from_json(str(conf))
+        provenance = json.loads((td / "provenance.json").read_text())
+        if (
+            provenance.get("teacher_revision") != "abf42e6c0e53bc29a875511301e7b7fcd220315b"
+            or provenance.get("mamba_revision") != "bc6b5d0f7994fe4cb3478242e92da8daf9ee29ec"
+            or provenance.get("target_fingerprint") != config.fingerprint
+            or provenance.get("calibration_receipt_sha256")
+            != "2d3b70be2abc2719f21f5fa972db5c4dfa8f316c19c793bea5911439fb07622f"
+        ):
+            raise RuntimeError("Provenance/target fingerprint mismatch; refusing recovery")
         validate_local_shard(orphan, config)
-        digest = hashlib.sha256(orphan.read_bytes()).hexdigest()
+        hasher = hashlib.sha256()
+        with orphan.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(4 * 1024 * 1024), b""):
+                hasher.update(chunk)
+        digest = hasher.hexdigest()
         print(f"IQ_MAMBA018_LOCAL_SHA256={digest}", flush=True)
         if not publish:
             print("IQ_MAMBA018_VALIDATED_NO_REMOTE_CHANGE=1", flush=True)
