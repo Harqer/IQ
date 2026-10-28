@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+import os
 from pathlib import Path
 from safetensors import safe_open
 
@@ -106,6 +107,20 @@ def validate_legacy_partial(output: Path) -> None:
         name = path.name
         if name in known or (name.startswith("model-moe-") and
                              name.endswith("-projection.json")):
+            continue
+        # Previous hf-mount advanced-write crashes can leave a committed
+        # .model-...<random>.partial in the bucket. An orphan is NEVER
+        # recognized as a complete shard; the missing FINAL file is rebuilt
+        # and uploaded through the durable Hub API.
+        if (
+            os.environ.get("IQ_HF_DURABLE_OUTPUT")
+            and re.fullmatch(
+                r"\\.model-(?:global|native|context-\\d{3}|mamba-\\d{3}|"
+                r"moe-\\d{3}(?:-common|-shared|-expert-\\d{3})?)"
+                r"\\.safetensors\\.[a-zA-Z0-9_]{8}\\.partial", name
+            )
+            and path.is_file() and not path.is_symlink()
+        ):
             continue
         if path.is_symlink() or not path.is_file() or not _SHARD_RE.fullmatch(name):
             raise GLM53ResumeError(f"unexpected partial checkpoint file: {name}")
