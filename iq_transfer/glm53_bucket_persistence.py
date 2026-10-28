@@ -118,6 +118,15 @@ def write_checkpoint_text(
         if existing:
             if len(existing) != 1 or existing[0].size < 1:
                 raise BucketCheckpointError(f"Invalid existing receipt: {filename}")
+            # Do not adopt an NFS-staged JSON receipt just because it has a
+            # nonzero size: independently download, parse and match stage.
+            original = read_checkpoint_json(output, filename)
+            if not isinstance(original, dict):
+                raise BucketCheckpointError(f"Invalid remote receipt JSON: {filename}")
+            if filename.startswith("model-moe-") and filename.endswith("-projection.json"):
+                stage = int(filename[len("model-moe-"):len("model-moe-") + 3])
+                if original.get("stage") != stage:
+                    raise BucketCheckpointError(f"Remote stage receipt mismatch: {filename}")
             print(f"IQ_DURABLE_RECEIPT_REUSED={filename}", flush=True)
             return
     with local_stage_dir(output) as td:
