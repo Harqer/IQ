@@ -46,34 +46,34 @@ def _parse_safetensors_header(stream, file_size: int, name: str) -> dict[str, di
         raise RuntimeError(f"Truncated safetensors header {name}")
     data = json.loads(payload)
     if not isinstance(data, dict):
-        raise RuntimeError(f"Invalid safetensors JSON {path.name}")
+        raise RuntimeError(f"Invalid safetensors JSON {name}")
     data.pop("__metadata__", None)
     if not data:
-        raise RuntimeError(f"Empty safetensors shard {path.name}")
+        raise RuntimeError(f"Empty safetensors shard {name}")
     spans = []
     for key, item in data.items():
         if not isinstance(key, str) or not isinstance(item, dict):
-            raise RuntimeError(f"Invalid safetensors entry {path.name}")
+            raise RuntimeError(f"Invalid safetensors entry {name}")
         shape, dtype, offsets = item.get("shape"), item.get("dtype"), item.get("data_offsets")
         if (not isinstance(shape, list) or not shape or
             any(type(dim) is not int or dim < 1 for dim in shape) or
             dtype not in DTYPE_BYTES or not isinstance(offsets, list) or
             len(offsets) != 2 or any(type(v) is not int for v in offsets)):
-            raise RuntimeError(f"Invalid tensor metadata: {path.name}:{key}")
+            raise RuntimeError(f"Invalid tensor metadata: {name}:{key}")
         start, end = offsets
         expected_bytes = DTYPE_BYTES[dtype]
         for dim in shape:
             expected_bytes *= dim
         if start < 0 or end <= start or end - start != expected_bytes:
-            raise RuntimeError(f"Invalid tensor byte extent: {path.name}:{key}")
+            raise RuntimeError(f"Invalid tensor byte extent: {name}:{key}")
         spans.append((start, end))
     previous = 0
     for start, end in sorted(spans):
         if start != previous:
-            raise RuntimeError(f"Noncontiguous or overlapping tensor data: {path.name}")
+            raise RuntimeError(f"Noncontiguous or overlapping tensor data: {name}")
         previous = end
     if previous != file_size - 8 - size:
-        raise RuntimeError(f"Truncated or trailing tensor data: {path.name}")
+        raise RuntimeError(f"Truncated or trailing tensor data: {name}")
     return data
 
 
