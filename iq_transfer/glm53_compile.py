@@ -652,28 +652,43 @@ def compile_glm53_iq_checkpoint(
             f"missing={missing[:60]} unexpected={unexpected[:60]}"
         )
 
-    config.write_json(str(output / "iq_config.json"))
+    from .glm53_bucket_persistence import (
+        durable_output, local_stage_dir, publish_file,
+        remote_checkpoint_sizes, write_checkpoint_text,
+    )
+    if durable_output(output):
+        with local_stage_dir(output) as td:
+            local_config = Path(td) / "iq_config.json"
+            config.write_json(str(local_config))
+            publish_file(output, "iq_config.json", local_config)
+    else:
+        config.write_json(str(output / "iq_config.json"))
+
     _copy_tokenizer_assets(
         Path(reuse_foundation_checkpoint)
         if reuse_foundation_checkpoint is not None else Path(mamba3_checkpoint),
         output,
     )
+
+    files = sorted(set(weight_map.values()))
+    if durable_output(output):
+        # These are remote Hub metadata, not stale NFS-mounted stat values.
+        sizes = remote_checkpoint_sizes(output, files)
+        total_size = sum(sizes.values())
+    else:
+        total_size = sum((output / filename).stat().st_size for filename in files)
+
     index = {
-        "metadata": {
-            "total_size": sum(
-                (output / filename).stat().st_size
-                for filename in sorted(set(weight_map.values()))
-            )
-        },
+        "metadata": {"total_size": total_size},
         "weight_map": dict(sorted(weight_map.items())),
     }
-    (output / "model.safetensors.index.json").write_text(
+    write_checkpoint_text(
+        output, "model.safetensors.index.json",
         json.dumps(index, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
     )
-    (output / "transplant_manifest.json").write_text(
+    write_checkpoint_text(
+        output, "transplant_manifest.json",
         json.dumps(provenance, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
     )
     return GLM53CompileResult(
         output_dir=output,
