@@ -23,6 +23,7 @@ import torch
 
 from .checkpoint import SafetensorsSource
 from .complete_transplant import _save_shard
+from .glm53_bucket_persistence import write_checkpoint_text
 from .glm53 import GLM53Inspector
 from .glm53_calibration import GLM53StageCalibration
 from .glm53_moe import select_experts_by_usage
@@ -462,8 +463,8 @@ def save_incremental_moe_stage(
                 weight_map,
             )
             del zeros
-        (output_dir / f"model-moe-{stage.stage:03d}-projection.json").write_text(
-            json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        write_checkpoint_text(output_dir, f"model-moe-{stage.stage:03d}-projection.json",
+            json.dumps(report, indent=2, sort_keys=True) + "\n"
         )
         projection_ops.close()
         return
@@ -671,6 +672,6 @@ def save_incremental_moe_stage(
                 ),
             }
     projection_ops.close()
-    (output_dir / f"model-moe-{stage.stage:03d}-projection.json").write_text(
-        json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    write_checkpoint_text(output_dir, f"model-moe-{stage.stage:03d}-projection.json",
+        json.dumps(report, indent=2, sort_keys=True) + "\n"
     )
