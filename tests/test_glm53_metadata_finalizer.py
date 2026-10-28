@@ -1,5 +1,8 @@
 """Small, CPU-only checks of no-tensor-allocation finalizer validators."""
+import errno
+import io
 import json
+from unittest.mock import patch
 from pathlib import Path
 import struct
 import tempfile
@@ -36,6 +39,45 @@ class TestMetadataFinalizer(unittest.TestCase):
             })
             with self.assertRaisesRegex(RuntimeError, "Invalid tensor byte extent|Truncated"):
                 safetensors_header(file)
+
+    def test_remote_header_streams_only_prefix_and_header(self):
+        from scripts.finalize_glm53_full78_metadata import remote_header
+
+        class BoundedStream(io.BytesIO):
+            def read(self, count=-1):
+                if count == -1 or count > 4096:
+                    raise AssertionError("Unbounded or excessive safetensors read")
+                return super().read(count)
+
+        class RemoteFS:
+            def open(self, path, mode, *, block_size, cache_type):
+                assert path.endswith("/test.safetensors")
+                assert (mode, block_size, cache_type) == ("rb", 0, "none")
+                return BoundedStream(data)
+
+        header = json.dumps({"tensor.weight": {
+            "dtype": "F32", "shape": [1], "data_offsets": [0, 4],
+        }}).encode()
+        data = struct.pack("<Q", len(header)) + header + b"\x00\x01\x02\x03"
+        entries = remote_header(RemoteFS(), "test.safetensors", len(data))
+        self.assertEqual(list(entries), ["tensor.weight"])
+
+    def test_nfs_eio_falls_back_to_hf_small_json(self):
+        from scripts.finalize_glm53_full78_metadata import checkpoint_json
+
+        class RemoteFS:
+            def open(self, path, mode, *, block_size, cache_type):
+                assert path.endswith("/run-provenance.json")
+                assert (mode, block_size, cache_type) == ("rb", 0, "none")
+                return io.BytesIO(b'{"schema_version":1}')
+
+        with tempfile.TemporaryDirectory() as td:
+            with patch.object(Path, "read_text", side_effect=OSError(errno.EIO, "NFS failed")):
+                record = checkpoint_json(
+                    RemoteFS(), Path(td), "run-provenance.json",
+                    read_mode="auto",
+                )
+        self.assertEqual(record["schema_version"], 1)
 
     def test_bad_header_is_rejected(self):
         with tempfile.TemporaryDirectory() as temp:
