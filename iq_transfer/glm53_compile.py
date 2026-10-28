@@ -557,7 +557,48 @@ def compile_glm53_iq_checkpoint(
             weight_map,
         )
 
-    for stage in calibration.stages:
+    for stage_number in range(len(calibration.stages)):
+        # An intact stage already has its exact per-expert safetensors.
+        # During resume, DO NOT load large WARM calibration matrices or
+        # compute pseudoinverses just to revisit 258 previously saved shards.
+        # This is critical on 14 GiB RAM machines with 20k existing files.
+        if resume_existing and streaming_source and isinstance(calibration, LazyGLM53Calibration):
+            record = calibration.stages.records[stage_number]
+            stage_id = int(record["stage"])
+            source_layer = int(record["source_layer"])
+            context_physical = int(record["context_physical_layer"])
+            moe_physical = int(record["moe_physical_layer"])
+            prefix = f"model-moe-{stage_id:03d}-"
+            names = [
+                f"model-context-{stage_id:03d}.safetensors",
+                prefix + "common.safetensors",
+                prefix + "shared.safetensors",
+                *(prefix + f"expert-{i:03d}.safetensors"
+                  for i in range(config.stable_moe.num_experts)),
+            ]
+            report = output / (prefix + "projection.json")
+            if report.is_file() and all((output / name).is_file() for name in names):
+                if source_layer < inspector.layout.first_k_dense_replace:
+                    provenance["selected_source_expert_ids"][str(stage_id)] = None
+                else:
+                    usage_file = record.get("expert_usage")
+                    if not usage_file:
+                        raise GLM53CompileError(f"Missing routing usage at stage {stage_id}")
+                    usage = np.load(Path(calibration_dir) / usage_file, allow_pickle=False)
+                    selected_ids = select_experts_by_usage(
+                        usage, target_experts=config.stable_moe.num_experts,
+                    )
+                    provenance["selected_source_expert_ids"][str(stage_id)] = list(selected_ids)
+                for name in names:
+                    register_saved_shard(
+                        output, name, weight_map,
+                        layer=context_physical if name.startswith("model-context-")
+                        else moe_physical,
+                    )
+                print(f"IQ_FULL78_FAST_RESUMED_STAGE={stage_id}", flush=True)
+                continue
+
+        stage = calibration.stages[stage_number]
         if stage.source_layer < inspector.layout.first_k_dense_replace:
             provenance["selected_source_expert_ids"][str(stage.stage)] = None
         else:
@@ -620,21 +661,34 @@ def compile_glm53_iq_checkpoint(
 
     if reuse_foundation_checkpoint is None:
         assert mamba3_checkpoint is not None
-        with tempfile.TemporaryDirectory(prefix="iq-glm53-mamba-") as temporary:
-            overlay = Path(temporary)
-            compile_official_mamba3_mimo_15b_transplant(
-                checkpoint=mamba3_checkpoint,
-                output_dir=overlay,
-                checkpoint_revision=mamba3_revision,
-                verify_checkpoint_hash=verify_hashes,
-            )
-            _translate_mamba_overlay(
-                overlay_dir=overlay,
-                config=config,
-                output_dir=output,
-                weight_map=weight_map,
-                resume_existing=resume_existing,
-            )
+        positions = config.schedule.positions(HybridLayerType.MAMBA3)
+        mamba_files = [
+            f"model-mamba-{ordinal:03d}.safetensors"
+            for ordinal in range(len(positions))
+        ]
+        if resume_existing and all((output / name).is_file() for name in mamba_files):
+            # Do not torch.load() the complete 1.5B Mamba donor on a
+            # metadata-only continuation. Reuse and validate saved headers.
+            for ordinal, name in enumerate(mamba_files):
+                register_saved_shard(output, name, weight_map,
+                                     layer=positions[ordinal])
+            print("IQ_FULL78_FAST_RESUMED_MAMBA=79", flush=True)
+        else:
+            with tempfile.TemporaryDirectory(prefix="iq-glm53-mamba-") as temporary:
+                overlay = Path(temporary)
+                compile_official_mamba3_mimo_15b_transplant(
+                    checkpoint=mamba3_checkpoint,
+                    output_dir=overlay,
+                    checkpoint_revision=mamba3_revision,
+                    verify_checkpoint_hash=verify_hashes,
+                )
+                _translate_mamba_overlay(
+                    overlay_dir=overlay,
+                    config=config,
+                    output_dir=output,
+                    weight_map=weight_map,
+                    resume_existing=resume_existing,
+                )
 
     if not (
         resume_existing and register_saved_shard(
@@ -666,7 +720,7 @@ def compile_glm53_iq_checkpoint(
         with local_stage_dir(output) as td:
             local_config = Path(td) / "iq_config.json"
             config.write_json(str(local_config))
-            publish_file(output, "iq_config.json", local_config)
+            publish_file(output, "iq_config.json", local_config, idempotent=True)
     else:
         config.write_json(str(output / "iq_config.json"))
 
