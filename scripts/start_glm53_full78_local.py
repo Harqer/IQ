@@ -155,6 +155,11 @@ def verify_hf_output_mount(mount: Path, run_id: str) -> None:
     """
     if not mount.is_dir() or not os.path.ismount(mount):
         raise RuntimeError("HF output must be an ACTIVE bucket mountpoint")
+    if not (os.statvfs(mount).f_flag & os.ST_RDONLY):
+        raise RuntimeError(
+            "Durable checkpoint mode requires a READ-ONLY HF mount. "
+            "Remount --read-only; all writes must use the verified Hub API."
+        )
     if not (mount / "calibration78").is_dir() or not (mount / "IQ").is_dir():
         raise RuntimeError("Mount does not show the expected HF bucket ROOT")
     from huggingface_hub import (
