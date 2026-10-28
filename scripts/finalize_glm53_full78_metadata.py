@@ -9,6 +9,7 @@ completion marker using the independently SHA256-verified HF bucket API.
 from __future__ import annotations
 
 import argparse
+import errno
 import hashlib
 import json
 import os
@@ -30,23 +31,20 @@ def sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def safetensors_header(path: Path) -> dict[str, dict]:
-    """Validate the complete offsets, shapes, dtypes and byte spans.
-
-    Read ONLY the small header; never mmap or deserialize the large tensors.
-    Does not validate numerical values or whole-file SHA256.
-    """
-    file_size = path.stat().st_size
-    if file_size < 16 or path.is_symlink() or not path.is_file():
-        raise RuntimeError(f"Invalid checkpoint object {path.name}")
-    with path.open("rb") as f:
-        prefix = f.read(8)
-        if len(prefix) != 8:
-            raise RuntimeError(f"Short safetensors prefix {path.name}")
-        size = struct.unpack("<Q", prefix)[0]
-        if not 2 <= size <= MAX_HEADER or size + 8 > file_size:
-            raise RuntimeError(f"Invalid safetensors header length {path.name}")
-        data = json.loads(f.read(size))
+def _parse_safetensors_header(stream, file_size: int, name: str) -> dict[str, dict]:
+    """Inspect exact serialized tensor spans from a bounded header-only stream."""
+    if file_size < 16:
+        raise RuntimeError(f"Invalid checkpoint object {name}")
+    prefix = stream.read(8)
+    if len(prefix) != 8:
+        raise RuntimeError(f"Short safetensors prefix {name}")
+    size = struct.unpack("<Q", prefix)[0]
+    if not 2 <= size <= MAX_HEADER or size + 8 > file_size:
+        raise RuntimeError(f"Invalid safetensors header length {name}")
+    payload = stream.read(size)
+    if len(payload) != size:
+        raise RuntimeError(f"Truncated safetensors header {name}")
+    data = json.loads(payload)
     if not isinstance(data, dict):
         raise RuntimeError(f"Invalid safetensors JSON {path.name}")
     data.pop("__metadata__", None)
@@ -79,6 +77,49 @@ def safetensors_header(path: Path) -> dict[str, dict]:
     return data
 
 
+def safetensors_header(path: Path) -> dict[str, dict]:
+    """Bounded local-file header read, retained for offline unit tests."""
+    file_size = path.stat().st_size
+    if path.is_symlink() or not path.is_file():
+        raise RuntimeError(f"Invalid checkpoint object {path.name}")
+    with path.open("rb") as stream:
+        return _parse_safetensors_header(stream, file_size, path.name)
+
+
+def remote_header(fs, name: str, file_size: int) -> dict[str, dict]:
+    """Use the supported HF bucket streaming API, not a fragile NFS handle.
+
+    block_size=0 means HfFileSystemStreamFile reads only requested bytes
+    without buffering the full potentially multi-GB shard.
+    """
+    uri = f"hf://buckets/{BUCKET}/IQ/runs/{RUN}/{name}"
+    try:
+        with fs.open(uri, "rb", block_size=0, cache_type="none") as stream:
+            return _parse_safetensors_header(stream, file_size, name)
+    except Exception as exc:
+        raise RuntimeError(f"HF direct header read failed for {name}: {exc}") from exc
+
+
+def checkpoint_json(fs, root: Path, name: str, *, read_mode: str) -> dict:
+    """Read small metadata from the chosen source, with bounded HF fallback."""
+    if read_mode != "hub":
+        try:
+            return json.loads((root / name).read_text(encoding="utf-8"))
+        except OSError as exc:
+            if read_mode != "auto" or exc.errno not in (errno.EIO, errno.ESTALE):
+                raise
+            print(f"IQ_METADATA_NFS_FALLBACK_JSON={name}", flush=True)
+    uri = f"hf://buckets/{BUCKET}/IQ/runs/{RUN}/{name}"
+    try:
+        with fs.open(uri, "rb", block_size=0, cache_type="none") as stream:
+            payload = stream.read(16 * 1024 * 1024 + 1)
+        if len(payload) > 16 * 1024 * 1024:
+            raise RuntimeError(f"Oversize checkpoint metadata: {name}")
+        return json.loads(payload)
+    except Exception as exc:
+        raise RuntimeError(f"Cannot directly read HF checkpoint metadata {name}: {exc}") from exc
+
+
 def expected_names() -> set[str]:
     from scripts.glm53_full78_gate import expected_stage_shards
     names = {"model-global.safetensors", "model-native.safetensors"}
@@ -92,16 +133,31 @@ def expected_names() -> set[str]:
 
 def validate_bucket(root: Path, *, api_sizes: dict[str, int],
                     schedule: list[str], stages: list[dict], latent: int,
-                    intermediate: int) -> dict[str, str]:
+                    intermediate: int, fs=None, read_mode: str = "mount") -> dict[str, str]:
     expected = expected_names()
     if set(api_sizes) != expected:
         raise RuntimeError(f"Incorrect remote weight inventory: missing={sorted(expected-set(api_sizes))[:5]}")
     index: dict[str, str] = {}
     for j, name in enumerate(sorted(expected), 1):
         path = root / name
-        if not path.is_file() or path.stat().st_size != api_sizes[name]:
-            raise RuntimeError(f"Remote API vs NFS metadata mismatch: {name}")
-        entries = safetensors_header(path)
+        if read_mode == "hub":
+            if fs is None:
+                raise RuntimeError("HF filesystem client required for direct reads")
+            entries = remote_header(fs, name, api_sizes[name])
+        else:
+            try:
+                if not path.is_file() or path.stat().st_size != api_sizes[name]:
+                    raise RuntimeError(f"Remote API vs NFS metadata mismatch: {name}")
+                entries = safetensors_header(path)
+            except OSError as exc:
+                if read_mode != "auto" or fs is None or exc.errno not in (
+                    errno.EIO, errno.ESTALE
+                ):
+                    raise RuntimeError(
+                        f"NFS safetensors read failed for {name}: {exc}"
+                    ) from exc
+                print(f"IQ_METADATA_NFS_FALLBACK_HEADER={name}", flush=True)
+                entries = remote_header(fs, name, api_sizes[name])
         if name == "model-global.safetensors":
             if set(entries) != {"embed_tokens.weight", "norm.weight", "lm_head.weight"}:
                 raise RuntimeError("Invalid lexical foundation tensor keys")
@@ -205,6 +261,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--publish", action="store_true",
                         help="Upload index/manifest/completion after full dry-run checks")
+    parser.add_argument("--read-mode", choices=("auto", "hub", "mount"),
+                        default="auto",
+                        help="auto: mounted reads + authenticated streaming HF fallback on EIO; "
+                             "hub: bypass NFS entirely; mount: NFS only")
     parser.add_argument("--mount", type=Path,
                         default=Path.home() / "iq-hf-output")
     parser.add_argument("--root", type=Path,
@@ -217,10 +277,15 @@ def main() -> None:
     # Do not silently complete a potentially concurrent compile.
     if os.environ.get("IQ_CONFIRM_NO_OTHER_WRITER") != "1":
         raise RuntimeError("Set IQ_CONFIRM_NO_OTHER_WRITER=1 after checking no compiler is running")
-    config_bytes = (output / "iq_config.json").read_bytes()
-    config = json.loads(config_bytes)
+    from huggingface_hub import HfFileSystem
+    # One client per finalization. HF direct reads are streamed and never
+    # deserialize model weights. No new S3 credentials or GPU are required.
+    fs = HfFileSystem(token=os.environ.get("HF_TOKEN"), live_follow=False)
+    config = checkpoint_json(fs, output, "iq_config.json", read_mode=args.read_mode)
     fingerprint = sha256(json.dumps(config, sort_keys=True, separators=(",", ":")).encode())
-    run_provenance = json.loads((output / "run-provenance.json").read_text())
+    run_provenance = checkpoint_json(
+        fs, output, "run-provenance.json", read_mode=args.read_mode
+    )
     receipt = calibration / "calibration_sha256.json"
     receipt_obj = json.loads(receipt.read_text())
     if receipt_obj.get("schema_version") != 1 or len(receipt_obj.get("files", {})) != 866:
@@ -268,7 +333,10 @@ def main() -> None:
             selected_ids[str(i)] = [int(k) for k in np.lexsort(
                 (np.arange(len(usage)), -usage)
             )]
-        report = json.loads((output / f"model-moe-{i:03d}-projection.json").read_text())
+        report = checkpoint_json(
+            fs, output, f"model-moe-{i:03d}-projection.json",
+            read_mode=args.read_mode,
+        )
         if report.get("stage") != i or report.get("source_layer") != i:
             raise RuntimeError(f"Invalid saved stage projection receipt {i}")
 
@@ -289,6 +357,7 @@ def main() -> None:
         output, api_sizes=api, schedule=schedule, stages=stages,
         latent=int(stable["latent_size"]),
         intermediate=int(stable["expert_intermediate_size"]),
+        fs=fs, read_mode=args.read_mode,
     )
     total_size = sum(api.values())
     provenance = {
