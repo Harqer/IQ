@@ -830,6 +830,22 @@ def _save_shard(
         materialized[key] = tensor.detach().cpu().contiguous()
 
     # Use a sibling temp path so the final name never exposes partial bytes.
+    # For HF Buckets, POSIX fsync+rename on hf-mount is NOT remote-durable.
+    # Publish the final object explicitly via the Hub API, and independently
+    # SHA256-read it back before inserting it into the weight index.
+    from .glm53_bucket_persistence import (
+        durable_output, local_stage_dir, publish_file,
+    )
+    if durable_output(output_dir):
+        with local_stage_dir(output_dir) as td:
+            local = Path(td) / filename
+            save_file(materialized, str(local))
+            with local.open("rb") as stored:
+                os.fsync(stored.fileno())
+            publish_file(output_dir, filename, local)
+        weight_map.update({key: filename for key in materialized})
+        return
+
     fd, temp_path = tempfile.mkstemp(prefix=f".{filename}.", suffix=".partial",
                                     dir=str(path.parent))
     os.close(fd)
