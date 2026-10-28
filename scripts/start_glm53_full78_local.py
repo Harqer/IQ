@@ -155,11 +155,28 @@ def verify_hf_output_mount(mount: Path, run_id: str) -> None:
     """
     if not mount.is_dir() or not os.path.ismount(mount):
         raise RuntimeError("HF output must be an ACTIVE bucket mountpoint")
-    if not (os.statvfs(mount).f_flag & os.ST_RDONLY):
-        raise RuntimeError(
-            "Durable checkpoint mode requires a READ-ONLY HF mount. "
-            "Remount --read-only; all writes must use the verified Hub API."
-        )
+    # HF's NFS backend can advertise a kernel rw mount even when the
+    # server itself rejects creates with EROFS. Check the server's effective
+    # access policy instead of incorrectly trusting statvfs()/findmnt.
+    import errno
+    guard = mount / "IQ" / "runs" / run_id / f".iq-read-only-check-{uuid.uuid4().hex}"
+    if not (guard.parent).is_dir():
+        raise RuntimeError("Expected IQ run directory is not visible on mount")
+    try:
+        fd = os.open(str(guard), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except OSError as exc:
+        if exc.errno != errno.EROFS:
+            raise RuntimeError(
+                f"Cannot prove HF mount is server-side READ ONLY: {exc}"
+            ) from exc
+    else:
+        os.close(fd)
+        try:
+            guard.unlink()
+        finally:
+            raise RuntimeError(
+                "HF mount accepted a write; remount --read-only before running"
+            )
     if not (mount / "calibration78").is_dir() or not (mount / "IQ").is_dir():
         raise RuntimeError("Mount does not show the expected HF bucket ROOT")
     from huggingface_hub import (
