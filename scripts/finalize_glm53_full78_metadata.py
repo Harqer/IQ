@@ -252,7 +252,7 @@ def validate_bucket(root: Path, *, api_sizes: dict[str, int],
             if key in index:
                 raise RuntimeError(f"Duplicate tensor key {key} in {name} and {index[key]}")
             index[key] = name
-        if j % 1000 == 0 or j == len(expected):
+        if j % 250 == 0 or j == len(expected):
             print(f"IQ_METADATA_HEADER_VERIFIED={j}/{len(expected)}", flush=True)
     return index
 
@@ -275,7 +275,7 @@ def main() -> None:
     args = parser.parse_args()
     output = args.mount / "IQ" / "runs" / RUN
     calibration = args.root / "calibration"
-    if not output.is_dir():
+    if args.read_mode != "hub" and not output.is_dir():
         raise RuntimeError("Existing readonly checkpoint mount unavailable")
     # Do not silently complete a potentially concurrent compile.
     if os.environ.get("IQ_CONFIRM_NO_OTHER_WRITER") != "1":
@@ -283,7 +283,7 @@ def main() -> None:
     from huggingface_hub import HfFileSystem
     # One client per finalization. HF direct reads are streamed and never
     # deserialize model weights. No new S3 credentials or GPU are required.
-    fs = HfFileSystem(token=os.environ.get("HF_TOKEN"), live_follow=False)
+    fs = HfFileSystem(token=os.environ.get("HF_TOKEN"))
     if args.probe_headers:
         from huggingface_hub import get_bucket_paths_info
         probe_names = ["model-context-000.safetensors", "model-mamba-018.safetensors"]
@@ -404,14 +404,23 @@ def main() -> None:
     }
     index = {"metadata": {"total_size": total_size},
              "weight_map": dict(sorted(weight_map.items()))}
+    from huggingface_hub import get_bucket_paths_info as remote_path_info
+    optional = {
+        item.path.removeprefix(prefix + "/")
+        for item in remote_path_info(BUCKET, [
+            f"{prefix}/tokenizer.json",
+            f"{prefix}/tokenizer_config.json",
+        ])
+    }
     complete = {
         "status": "FULL78_COMPILED_NOT_YET_INFERENCE_VALIDATED",
         "source_layers": 78, "mapped_layers": 78,
         "routed_source_layers": 75, "routed_experts_per_layer": 256,
         "mapped_routed_expert_slots": 19200,
         "not_exact_bitwise_weight_reuse": True,
-        "tokenizer_packaged": (output / "tokenizer.json").is_file() and
-                              (output / "tokenizer_config.json").is_file(),
+        "tokenizer_packaged": {
+            "tokenizer.json", "tokenizer_config.json"
+        }.issubset(optional),
         "inference_ready": False,
         "end_to_end_knowledge_retention_proven": False,
     }
