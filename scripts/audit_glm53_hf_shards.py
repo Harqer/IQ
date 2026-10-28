@@ -36,7 +36,7 @@ def audit(run_id: str, *, expect_missing: set[str]) -> dict:
     expected = expected_files()
     info = {
         obj.path.removeprefix(prefix): obj
-        for obj in get_bucket_paths_info(BUCKET, (prefix + n for n in sorted(expected)))
+        for obj in get_bucket_paths_info(BUCKET, [prefix + n for n in sorted(expected)])
     }
     missing = sorted(set(expected) - set(info))
     bad = sorted(
