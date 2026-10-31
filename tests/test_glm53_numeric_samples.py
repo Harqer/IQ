@@ -25,6 +25,14 @@ class TestIQNumericalSampleVerifier(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "Numerical mismatch"):
             pass_compare(expected, actual + 0.5)
 
+    def test_valid_scalar_header_in_numeric_checker(self):
+        verify_contiguous_header(
+            {"attnres.mixers.0.mix_logit": {
+                "shape": [], "dtype": "F32", "data_offsets": [0, 4],
+            }},
+            8 + 24 + 4, 24,
+        )
+
     def test_invalid_header_gap_is_rejected(self):
         with self.assertRaisesRegex(RuntimeError, "Overlapping or gapped"):
             verify_contiguous_header(
