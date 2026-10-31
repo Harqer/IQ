@@ -61,7 +61,8 @@ def verify_contiguous_header(data: dict[str, Any], remote_size: int,
         shape = entry.get("shape")
         dtype = entry.get("dtype")
         off = entry.get("data_offsets")
-        if (not isinstance(shape, list) or not shape or
+        if (not isinstance(shape, list) or
+            # Scalars are represented by shape [] and occupy one element.
             any(type(n) is not int or n < 1 for n in shape) or
             dtype not in BYTE_SIZES or
             not isinstance(off, list) or len(off) != 2 or
