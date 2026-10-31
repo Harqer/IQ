@@ -74,10 +74,10 @@ def partition_weight_map(weight_map: dict[str, str]) -> tuple[dict[str, list[str
             base[filename].append(key)
             continue
         prefix, suffix = key.split(marker, 1)
-        if not prefix.startswith("layers.") or not suffix.count(".") == 1:
+        if not prefix.startswith("layers.") or suffix.count(".") != 2:
             raise RuntimeError(f"Unsafe routed expert mapping {key}")
         idx = int(prefix.split(".")[1])
-        slot, tensor = suffix.split(".")
+        slot, tensor = suffix.split(".", 1)
         expert[idx][int(slot)][tensor] = filename
     routed: dict[int, dict[int, str]] = {}
     for idx, slots in expert.items():
@@ -92,7 +92,7 @@ def partition_weight_map(weight_map: dict[str, str]) -> tuple[dict[str, list[str
                 raise RuntimeError(f"Expert tensors unexpectedly split across files: {idx}:{slot}")
             routed[idx][slot] = next(iter(names))
     if len(routed) != 78 or sum(map(len, routed.values())) != 78 * 256:
-        raise RuntimeError("Wrong full78 19,968 routed slots (78 x 256)")
+        raise RuntimeError("Wrong full78 19,968 expert slots (78 x 256)")
     if len(base) + sum(len(v) for v in routed.values()) != EXPECTED_SHARDS:
         raise RuntimeError("Shard-map inventory includes duplicate/misplaced files")
     return dict(base), routed
