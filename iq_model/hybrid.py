@@ -699,6 +699,16 @@ class CompressedContextResidualLayer(nn.Module):
         )
 
 
+class UnloadedRoutedExpert(nn.Module):
+    """Fail closed if the sparse checkpoint hook did not load a selected expert."""
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        raise HybridModelError(
+            "Selected IQ expert was not hydrated from the full78 checkpoint; "
+            "sparse inference cannot fall back to an identity/zero expert"
+        )
+
+
 class IQHybridForCausalLM(nn.Module):
     """Executable heterogeneous Mamba-3 / MoE / CSA / HCA / dense-attention backbone.
 
@@ -753,7 +763,7 @@ class IQHybridForCausalLM(nn.Module):
                         # and shared/common tensors, but defer the 256 huge routed
                         # expert matrices to a strict checkpoint-backed loader.
                         # A pre-forward hook must hydrate every selected expert;
-                        # unselected Identity placeholders cannot be executed.
+                        # an unloaded selected expert raises immediately.
                         with torch.device("meta"):
                             layer = StableLatentMoELayer(
                                 config.stable_moe,
@@ -761,7 +771,7 @@ class IQHybridForCausalLM(nn.Module):
                                 residual_dropout=config.model.residual_dropout,
                             )
                         layer.moe.routed_experts = nn.ModuleList(
-                            nn.Identity() for _ in range(config.stable_moe.num_experts)
+                            UnloadedRoutedExpert() for _ in range(config.stable_moe.num_experts)
                         )
                         layer = layer.to_empty(device=device_obj).to(dtype=dtype)
                         # The checkpoint stores a persistent FP32 bias.
