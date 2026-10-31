@@ -14,9 +14,9 @@ from scripts.iq_hf_full78_sparse_inference import (
 
 
 def fake_full78_map():
+    # The full index contains 315 baseline shards + 19,968 expert shards.
     weights = {
-        "embed_tokens.weight": "model-lexical.safetensors",
-        "norm.weight": "model-lexical.safetensors",
+        f"base.{i}": f"base-{i:03d}.safetensors" for i in range(315)
     }
     for physical in range(2, 235, 3):
         for slot in range(256):
@@ -34,7 +34,7 @@ class SparseFull78Tests(unittest.TestCase):
 
     def test_all_78_times_256_experts_partition_strictly(self):
         base, routed = partition_weight_map(self.mapping)
-        self.assertEqual(set(base), {"model-lexical.safetensors"})
+        self.assertEqual(len(base), 315)
         self.assertEqual(len(routed), 78)
         self.assertEqual(sum(len(v) for v in routed.values()), 78 * 256)
         self.assertEqual(routed[11][61], "model-moe-003-expert-061.safetensors")
