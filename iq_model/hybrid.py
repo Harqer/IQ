@@ -764,6 +764,13 @@ class IQHybridForCausalLM(nn.Module):
                             nn.Identity() for _ in range(config.stable_moe.num_experts)
                         )
                         layer = layer.to_empty(device=device_obj).to(dtype=dtype)
+                        # The checkpoint stores a persistent FP32 bias.
+                        # Preserve it exactly rather than rounding through BF16.
+                        layer.moe.routing_bias = torch.empty(
+                            config.stable_moe.num_experts,
+                            dtype=torch.float32,
+                            device=device_obj,
+                        )
                     else:
                         layer = StableLatentMoELayer(
                             config.stable_moe,
