@@ -713,10 +713,14 @@ class IQHybridForCausalLM(nn.Module):
         *,
         dtype: torch.dtype = torch.bfloat16,
         device: torch.device | str = "cuda",
+        sparse_routed_moe: bool = False,
     ) -> None:
         super().__init__()
         self.config = config
         self.model_config = config.model
+        if sparse_routed_moe and config.moe_variant != "stable_latent":
+            raise HybridModelError("sparse-routed checkpoint execution requires stable_latent MoE")
+        self.sparse_routed_moe = bool(sparse_routed_moe)
         device_obj = torch.device(device)
         if device_obj.type != "cuda":
             raise HybridModelError(
@@ -744,11 +748,28 @@ class IQHybridForCausalLM(nn.Module):
             elif layer_type is HybridLayerType.MOE:
                 if config.moe_variant == "stable_latent":
                     assert config.stable_moe is not None
-                    layer = StableLatentMoELayer(
-                        config.stable_moe,
-                        norm_eps=config.model.rms_norm_eps,
-                        residual_dropout=config.model.residual_dropout,
-                    ).to(device=device_obj, dtype=dtype)
+                    if sparse_routed_moe:
+                        # HF inference smoke: retain the complete 256-way router
+                        # and shared/common tensors, but defer the 256 huge routed
+                        # expert matrices to a strict checkpoint-backed loader.
+                        # A pre-forward hook must hydrate every selected expert;
+                        # unselected Identity placeholders cannot be executed.
+                        with torch.device("meta"):
+                            layer = StableLatentMoELayer(
+                                config.stable_moe,
+                                norm_eps=config.model.rms_norm_eps,
+                                residual_dropout=config.model.residual_dropout,
+                            )
+                        layer.moe.routed_experts = nn.ModuleList(
+                            nn.Identity() for _ in range(config.stable_moe.num_experts)
+                        )
+                        layer = layer.to_empty(device=device_obj).to(dtype=dtype)
+                    else:
+                        layer = StableLatentMoELayer(
+                            config.stable_moe,
+                            norm_eps=config.model.rms_norm_eps,
+                            residual_dropout=config.model.residual_dropout,
+                        ).to(device=device_obj, dtype=dtype)
                 else:
                     layer = RoutedSwiGLUMoELayer(
                         config.moe,
