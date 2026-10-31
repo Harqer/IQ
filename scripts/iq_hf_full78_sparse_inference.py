@@ -198,7 +198,7 @@ class ExpertStreamer:
                 lambda mod, inputs, n=physical: self.before(n, mod, inputs),
             ))
             self.handles.append(layer.register_forward_hook(
-                lambda mod, inputs, output, n=physical: self.after(n, mod),
+                lambda mod, inputs, output, n=physical: self.after(n, mod, output),
             ))
 
     def before(self, physical: int, layer: nn.Module, inputs: tuple) -> None:
@@ -231,10 +231,16 @@ class ExpertStreamer:
         # unchanged layer input; it cannot execute any unselected Identity.
         layer._iq_live_experts = ids
 
-    def after(self, physical: int, layer: nn.Module) -> None:
+    def after(self, physical: int, layer: nn.Module, output: Any) -> None:
         ids = getattr(layer, "_iq_live_experts", None)
         if ids is None:
             raise RuntimeError(f"MoE post-hook without hydrated expert set at {physical}")
+        observed = set(int(i) for i in output.selected_experts.reshape(-1).tolist())
+        if observed != set(ids):
+            raise RuntimeError(
+                f"Actual MoE execution selected unexpected experts at {physical}: "
+                f"loaded={ids} observed={sorted(observed)}"
+            )
         for slot in ids:
             layer.moe.routed_experts[slot] = UnloadedRoutedExpert()
         del layer._iq_live_experts
