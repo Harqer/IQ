@@ -3,7 +3,7 @@
 
 Read-only: never writes the bucket, recompiles weights, loads full donor model,
 or launches inference. Checks:
-* sparse stage-003 expert-000 gate/up rows against original GLM BF16 donor
+* sparse stage-003 expert-000 gate/up/down rows against original GLM BF16 donor
   rows multiplied by the saved WARM latent basis;
 * every data byte of dense stage-000 routed expert-000 is zero;
 * Mamba-018 saved norm, D, dt_bias and B_bias obey exact 2x widening.
@@ -303,6 +303,35 @@ def verify_sparse(
             }
             print(f"IQ_NUMERIC_SPARSE_ROW_PASS=stage:{stage} slot:{slot} donor:{donor_id} "
                   f"tensor:{kind} {result[kind]}", flush=True)
+
+        # Full donor down is a single 25 MiB BF16 tensor. The compiler
+        # projects it with P_latent.T @ W_down. Read once, then verify four
+        # target rows independently in FP64 without constructing the full
+        # 2048x2048 projected matrix.
+        donor_key = f"model.layers.{stage}.mlp.experts.{donor_id}.down_proj.weight"
+        target_key = f"layers.{physical}.moe.routed_experts.{slot}.down_proj.weight"
+        if (source.shape(donor_key) != (6144, 2048) or
+            shard.tensor_shape(target_key) != (2048, 2048)):
+            raise RuntimeError("Wrong sparse donor/target down-projection geometry")
+        donor_down = source.get(donor_key).float().numpy().astype(np.float64)
+        summary = []
+        for r in (0, 37, 1024, 2047):
+            reference = latent[:, r] @ donor_down
+            expected = torch.from_numpy(
+                np.ascontiguousarray(reference)
+            ).to(torch.bfloat16).float().numpy()
+            actual = shard.tensor_row(target_key, r)
+            summary.append(pass_compare(expected, actual))
+        result["down"] = {
+            "rows": 4,
+            "max_abs": max(x["max_abs"] for x in summary),
+            "bad": sum(x["bad"] for x in summary),
+            "mean_bf16_exact_fraction": float(
+                np.mean([x["bf16_exact_fraction"] for x in summary])
+            ),
+        }
+        print(f"IQ_NUMERIC_SPARSE_ROW_PASS=stage:{stage} slot:{slot} donor:{donor_id} "
+              f"tensor:down {result['down']}", flush=True)
     finally:
         source.close()
     return result
