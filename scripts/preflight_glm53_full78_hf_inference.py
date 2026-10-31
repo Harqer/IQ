@@ -62,8 +62,9 @@ def validate_full78(index: dict[str, Any], config: dict[str, Any],
             or value != Path(value).name or ".." in value):
             raise RuntimeError("Unsafe/corrupt checkpoint weight map")
         filenames.add(value)
-    if len(filenames) != EXPECTED_SHARDS:
-        raise RuntimeError("Unexpected full78 checkpoint shard count")
+    from scripts.finalize_glm53_full78_metadata import expected_names
+    if len(filenames) != EXPECTED_SHARDS or filenames != expected_names():
+        raise RuntimeError("Incorrect full78 checkpoint shard inventory")
     if len(mapping) != complete.get("mapped_routed_expert_slots", 0) + (
         EXPECTED_TENSORS - 19200
     ):
