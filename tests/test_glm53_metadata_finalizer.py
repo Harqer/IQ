@@ -25,6 +25,66 @@ class TestMetadataFinalizer(unittest.TestCase):
         dest.write_bytes(struct.pack("<Q", len(header)) + header + payload)
         return dest
 
+    def test_fast_weight_map_covers_every_expected_shard(self):
+        from scripts.finalize_glm53_full78_metadata import build_fast_weight_map
+        schedule = ["mamba3", "csa", "moe"] * 78 + ["mamba3"]
+        stages = [
+            {"stage": i, "source_layer": i,
+             "context_physical_layer": i * 3 + 1,
+             "moe_physical_layer": i * 3 + 2}
+            for i in range(78)
+        ]
+        native = {
+            "attnres.weights", "reasoning.weights", "reasoning_injector.weights"
+        }
+        mapping = build_fast_weight_map(schedule, stages, native)
+        self.assertEqual(set(mapping.values()), expected_names())
+        self.assertEqual(
+            mapping["layers.0.mamba.core.dt_bias"],
+            "model-mamba-000.safetensors"
+        )
+        self.assertEqual(
+            mapping["layers.16.attention.q_a_proj.weight"],
+            "model-context-005.safetensors"
+        )
+        self.assertEqual(
+            mapping["layers.17.moe.routed_experts.255.gate_proj.weight"],
+            "model-moe-005-expert-255.safetensors"
+        )
+        self.assertEqual(
+            mapping["layers.17.moe.shared_experts.0.down_proj.weight"],
+            "model-moe-005-shared.safetensors"
+        )
+
+    def test_fast_weight_map_rejects_overlapping_physical_stages(self):
+        from scripts.finalize_glm53_full78_metadata import build_fast_weight_map
+        schedule = ["mamba3", "csa", "moe"] * 78 + ["mamba3"]
+        stages = [
+            {"stage": i, "source_layer": i,
+             "context_physical_layer": i * 3 + 1,
+             "moe_physical_layer": i * 3 + 2}
+            for i in range(78)
+        ]
+        stages[1]["context_physical_layer"] = stages[0]["context_physical_layer"]
+        native = {
+            "attnres.weights", "reasoning.weights", "reasoning_injector.weights"
+        }
+        with self.assertRaisesRegex(RuntimeError, "Duplicate expected tensor key"):
+            build_fast_weight_map(schedule, stages, native)
+
+    def test_fast_samples_fail_closed_on_key_mismatch(self):
+        from scripts.finalize_glm53_full78_metadata import validate_fast_samples
+        with patch(
+            "scripts.finalize_glm53_full78_metadata.remote_header",
+            return_value={"not_expected": {"dtype": "BF16", "shape": [1]}}
+        ):
+            with self.assertRaisesRegex(RuntimeError, "Sample tensor layout mismatch"):
+                validate_fast_samples(
+                    object(), {"model-global.safetensors": 20},
+                    {"embed_tokens.weight": "model-global.safetensors"},
+                    latent=2048, intermediate=2048,
+                )
+
     def test_small_valid_safetensors_header(self):
         with tempfile.TemporaryDirectory() as temp:
             file = self._write(temp, {
