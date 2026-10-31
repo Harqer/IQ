@@ -29,7 +29,7 @@ from torch import nn
 from safetensors.torch import load_file
 
 from iq_model.architecture import HybridLayerType
-from iq_model.hybrid import IQHybridConfig, IQHybridForCausalLM
+from iq_model.hybrid import IQHybridConfig, IQHybridForCausalLM, UnloadedRoutedExpert
 from iq_model.mlp.latent_moe import SiTUExpert
 from scripts.preflight_glm53_full78_hf_inference import (
     EXPECTED_SHARDS, EXPECTED_TENSORS, validate_full78,
@@ -215,7 +215,7 @@ class ExpertStreamer:
         conf = moe.config
         device = x.device
         for slot in ids:
-            if not isinstance(moe.routed_experts[slot], nn.Identity):
+            if not isinstance(moe.routed_experts[slot], UnloadedRoutedExpert):
                 raise RuntimeError("Stale MoE expert occupied a slot")
             path = self.root / self.expert_map[physical][slot]
             if not path.is_file() or path.is_symlink():
@@ -236,7 +236,7 @@ class ExpertStreamer:
         if ids is None:
             raise RuntimeError(f"MoE post-hook without hydrated expert set at {physical}")
         for slot in ids:
-            layer.moe.routed_experts[slot] = nn.Identity()
+            layer.moe.routed_experts[slot] = UnloadedRoutedExpert()
         del layer._iq_live_experts
         self.forward_count += 1
         self.experts_loaded += len(ids)
