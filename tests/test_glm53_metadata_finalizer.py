@@ -92,6 +92,33 @@ class TestMetadataFinalizer(unittest.TestCase):
             })
             self.assertEqual(safetensors_header(file)["tensor.weight"]["shape"], [1])
 
+    def test_native_controller_scalar_safetensors_header(self):
+        # attnres.mixers.*.mix_logit is a PyTorch scalar, shape [].
+        # Scalars are valid safetensors entries and use one dtype element.
+        with tempfile.TemporaryDirectory() as temp:
+            file = self._write(temp, {
+                "dtype": "F32", "shape": [], "data_offsets": [0, 4],
+            })
+            entries = safetensors_header(file)
+            self.assertEqual(entries["tensor.weight"]["shape"], [])
+            self.assertEqual(entries["tensor.weight"]["dtype"], "F32")
+
+    def test_native_scalar_rejects_wrong_byte_length(self):
+        with tempfile.TemporaryDirectory() as temp:
+            file = self._write(temp, {
+                "dtype": "F32", "shape": [], "data_offsets": [0, 8],
+            })
+            with self.assertRaisesRegex(RuntimeError, "Invalid tensor byte extent"):
+                safetensors_header(file)
+
+    def test_non_scalar_invalid_dimension_still_rejected(self):
+        with tempfile.TemporaryDirectory() as temp:
+            file = self._write(temp, {
+                "dtype": "F32", "shape": [0], "data_offsets": [0, 4],
+            })
+            with self.assertRaisesRegex(RuntimeError, "Invalid tensor metadata"):
+                safetensors_header(file)
+
     def test_truncated_or_mismatched_tensor_data_is_rejected(self):
         with tempfile.TemporaryDirectory() as temp:
             file = self._write(temp, {
