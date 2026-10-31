@@ -13,7 +13,8 @@ class Full78HFPreflightTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         # Exact expected counts but no model checkpoint allocation.
-        files = [f"shard-{i:05d}.safetensors" for i in range(EXPECTED_SHARDS)]
+        from scripts.finalize_glm53_full78_metadata import expected_names
+        files = sorted(expected_names())
         cls.index = {
             "metadata": {"total_size": 539388468802},
             "weight_map": {
