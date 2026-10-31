@@ -23,10 +23,11 @@ import torch
 
 from .checkpoint import SafetensorsSource
 from .complete_transplant import _save_shard
+from .glm53_bucket_persistence import write_checkpoint_text
 from .glm53 import GLM53Inspector
 from .glm53_calibration import GLM53StageCalibration
 from .glm53_moe import select_experts_by_usage
-from .glm53_resume import register_saved_shard, expected_expert_keys
+from .glm53_resume import register_saved_shard, expected_expert_keys, expected_expert_shapes
 from .glm53_gpu_projection import ProjectionOps
 from .transport import CoordinateMap
 from iq_model import IQHybridConfig
@@ -127,6 +128,27 @@ def _inverse(map_: CoordinateMap, projection_ops: ProjectionOps | None = None) -
         return matrix
     # Small general maps preserve the reference float64 pseudoinverse.
     return np.linalg.pinv(matrix).T
+
+
+def _resume_expert_shard(
+    *, output_dir: Path, filename: str, weight_map: dict[str, str],
+    physical: int, slot: int, stable: Any,
+) -> bool:
+    """Skip completed experts only with the exact expected tensor contract.
+
+    safetensors shape/dtype checks use headers without loading full tensors.
+    This applies equally to CPU, CUDA and function-neutral dense stages.
+    """
+    expected = expected_expert_shapes(
+        physical, slot, latent_width=stable.latent_size,
+        intermediate_width=stable.expert_intermediate_size,
+    )
+    return register_saved_shard(
+        output_dir, filename, weight_map, layer=physical,
+        expected_keys=expected_expert_keys(physical, slot),
+        expected_shapes=expected,
+        expected_dtypes={key: "BF16" for key in expected},
+    )
 
 
 def _save_expert(
@@ -414,10 +436,10 @@ def save_incremental_moe_stage(
         for slot in range(stable.num_experts):
             _check_runtime_budget(stage.stage, slot)
             expert_name = f"model-moe-{stage.stage:03d}-expert-{slot:03d}.safetensors"
-            if resume_existing and register_saved_shard(
-                output_dir, expert_name, weight_map,
-                expected_keys=expected_expert_keys(physical, slot),
-                layer=physical,
+            if resume_existing and _resume_expert_shard(
+                output_dir=output_dir, filename=expert_name,
+                weight_map=weight_map, physical=physical, slot=slot,
+                stable=stable,
             ):
                 continue
             zeros: dict[str, torch.Tensor] = {
@@ -441,8 +463,9 @@ def save_incremental_moe_stage(
                 weight_map,
             )
             del zeros
-        (output_dir / f"model-moe-{stage.stage:03d}-projection.json").write_text(
-            json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        write_checkpoint_text(output_dir, f"model-moe-{stage.stage:03d}-projection.json",
+            json.dumps(report, indent=2, sort_keys=True) + "\n",
+        preserve_existing=resume_existing
         )
         projection_ops.close()
         return
@@ -469,39 +492,188 @@ def save_incremental_moe_stage(
         )
 
 
-    for slot, donor_id in enumerate(selected):
-        _check_runtime_budget(stage.stage, slot)
-        expert_name = f"model-moe-{stage.stage:03d}-expert-{slot:03d}.safetensors"
-        if resume_existing and register_saved_shard(
-            output_dir, expert_name, weight_map,
-            expected_keys=expected_expert_keys(physical, slot),
-            layer=physical,
-        ):
+    if projection_ops.cuda:
+        # Batch real routed experts in the SAME full checkpoint compilation.
+        # Every completed expert remains an independently resumable shard.
+        from .glm53_gpu_batch import (
+            ExpertSpec, batch_capacity, device_bases, project_routed_batch,
+        )
+
+        pending: list[ExpertSpec] = []
+        for slot, donor_id in enumerate(selected):
+            expert_name = f"model-moe-{stage.stage:03d}-expert-{slot:03d}.safetensors"
+            if resume_existing and _resume_expert_shard(
+                output_dir=output_dir, filename=expert_name,
+                weight_map=weight_map, physical=physical, slot=slot,
+                stable=stable,
+            ):
+                report["routed"][str(slot)] = {
+                    "donor_expert_id": int(donor_id),
+                    "resumed_existing_shard": True,
+                }
+            else:
+                pending.append(ExpertSpec(slot=slot, donor_id=int(donor_id)))
+        if pending:
+            batch_size = batch_capacity(
+                source_width=source_width,
+                intermediate_width=intermediate_width,
+                expert_count=len(pending),
+            )
+            input_basis, output_basis_t = device_bases(
+                projection_ops, input_inverse=latent_inverse,
+                output_map=stage.latent_map.matrix, source_width=source_width,
+            )
+            from .glm53_batch_prefetch import RoutedBatchPrefetch
+
+            device_batch_limit = batch_size
+            stage_compute_s = 0.0
+            stage_save_s = 0.0
+            stage_prefetch_wait_s = 0.0
+
+            def commit_batch(
+                specs: list[ExpertSpec], planned_source: Any,
+            ) -> None:
+                nonlocal device_batch_limit, stage_compute_s, stage_save_s
+                # Preserve already staged HTTP tensors across CUDA OOM retries.
+                if len(specs) > device_batch_limit:
+                    cursor = 0
+                    while cursor < len(specs):
+                        part = specs[cursor:cursor + device_batch_limit]
+                        commit_batch(part, planned_source)
+                        cursor += len(part)
+                    return
+                compute_started = time.perf_counter()
+                try:
+                    results = project_routed_batch(
+                        source=planned_source,
+                        donor_root=root,
+                        specs=specs,
+                        source_width=source_width,
+                        intermediate_width=intermediate_width,
+                        input_basis=input_basis,
+                        output_basis_t=output_basis_t,
+                        ops=projection_ops,
+                    )
+                except torch.cuda.OutOfMemoryError as exc:
+                    # No new writes have happened within the failed GEMM.
+                    # Split the *already downloaded* batch; never redownload.
+                    if len(specs) == 1:
+                        raise GLM53IncrementalMoEError(
+                            "CUDA OOM for one expert; resume on larger GPU"
+                        ) from exc
+                    device_batch_limit = max(1, len(specs) // 2)
+                    torch.cuda.empty_cache()
+                    print(
+                        f"GLM53_GPU_BATCH_OOM_REDUCED stage={stage.stage} "
+                        f"experts_per_batch={device_batch_limit}", flush=True,
+                    )
+                    left_count = device_batch_limit
+                    commit_batch(specs[:left_count], planned_source)
+                    commit_batch(specs[left_count:], planned_source)
+                    return
+                stage_compute_s += time.perf_counter() - compute_started
+                # Individual atomic shards are the recovery boundary even
+                # when several experts share one GPU batched operation.
+                save_started = time.perf_counter()
+                for spec, (weights, metrics) in zip(specs, results):
+                    prefix = f"{target}.routed_experts.{spec.slot}"
+                    state = {
+                        f"{prefix}.{name}": tensor
+                        for name, tensor in weights.items()
+                    }
+                    _save_shard(
+                        output_dir,
+                        f"model-moe-{stage.stage:03d}-expert-{spec.slot:03d}.safetensors",
+                        state, weight_map,
+                    )
+                    report["routed"][str(spec.slot)] = {
+                        "donor_expert_id": spec.donor_id,
+                        "operators": metrics,
+                    }
+                stage_save_s += time.perf_counter() - save_started
+                del results
+
+            # Read the NEXT bounded remote batch while CUDA computes/saves the
+            # current one. A separate HF Session prevents unsafe shared state.
+            # Local/test sources deliberately retain the direct read path.
+            with RoutedBatchPrefetch(source, donor_root=root) as prefetch:
+                started_at = time.perf_counter()
+                completed = 0
+                # Check the paid-worker deadline *before* scheduling the
+                # first prefetch, avoiding a needless outstanding network
+                # read if this job must checkpoint/stop immediately.
+                _check_runtime_budget(stage.stage, pending[0].slot)
+                future = prefetch.submit(pending[:batch_size])
+                while completed < len(pending):
+                    specs = pending[completed:completed + batch_size]
+                    _check_runtime_budget(stage.stage, specs[0].slot)
+                    next_offset = completed + len(specs)
+                    upcoming = (
+                        pending[next_offset:next_offset + batch_size]
+                        if next_offset < len(pending) else []
+                    )
+                    next_future = prefetch.submit(upcoming)
+                    wait_started = time.perf_counter()
+                    staged_source = prefetch.source_for(future, source)
+                    stage_prefetch_wait_s += time.perf_counter() - wait_started
+                    commit_batch(specs, staged_source)
+                    del staged_source
+                    completed += len(specs)
+                    future = next_future
+                    elapsed_s = max(1e-9, time.perf_counter() - started_at)
+                    # Source tensor payload bytes are exact for BF16 GLM routed
+                    # experts; this rate includes reads, CUDA and atomic writes.
+                    processed_mib = (
+                        completed * 3 * source_width * intermediate_width * 2
+                        / (1024 * 1024)
+                    )
+                    print(
+                        f"GLM53_GPU_BATCH_PROGRESS layer={stage.stage} "
+                        f"saved={completed}/{len(pending)} "
+                        f"planned_batch={len(specs)} gpu_batch={device_batch_limit} "
+                        f"elapsed_s={elapsed_s:.1f} "
+                        f"source_mib_per_s={processed_mib/elapsed_s:.1f} "
+                        f"prefetch_wait_s={stage_prefetch_wait_s:.2f} "
+                        f"batch_compute_s={stage_compute_s:.2f} "
+                        f"shard_save_s={stage_save_s:.2f} "
+                        f"cuda_peak_allocated_mib="
+                        f"{torch.cuda.max_memory_allocated()/(1024*1024):.0f}",
+                        flush=True,
+                    )
+            del input_basis, output_basis_t
+    else:
+        # Reference implementation kept for offline CPU parity and fixtures.
+        for slot, donor_id in enumerate(selected):
+            _check_runtime_budget(stage.stage, slot)
+            expert_name = f"model-moe-{stage.stage:03d}-expert-{slot:03d}.safetensors"
+            if resume_existing and _resume_expert_shard(
+                output_dir=output_dir, filename=expert_name,
+                weight_map=weight_map, physical=physical, slot=slot,
+                stable=stable,
+            ):
+                report["routed"][str(slot)] = {
+                    "donor_expert_id": int(donor_id),
+                    "resumed_existing_shard": True,
+                }
+                continue
             report["routed"][str(slot)] = {
                 "donor_expert_id": int(donor_id),
-                "resumed_existing_shard": True,
+                "operators": _save_expert(
+                    source=source,
+                    donor_prefix=f"{root}.experts.{donor_id}",
+                    output_prefix=f"{target}.routed_experts.{slot}",
+                    save_filename=f"model-moe-{stage.stage:03d}-expert-{slot:03d}.safetensors",
+                    output_dir=output_dir,
+                    weight_map=weight_map,
+                    source_width=source_width,
+                    intermediate_width=intermediate_width,
+                    target_output_map=stage.latent_map.matrix,
+                    input_inverse=latent_inverse,
+                    projection_ops=projection_ops,
+                ),
             }
-            continue
-        report["routed"][str(slot)] = {
-            "donor_expert_id": int(donor_id),
-            "operators": _save_expert(
-            source=source,
-            donor_prefix=f"{root}.experts.{donor_id}",
-            output_prefix=f"{target}.routed_experts.{slot}",
-            save_filename=f"model-moe-{stage.stage:03d}-expert-{slot:03d}.safetensors",
-            output_dir=output_dir,
-            weight_map=weight_map,
-            source_width=source_width,
-            intermediate_width=intermediate_width,
-            target_output_map=stage.latent_map.matrix,
-            input_inverse=latent_inverse,
-            projection_ops=projection_ops,
-            ),
-        }
-        if slot % 8 == 0:
-            print(f"GLM53_PROGRESS layer={stage.stage} expert={slot + 1}/{len(selected)}", flush=True)
-        gc.collect()
     projection_ops.close()
-    (output_dir / f"model-moe-{stage.stage:03d}-projection.json").write_text(
-        json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    write_checkpoint_text(output_dir, f"model-moe-{stage.stage:03d}-projection.json",
+        json.dumps(report, indent=2, sort_keys=True) + "\n",
+        preserve_existing=resume_existing
     )
