@@ -257,10 +257,163 @@ def validate_bucket(root: Path, *, api_sizes: dict[str, int],
     return index
 
 
+
+def build_fast_weight_map(
+    schedule: list[str], stages: list[dict], native_keys: set[str]
+) -> dict[str, str]:
+    """Derive deterministic tensor-to-shard locations without opening each shard.
+
+    This is NOT a full safetensors validation. Sampled headers validate this
+    mapping for representative shard families; inference is still unproven.
+    """
+    if len(schedule) != 235 or len(stages) != 78:
+        raise RuntimeError("Noncanonical fast-finalizer schedule/stage count")
+    if not native_keys or not all(
+        k.startswith(("attnres.", "reasoning.", "reasoning_injector."))
+        for k in native_keys
+    ) or not all(
+        any(k.startswith(prefix) for k in native_keys)
+        for prefix in ("attnres.", "reasoning.", "reasoning_injector.")
+    ):
+        raise RuntimeError("Invalid native-controller tensor keys")
+    mapping: dict[str, str] = {}
+
+    def add(name: str, keys) -> None:
+        for key in keys:
+            if key in mapping:
+                raise RuntimeError(f"Duplicate expected tensor key {key}")
+            mapping[key] = name
+
+    add("model-global.safetensors",
+        ("embed_tokens.weight", "norm.weight", "lm_head.weight"))
+    add("model-native.safetensors", native_keys)
+
+    mamba_ord = 0
+    for physical, kind in enumerate(schedule):
+        if kind != "mamba3":
+            continue
+        p = f"layers.{physical}."
+        add(f"model-mamba-{mamba_ord:03d}.safetensors", (
+            p + suffix for suffix in (
+                "norm.weight", "mamba.core.in_proj.weight",
+                "mamba.core.dt_bias", "mamba.core.B_bias",
+                "mamba.core.C_bias", "mamba.core.B_norm.weight",
+                "mamba.core.C_norm.weight", "mamba.core.mimo_x",
+                "mamba.core.mimo_z", "mamba.core.mimo_o",
+                "mamba.core.D", "mamba.core.out_proj.weight",
+            )
+        ))
+        mamba_ord += 1
+    if mamba_ord != 79:
+        raise RuntimeError("Expected exactly 79 mapped Mamba blocks")
+
+    for stage_id, record in enumerate(stages):
+        if record.get("stage") != stage_id or record.get("source_layer") != stage_id:
+            raise RuntimeError(f"Bad stage mapping {stage_id}")
+        ctx = int(record["context_physical_layer"])
+        moe = int(record["moe_physical_layer"])
+        if schedule[ctx] not in ("csa", "hca") or schedule[moe] != "moe":
+            raise RuntimeError(f"Bad physical stage placement {stage_id}")
+        context_prefix = f"layers.{ctx}"
+        a = context_prefix + ".attention."
+        keys = [context_prefix + ".norm.weight"]
+        keys.extend(a + suffix for suffix in (
+            "q_a_proj.weight", "q_a_norm.weight", "q_b_proj.weight",
+            "kv_proj.weight", "kv_norm.weight", "compressor_gate_proj.weight",
+            "compressor_position_bias", "compressor_kv_norm.weight",
+            "compressor_kv_proj.weight", "sinks", "output.weight",
+            "output.out_proj.weight",
+        ))
+        if schedule[ctx] == "csa":
+            keys.extend(a + suffix for suffix in (
+                "index_kv_proj.weight", "index_kv_norm.weight",
+                "index_kv_norm.bias", "index_q_proj.weight",
+                "index_weight_proj.weight",
+            ))
+        add(f"model-context-{stage_id:03d}.safetensors", keys)
+        p = f"layers.{moe}.moe."
+        add(f"model-moe-{stage_id:03d}-common.safetensors", (
+            f"layers.{moe}.norm.weight",
+            p + "latent_norm.weight", p + "latent_down.weight",
+            p + "latent_up.weight", p + "router.weight",
+            p + "routing_bias",
+        ))
+        add(f"model-moe-{stage_id:03d}-shared.safetensors", (
+            p + "shared_experts.0." + suffix
+            for suffix in ("gate_proj.weight", "up_proj.weight", "down_proj.weight")
+        ))
+        for slot in range(256):
+            add(f"model-moe-{stage_id:03d}-expert-{slot:03d}.safetensors", (
+                p + f"routed_experts.{slot}." + suffix
+                for suffix in ("gate_proj.weight", "up_proj.weight", "down_proj.weight")
+            ))
+    if set(mapping.values()) != expected_names():
+        missing = expected_names() - set(mapping.values())
+        raise RuntimeError(f"Fast mapping omitted shards: {sorted(missing)[:10]}")
+    return mapping
+
+
+def validate_fast_samples(
+    fs, api_sizes: dict[str, int], weight_map: dict[str, str],
+    *, latent: int, intermediate: int
+) -> list[str]:
+    """Check a deliberate cross-section of all shard families from HF API.
+
+    All weight shard sizes are independently inventoried; a sample is NOT
+    equivalent to full header, SHA256 or numerical verification.
+    """
+    samples = [
+        "model-global.safetensors",
+        "model-native.safetensors",
+        "model-mamba-000.safetensors",
+        "model-mamba-018.safetensors",
+        "model-mamba-078.safetensors",
+        "model-context-000.safetensors",
+        "model-context-077.safetensors",
+        "model-moe-002-common.safetensors",
+        "model-moe-003-common.safetensors",
+        "model-moe-003-shared.safetensors",
+        "model-moe-002-expert-000.safetensors",
+        "model-moe-005-expert-019.safetensors",
+        "model-moe-077-expert-255.safetensors",
+    ]
+    by_file: dict[str, set[str]] = {name: set() for name in samples}
+    for key, file in weight_map.items():
+        if file in by_file:
+            by_file[file].add(key)
+    for name in samples:
+        if name not in api_sizes:
+            raise RuntimeError(f"Sample missing from remote inventory: {name}")
+        entries = remote_header(fs, name, api_sizes[name])
+        if set(entries) != by_file[name]:
+            missing = by_file[name] - set(entries)
+            extra = set(entries) - by_file[name]
+            raise RuntimeError(
+                f"Sample tensor layout mismatch {name}: "
+                f"missing={sorted(missing)[:6]} extra={sorted(extra)[:6]}"
+            )
+        if "-expert-" in name:
+            slot = int(name[-15:-12])
+            prefix = next(iter(entries)).split(".routed_experts.")[0]
+            for suffix, shape in (
+                ("gate_proj.weight", [intermediate, latent]),
+                ("up_proj.weight", [intermediate, latent]),
+                ("down_proj.weight", [latent, intermediate]),
+            ):
+                key = f"{prefix}.routed_experts.{slot}.{suffix}"
+                if entries[key]["shape"] != shape or entries[key]["dtype"] != "BF16":
+                    raise RuntimeError(f"Sample expert geometry mismatch {name}:{key}")
+        print(f"IQ_FAST_SAMPLE_HEADER_OK={name} tensors={len(entries)}", flush=True)
+    return samples
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--publish", action="store_true",
                         help="Upload index/manifest/completion after full dry-run checks")
+    parser.add_argument("--fast", action="store_true",
+                        help="Deterministic tensor mapping + remote inventory + sampled "
+                             "headers; avoids 20,283 individual shard reads")
     parser.add_argument("--probe-headers", action="store_true",
                         help="Read only two remote safetensors headers to verify the "
                              "HF streaming backend without scanning the checkpoint")
@@ -273,6 +426,9 @@ def main() -> None:
     parser.add_argument("--root", type=Path,
                         default=Path.home() / "IQ-transfer-full78")
     args = parser.parse_args()
+    if args.fast:
+        # NFS is known to return EIO. Fast mode avoids mounted reads entirely.
+        args.read_mode = "hub"
     output = args.mount / "IQ" / "runs" / RUN
     calibration = args.root / "calibration"
     if args.read_mode != "hub" and not output.is_dir():
@@ -350,12 +506,13 @@ def main() -> None:
             selected_ids[str(i)] = [int(k) for k in np.lexsort(
                 (np.arange(len(usage)), -usage)
             )]
-        report = checkpoint_json(
-            fs, output, f"model-moe-{i:03d}-projection.json",
-            read_mode=args.read_mode,
-        )
-        if report.get("stage") != i or report.get("source_layer") != i:
-            raise RuntimeError(f"Invalid saved stage projection receipt {i}")
+        if not args.fast or i in (0, 39, 77):
+            report = checkpoint_json(
+                fs, output, f"model-moe-{i:03d}-projection.json",
+                read_mode=args.read_mode,
+            )
+            if report.get("stage") != i or report.get("source_layer") != i:
+                raise RuntimeError(f"Invalid saved stage projection receipt {i}")
 
     # Only reads official donor CONFIG and INDEX. Never reads any donor weight.
     from iq_transfer.glm53_job import validate_glm53_streaming_donor
@@ -368,14 +525,48 @@ def main() -> None:
     from huggingface_hub import get_bucket_paths_info
     names = sorted(expected_names())
     prefix = f"IQ/runs/{RUN}"
-    api = {item.path.removeprefix(prefix + "/"): item.size for item in
-           get_bucket_paths_info(BUCKET, [f"{prefix}/{n}" for n in names])}
-    weight_map = validate_bucket(
-        output, api_sizes=api, schedule=schedule, stages=stages,
-        latent=int(stable["latent_size"]),
-        intermediate=int(stable["expert_intermediate_size"]),
-        fs=fs, read_mode=args.read_mode,
+    extra = (
+        [f"model-moe-{i:03d}-projection.json" for i in range(78)]
+        if args.fast else []
     )
+    remote_info = {
+        item.path.removeprefix(prefix + "/"): item.size for item in
+        get_bucket_paths_info(
+            BUCKET, [f"{prefix}/{n}" for n in names + extra]
+        )
+    }
+    missing = set(names + extra) - set(remote_info)
+    invalid = [
+        n for n, size in remote_info.items()
+        if not isinstance(size, int) or size < (16 if n.endswith(".safetensors") else 1)
+    ]
+    if missing or invalid:
+        raise RuntimeError(
+            f"HF remote checkpoint incomplete: missing={sorted(missing)[:10]} "
+            f"invalid={invalid[:10]}"
+        )
+    api = {name: remote_info[name] for name in names}
+    samples = []
+    if args.fast:
+        native = remote_header(fs, "model-native.safetensors",
+                               api["model-native.safetensors"])
+        weight_map = build_fast_weight_map(schedule, stages, set(native))
+        samples = validate_fast_samples(
+            fs, api, weight_map, latent=int(stable["latent_size"]),
+            intermediate=int(stable["expert_intermediate_size"]),
+        )
+        print(
+            f"IQ_FAST_REMOTE_INVENTORY_OK=shards:{len(names)} "
+            f"receipts:{len(extra)} samples:{len(samples)}",
+            flush=True,
+        )
+    else:
+        weight_map = validate_bucket(
+            output, api_sizes=api, schedule=schedule, stages=stages,
+            latent=int(stable["latent_size"]),
+            intermediate=int(stable["expert_intermediate_size"]),
+            fs=fs, read_mode=args.read_mode,
+        )
     total_size = sum(api.values())
     provenance = {
         "schema_version": 2,
@@ -426,8 +617,18 @@ def main() -> None:
     }
     print(f"IQ_METADATA_FINALIZER_READY shards={len(names)} tensors={len(weight_map)} "
           f"bytes={total_size}", flush=True)
+    if args.fast:
+        complete["metadata_validation"] = (
+            "remote_inventory_deterministic_map_"
+            "and_13_sampled_headers_no_full_tensor_validation"
+        )
+        complete["metadata_sampled_shards"] = len(samples)
     if not args.publish:
-        print("IQ_METADATA_FINALIZER_DRY_RUN_OK_NO_WRITES", flush=True)
+        print(
+            "IQ_FAST_METADATA_DRY_RUN_OK_NO_WRITES"
+            if args.fast else "IQ_METADATA_FINALIZER_DRY_RUN_OK_NO_WRITES",
+            flush=True,
+        )
         return
     if not os.environ.get("HF_TOKEN"):
         raise RuntimeError("Set HF_TOKEN to publish via authorized Hub API")
