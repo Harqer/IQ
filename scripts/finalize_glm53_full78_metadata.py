@@ -55,7 +55,10 @@ def _parse_safetensors_header(stream, file_size: int, name: str) -> dict[str, di
         if not isinstance(key, str) or not isinstance(item, dict):
             raise RuntimeError(f"Invalid safetensors entry {name}")
         shape, dtype, offsets = item.get("shape"), item.get("dtype"), item.get("data_offsets")
-        if (not isinstance(shape, list) or not shape or
+        if (not isinstance(shape, list) or
+            # [] is the canonical safetensors shape for a 0-D scalar,
+            # e.g. attnres.mixers.0.mix_logit in model-native.safetensors.
+            # A scalar occupies exactly one dtype-sized element.
             any(type(dim) is not int or dim < 1 for dim in shape) or
             dtype not in DTYPE_BYTES or not isinstance(offsets, list) or
             len(offsets) != 2 or any(type(v) is not int for v in offsets)):
