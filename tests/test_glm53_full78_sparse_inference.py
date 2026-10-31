@@ -8,6 +8,7 @@ from pathlib import Path
 import torch
 from safetensors.torch import save_file
 
+from iq_model.hybrid import HybridModelError, UnloadedRoutedExpert
 from scripts.iq_hf_full78_sparse_inference import (
     hydrate_expert, partition_weight_map,
 )
@@ -68,6 +69,10 @@ class SparseFull78Tests(unittest.TestCase):
             )
             self.assertEqual(layer(torch.ones(2, 4, dtype=torch.bfloat16)).shape, (2, 4))
             self.assertFalse(any(x.is_meta for x in layer.parameters()))
+
+    def test_missing_selected_expert_fails_closed(self):
+        with self.assertRaisesRegex(HybridModelError, "not hydrated"):
+            UnloadedRoutedExpert()(torch.ones(1, 4))
 
     def test_corrupted_selected_expert_weights_fail_closed(self):
         prefix = "layers.11.moe.routed_experts.61."
