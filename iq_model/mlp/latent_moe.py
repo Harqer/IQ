@@ -193,9 +193,16 @@ class StableLatentMoE(nn.Module):
         # equivalent to the per-expert routing path and keeps the same
         # sigmoid/top-k weights, shared experts and output normalization.
         # The general prefill/training path below remains unchanged.
-        if (not self.training and flat.shape[0] == 1
-                and not self.config.expert_bias):
-            slots = selected[0].tolist()
+        slots = selected[0].tolist() if flat.shape[0] == 1 else []
+        # Synthetic ablation experts (including ZeroExpert) and training
+        # remain on the exact per-expert reference path. Only genuine,
+        # fully hydrated SiTU modules enter grouped matrix multiplication.
+        can_group = (
+            not self.training and flat.shape[0] == 1
+            and not self.config.expert_bias
+            and all(isinstance(self.routed_experts[i], SiTUExpert) for i in slots)
+        )
+        if can_group:
             experts = [self.routed_experts[i] for i in slots]
             gate = torch.stack([e.gate_proj.weight for e in experts], dim=0)
             up = torch.stack([e.up_proj.weight for e in experts], dim=0)
