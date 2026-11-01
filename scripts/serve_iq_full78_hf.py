@@ -24,9 +24,10 @@ DEFAULT_CHECKPOINT = "/checkpoints/IQ/runs/glm53-full78-local-20261025a"
 
 
 def main() -> None:
-    # Full-prefix MIMO plus real MoE expert paging is expensive.
-    existing_chat.MAX_PROMPT_TOKENS = 128
-    existing_chat.MAX_NEW_TOKENS = 16
+    # Full 235-layer model: expose ordinary multi-turn chat budgets, not the
+    # original first-token smoke-test limits. Full-prefix decoding remains slow.
+    existing_chat.MAX_PROMPT_TOKENS = 2048
+    existing_chat.MAX_NEW_TOKENS = 256
     tokenizer, model, streamer = load_runtime(
         Path(os.getenv("IQ_CHECKPOINT_DIR", DEFAULT_CHECKPOINT)),
         Path(os.getenv("IQ_TOKENIZER_DIR", "/tokenizer")),
@@ -38,7 +39,7 @@ def main() -> None:
     server = HTTPServer(("0.0.0.0", port), existing_chat.create_handler(tokenizer, model))
     print(
         "IQ_FULL78_PRIVATE_CHAT_READY="
-        f"port={port} max_prompt_tokens=128 max_new_tokens=16",
+        f"port={port} max_prompt_tokens=2048 max_new_tokens=256",
         flush=True,
     )
     try:
