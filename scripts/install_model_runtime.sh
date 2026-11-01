@@ -41,9 +41,10 @@ export PIP_CONSTRAINT="$constraints"
 python -m pip install "setuptools>=61.0.0" wheel packaging ninja
 python -m pip install -r requirements-model.txt
 
-# Build the original pinned Mamba-3 CUDA source with only its known-bad
-# dependency metadata adjusted for TileLang prefill + CuTe decode compatibility.
-# Fail closed on any unexpected model-source edit.
+# Build the original pinned Mamba-3 source. Apply exactly two narrowly-scoped,
+# fail-closed compatibility changes: package metadata for TileLang/CuTe and
+# a masked tail read for V in the fixed-length native MIMO TileLang kernel.
+# Verify every changed file against this allowlist before pip can build.
 source_dir=$(mktemp -d -t iq-mamba3-source.XXXXXX)
 trap 'rm -f "$snapshot" "$constraints"; rm -rf "$source_dir"' EXIT
 git clone --quiet --filter=blob:none https://github.com/state-spaces/mamba.git "$source_dir"
@@ -56,7 +57,26 @@ if [[ "$actual_commit" != "$MAMBA3_COMMIT" ]]; then
 fi
 python scripts/patch_iq_mamba3_dependencies.py "$source_dir"
 changed_files=$(git -C "$source_dir" diff --name-only)
-if [[ "$changed_files" != $'pyproject.toml\nsetup.py' ]]; then
+if [[ "$changed_files" != 
+  echo >&2 "Unexpected Mamba3 source edits: $changed_files"
+  exit 2
+fi
+MAMBA_FORCE_BUILD=TRUE python -m pip install \
+  --no-build-isolation \
+  --no-cache-dir \
+  "$source_dir"
+python scripts/patch_iq_mamba3_dependencies.py \
+  --record-installed "$source_dir" --source-commit "$MAMBA3_COMMIT"
+
+# The container inherits unrelated build tools (notably spin) whose Click
+# range can conflict with Hugging Face Hub. Validate IQ's full transitive
+# *inference* dependency graph instead of every package in the base image.
+python scripts/verify_iq_dependencies.py
+python scripts/hf_runtime_contract.py after --snapshot "$snapshot"
+
+# No kernel-only tests, GPU benchmarks, or standalone paid job here.
+# The HF launcher must proceed to full IQ checkpoint load and text generation.
+mamba_ssm/ops/tilelang/mamba3/mamba3_mimo_fwd.py\npyproject.toml\nsetup.py' ]]; then
   echo >&2 "Unexpected Mamba3 source edits: $changed_files"
   exit 2
 fi
