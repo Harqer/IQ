@@ -146,7 +146,8 @@ def follow_job_logs(job_id: str, path: Path, failures: list[str]) -> None:
                 line = str(raw).rstrip("\r\n")
                 if line:
                     print(f"[H200] {line}", flush=True)
-                    print(line, file=output, flush=True)
+                    output.write(line + "\n")
+                    output.flush()
     except Exception as exc:
         failures.append(str(exc))
         print(
