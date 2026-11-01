@@ -350,8 +350,6 @@ def chat_loop(base: str, token: str, *, max_tokens: int, timeout: int,
                     message = input("You: ").strip()
                 except EOFError:
                     break
-            except EOFError:
-                break
             if not message:
                 continue
             if message == "/quit":
