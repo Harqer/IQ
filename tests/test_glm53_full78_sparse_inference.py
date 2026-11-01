@@ -10,7 +10,7 @@ from safetensors.torch import save_file
 
 from iq_model.hybrid import HybridModelError, UnloadedRoutedExpert
 from scripts.iq_hf_full78_sparse_inference import (
-    hydrate_expert, partition_weight_map,
+    hydrate_expert, partition_weight_map, validate_and_copy_base_tensors,
 )
 
 
@@ -69,6 +69,42 @@ class SparseFull78Tests(unittest.TestCase):
             )
             self.assertEqual(layer(torch.ones(2, 4, dtype=torch.bfloat16)).shape, (2, 4))
             self.assertFalse(any(x.is_meta for x in layer.parameters()))
+
+    def test_baseline_copy_preserves_bf16_values_and_validates_on_destination(self):
+        source = torch.tensor([[1.0, 2.0], [3.0, 4.0]], dtype=torch.bfloat16)
+        target = torch.nn.Parameter(torch.zeros((2, 2), dtype=torch.float32))
+        before = source.clone()
+        copy_seconds, finite_seconds = validate_and_copy_base_tensors(
+            {"layer.weight": source},
+            {"layer.weight"},
+            {"layer.weight": target},
+            {},
+        )
+        torch.testing.assert_close(target, source.float())
+        torch.testing.assert_close(source, before)
+        self.assertGreaterEqual(copy_seconds, 0)
+        self.assertGreaterEqual(finite_seconds, 0)
+
+    def test_baseline_copy_rejects_nonfinite_bf16_after_transfer(self):
+        target = torch.nn.Parameter(torch.zeros((2,), dtype=torch.bfloat16))
+        with self.assertRaisesRegex(RuntimeError, "Nonfinite checkpoint tensor"):
+            validate_and_copy_base_tensors(
+                {"layer.weight": torch.tensor([float("nan"), 1.], dtype=torch.bfloat16)},
+                {"layer.weight"}, {"layer.weight": target}, {},
+            )
+
+    def test_baseline_copy_rejects_shape_and_index_mismatch(self):
+        target = torch.nn.Parameter(torch.zeros((2,), dtype=torch.float32))
+        with self.assertRaisesRegex(RuntimeError, "shape mismatch"):
+            validate_and_copy_base_tensors(
+                {"layer.weight": torch.zeros((3,), dtype=torch.float32)},
+                {"layer.weight"}, {"layer.weight": target}, {},
+            )
+        with self.assertRaisesRegex(RuntimeError, "keys differ"):
+            validate_and_copy_base_tensors(
+                {"layer.weight": torch.zeros((2,), dtype=torch.float32)},
+                {"missing.weight"}, {"layer.weight": target}, {},
+            )
 
     def test_missing_selected_expert_fails_closed(self):
         with self.assertRaisesRegex(HybridModelError, "not hydrated"):
