@@ -92,11 +92,13 @@ def verify_full78_mimo_geometry(device: torch.device, config) -> dict[str, objec
     )
     previous = Mamba3(**options, layer_idx=0).eval()
     current = Mamba3(**options, layer_idx=1).eval()
-    # Two sizes cover an incomplete final chunk and a chunk boundary. The
-    # second layer receives outputs from a preceding, equally wide mixer.
+    # Explicitly cover *shorter than the 16-token chunk*, exactly the
+    # production failure (13 tokens, mamba layer 42), then a full chunk,
+    # and 17/33-token incomplete tail chunks. Two consecutive mixers exercise
+    # the real production-width GPU input/output path and recurrent states.
     max_abs = 0.0
     try:
-        for length in (17, 33):
+        for length in (13, 16, 17, 33):
             source = torch.randn(
                 (1, length, config.d_model),
                 device=device, dtype=torch.bfloat16,
@@ -128,7 +130,7 @@ def verify_full78_mimo_geometry(device: torch.device, config) -> dict[str, objec
     finally:
         del previous, current
         torch.cuda.empty_cache()
-    return {"width": config.d_model, "checked_lengths": [17, 33],
+    return {"width": config.d_model, "checked_lengths": [13, 16, 17, 33],
             "max_absolute_error": max_abs}
 
 

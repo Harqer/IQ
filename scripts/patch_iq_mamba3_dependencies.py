@@ -1,9 +1,11 @@
-"""Reproducible, fail-closed dependency compatibility patch for pinned Mamba3.
+"""Reproducible compatibility and short-chunk CUDA safety patch for pinned Mamba3.
 
-The model code remains byte-for-byte upstream at the verified commit; only
-the package's runtime dependency declarations are changed. This addresses
-an independently reproduced TileLang 0.1.8 / TVM FFI 0.1.9 / CuTe 4.8.1
-incompatibility. H200 MUST still pass native prefill+step correctness.
+Preserve the exact upstream revision, pinned dependency compatibility and
+native rank-4 MIMO architecture. The only kernel modification is an explicit
+boundary guard on the V tile's scalar global-memory load in the fixed-length
+TileLang forward kernel. The original code reads cs=13..15 for a 13-token
+input when chunk_size=16; unlike T.copy, this scalar read is not automatically
+masked. Require SHA-verified installed kernel bytes and native CUDA parity.
 """
 from __future__ import annotations
 
@@ -18,6 +20,20 @@ UPSTREAM_TVM = '"apache-tvm-ffi<=0.1.12"'
 IQ_TILELANG = '"tilelang==0.1.12"'
 IQ_TVM = '"apache-tvm-ffi==0.1.11"'
 TARGETS = ("pyproject.toml", "setup.py")
+KERNEL_RELATIVE_PATH = "mamba_ssm/ops/tilelang/mamba3/mamba3_mimo_fwd.py"
+KERNEL_PATCH = "mimo-fwd-valid-length-guard-v1"
+UPSTREAM_V_READ = (
+    "                for cs, p in T.Parallel(chunk_size, P):\n"
+    "                    v_shared[cs, p] = V[i_b, chunk_start+cs, i_h, p]"
+)
+SAFE_V_READ = (
+    "                for cs, p in T.Parallel(chunk_size, P):\n"
+    "                    if chunk_start + cs < S:\n"
+    "                        v_shared[cs, p] = V[i_b, chunk_start+cs, i_h, p]\n"
+    "                    else:\n"
+    "                        v_shared[cs, p] = 0.0"
+)
+
 
 
 def apply_patch(root: Path) -> list[str]:
@@ -46,6 +62,19 @@ def apply_patch(root: Path) -> list[str]:
     return [p.name for p in patched]
 
 
+def apply_kernel_tail_guard(root: Path) -> str:
+    """Fix the exact unguarded input load; reject any source drift."""
+    path = root / KERNEL_RELATIVE_PATH
+    original = path.read_text(encoding="utf-8")
+    if original.count(UPSTREAM_V_READ) != 1 or SAFE_V_READ in original:
+        raise RuntimeError(
+            "Unexpected pinned upstream Mamba3 MIMO fixed-kernel V read: "
+            "cannot apply exact bounds patch safely"
+        )
+    path.write_text(original.replace(UPSTREAM_V_READ, SAFE_V_READ), encoding="utf-8")
+    return KERNEL_RELATIVE_PATH
+
+
 def record_installed(root: Path, source_commit: str) -> Path:
     """Record SHA-checked unmodified Mamba mixer implementation in installed venv.
 
@@ -67,12 +96,26 @@ def record_installed(root: Path, source_commit: str) -> Path:
     actual = sha256(installed.read_bytes()).hexdigest()
     if expected != actual:
         raise RuntimeError("Installed Mamba-3 source differs from pinned checkout")
+    kernel_source = root / KERNEL_RELATIVE_PATH
+    kernel_installed = Path(dist.locate_file(KERNEL_RELATIVE_PATH))
+    if not kernel_source.is_file() or not kernel_installed.is_file():
+        raise FileNotFoundError("Installed pinned MIMO TileLang kernel missing")
+    original_kernel_text = kernel_source.read_text(encoding="utf-8")
+    if (original_kernel_text.count(SAFE_V_READ) != 1
+            or UPSTREAM_V_READ in original_kernel_text):
+        raise RuntimeError("MIMO tail guard is not present in pinned checkout")
+    source_kernel_sha = sha256(kernel_source.read_bytes()).hexdigest()
+    installed_kernel_sha = sha256(kernel_installed.read_bytes()).hexdigest()
+    if source_kernel_sha != installed_kernel_sha:
+        raise RuntimeError("Installed MIMO TileLang kernel differs from patched source")
     provenance = Path(dist.locate_file("mamba_ssm/iq_mamba3_provenance.json"))
     if not provenance.parent.is_dir():
         raise FileNotFoundError("Installed Mamba-3 package directory missing")
     provenance.write_text(json.dumps({
         "source_commit": source_commit,
         "module_sha256": expected,
+        "kernel_sha256": source_kernel_sha,
+        "kernel_patch": KERNEL_PATCH,
         "metadata_patch": "tilelang0.1.12-tvmffi0.1.11",
     }, sort_keys=True) + "\n", encoding="utf-8")
     return provenance
@@ -92,7 +135,9 @@ def main() -> None:
     else:
         if args.checkout is None or args.source_commit is not None:
             parser.error("provide checkout, or --record-installed with --source-commit")
-        print(f"IQ_MAMBA3_METADATA_PATCH_APPLIED={','.join(apply_patch(args.checkout))}",
+        patched = apply_patch(args.checkout)
+        patched.append(apply_kernel_tail_guard(args.checkout))
+        print(f"IQ_MAMBA3_COMPAT_PATCH_APPLIED={','.join(patched)}",
               flush=True)
 
 
