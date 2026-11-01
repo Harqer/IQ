@@ -16,10 +16,12 @@ from __future__ import annotations
 import argparse
 import inspect
 import json
+import os
 import re
 import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from urllib.error import HTTPError, URLError
@@ -29,6 +31,7 @@ from huggingface_hub import (
     InferenceClient,
     Volume,
     cancel_job,
+    fetch_job_logs,
     get_token,
     inspect_job,
     run_job,
@@ -51,6 +54,7 @@ def normalized_stage(raw: object) -> str:
 
 MAX_TOKENS = 16
 MAX_HISTORY_MESSAGES = 16
+DEFAULT_LOG_DIR = Path.home() / "iq-h200-logs"
 
 
 def git(*arguments: str) -> str:
@@ -110,6 +114,72 @@ def command_for(commit: str) -> list[str]:
     return ["bash", "-lc", setup]
 
 
+
+def validate_logs_api() -> None:
+    """Fail locally if SDK cannot stream remote Job logs."""
+    try:
+        inspect.signature(fetch_job_logs).bind(
+            job_id="0" * 24, namespace=EXPECTED_ACCOUNT,
+            follow=True, tail=100,
+        )
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(
+            "Installed huggingface_hub lacks the required fetch_job_logs "
+            f"API: {exc}. Upgrade locally before launching a paid H200."
+        ) from exc
+
+
+def follow_job_logs(job_id: str, path: Path, failures: list[str]) -> None:
+    """Mirror H200 container stdout/stderr live to the terminal and local file.
+
+    This is the HF Job log stream, NOT content stored in the checkpoint
+    bucket, which remains read-only. Runs in a daemon thread so it cannot
+    prevent cancellation or delay process exit if the stream stalls.
+    """
+    try:
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+            for raw in fetch_job_logs(
+                job_id=job_id, namespace=EXPECTED_ACCOUNT,
+                follow=True, tail=100,
+            ):
+                line = str(raw).rstrip("\r\n")
+                if line:
+                    print(f"[H200] {line}", flush=True)
+                    output.write(line + "\n")
+                    output.flush()
+    except Exception as exc:
+        failures.append(str(exc))
+        print(
+            f"IQ_H200_LOG_STREAM_ERROR={type(exc).__name__}: {exc}\n"
+            "Use 'hf jobs logs --follow --namespace kofecheckmate JOB_ID' "
+            "to inspect the container logs directly.",
+            file=sys.stderr, flush=True,
+        )
+
+
+def launch_log_follower(job_id: str, log_dir: Path) -> tuple[threading.Thread, list[str], Path]:
+    """Start remote log streaming immediately after a job is submitted."""
+    if not re.fullmatch(r"[0-9a-f]{24}", job_id):
+        raise RuntimeError("Invalid HF Job ID for log stream")
+    log_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if log_dir.is_symlink() or not log_dir.is_dir():
+        raise RuntimeError("Unsafe local H200 logging directory")
+    logfile = log_dir / f"{job_id}.log"
+    if logfile.exists() or logfile.is_symlink():
+        raise RuntimeError(f"Refusing to overwrite H200 log: {logfile}")
+    # Restrict the locally stored logs to this user by default.
+    failures: list[str] = []
+    t = threading.Thread(
+        target=follow_job_logs,
+        args=(job_id, logfile, failures),
+        name="iq-h200-log-stream", daemon=True,
+    )
+    t.start()
+    print(f"IQ_H200_LOG_FILE={logfile}", flush=True)
+    return t, failures, logfile
+
+
 def endpoint(job_id: str) -> str:
     if not re.fullmatch(r"[0-9a-f]{24}", job_id):
         raise RuntimeError("Unexpected Hugging Face Job ID")
@@ -128,11 +198,14 @@ def health_ready(base: str, token: str) -> bool:
         return False
 
 
-def wait_for_server(job_id: str, token: str, deadline_seconds: int) -> str:
+def wait_for_server(job_id: str, token: str, deadline_seconds: int,
+                    log_failures: list[str] | None = None) -> str:
     base = endpoint(job_id)
     end = time.monotonic() + deadline_seconds
     last_stage = None
     while time.monotonic() < end:
+        if log_failures:
+            raise RuntimeError("H200 Job log stream failed: " + log_failures[0])
         stage = normalized_stage(inspect_job(job_id=job_id, namespace=EXPECTED_ACCOUNT).status.stage)
         if stage in TERMINAL:
             raise RuntimeError(f"HF Job ended before chat became ready ({stage}). See job logs.")
@@ -283,6 +356,8 @@ def main() -> int:
                         help="Maximum server readiness wait in seconds (<=1400)")
     parser.add_argument("--request-timeout", type=int, default=300)
     parser.add_argument("--transcript", type=Path)
+    parser.add_argument("--log-dir", type=Path, default=DEFAULT_LOG_DIR,
+                        help="Save live H200 container logs locally (default ~/iq-h200-logs)")
     args = parser.parse_args()
     if not 1 <= args.max_tokens <= MAX_TOKENS:
         parser.error("max-tokens must be 1..16")
@@ -292,6 +367,7 @@ def main() -> int:
     token = validate_auth()
     options = job_options(commit)
     validate_jobs_api(options)
+    validate_logs_api()
     print(f"IQ full78 CLI preflight OK, commit={commit}", flush=True)
     if not args.run_h200:
         print(
@@ -301,6 +377,7 @@ def main() -> int:
         )
         return 0
     job_id: str | None = None
+    log_thread: threading.Thread | None = None
     try:
         job = run_job(**options)
         job_id = str(job.id)
@@ -310,7 +387,9 @@ def main() -> int:
             "The remote GPU auto-times out after 30 minutes.",
             flush=True,
         )
-        base = wait_for_server(job_id, token, args.ready_timeout)
+        log_thread, log_failures, logfile = launch_log_follower(job_id, args.log_dir)
+        base = wait_for_server(job_id, token, args.ready_timeout,
+                               log_failures=log_failures)
         chat_loop(
             base, token, max_tokens=args.max_tokens,
             timeout=args.request_timeout, transcript=args.transcript,
@@ -324,6 +403,8 @@ def main() -> int:
             if not cancel_and_verify(job_id):
                 print("WARNING: Cancellation unverified. Manually cancel the HF Job.",
                       file=sys.stderr)
+        if log_thread is not None:
+            log_thread.join(timeout=2)
 
 
 if __name__ == "__main__":
