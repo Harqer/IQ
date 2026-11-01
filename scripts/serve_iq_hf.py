@@ -149,10 +149,16 @@ def generate(
     prompt_tokens = int(input_ids.shape[1])
     input_ids = input_ids.to("cuda:0")
     if engine is not None:
-        return generate_stateful(
-            engine, tokenizer, input_ids,
-            max_new_tokens=max_new_tokens, on_token=on_token,
-        )
+        try:
+            return generate_stateful(
+                engine, tokenizer, input_ids,
+                max_new_tokens=max_new_tokens, on_token=on_token,
+            )
+        except Exception:
+            # Native MIMO and context caches may already have been mutated
+            # before the failure. Never reuse a partially advanced state.
+            engine.reset()
+            raise
     generated: list[int] = []
     finish_reason = "length"
     diagnostics = os.getenv("IQ_DIAGNOSTICS", "0") == "1"
