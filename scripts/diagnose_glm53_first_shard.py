@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from time import perf_counter
 
 
@@ -76,16 +77,80 @@ def read_shard(checkpoint: Path, *, max_shard_gib: int = MAX_SHARD_GIB) -> dict:
             "tensor_count": len(tensors)}
 
 
+def read_first_remote_bucket_shard(bucket_id: str) -> dict:
+    """Read precisely index + first base shard from HF bucket without FUSE/GPU.
+
+    Strict bound: reject shards above 512 MiB before download; keep all data
+    in a temporary directory removed on exit. The test checks file integrity
+    and client bandwidth, NOT latency of HF Jobs' volume mount.
+    """
+    from huggingface_hub import (
+        download_bucket_files, get_bucket_file_metadata, get_token,
+    )
+    if bucket_id != "kofecheckmate/iq-glm53-all256":
+        raise ValueError("Unexpected bucket ID; refusing download")
+    if not get_token():
+        raise RuntimeError("Log in first with: hf auth login")
+    prefix = f"IQ/runs/{RUN}/"
+    with TemporaryDirectory(prefix="iq-first-shard-") as directory:
+        root = Path(directory)
+        index_remote = prefix + "model.safetensors.index.json"
+        print(f"IQ_REMOTE_INDEX_DOWNLOAD_START={index_remote}", flush=True)
+        started = perf_counter()
+        download_bucket_files(
+            bucket_id,
+            files=[(index_remote, str(root / "model.safetensors.index.json"))],
+        )
+        print(
+            f"IQ_REMOTE_INDEX_DOWNLOAD_PASS=seconds={perf_counter()-started:.2f}",
+            flush=True,
+        )
+        name, _ = find_first_base_shard(root / "model.safetensors.index.json")
+        remote_name = prefix + name
+        print(f"IQ_REMOTE_SHARD_METADATA_START={remote_name}", flush=True)
+        info = get_bucket_file_metadata(bucket_id, remote_name)
+        size = info.size
+        if type(size) is not int or not 0 < size <= 512 * 1024**2:
+            raise ValueError("First shard exceeds the safe 512 MiB transfer cap")
+        print(
+            f"IQ_REMOTE_SHARD_DOWNLOAD_START=file={name} bytes={size}",
+            flush=True,
+        )
+        download_started = perf_counter()
+        download_bucket_files(
+            bucket_id, files=[(remote_name, str(root / name))],
+        )
+        elapsed = perf_counter() - download_started
+        print(
+            f"IQ_REMOTE_SHARD_DOWNLOAD_PASS=seconds={elapsed:.2f}",
+            flush=True,
+        )
+        result = read_shard(root)
+        if result["bytes"] != size:
+            raise ValueError("Remote/local shard file size mismatch")
+        result["remote_download_seconds"] = round(elapsed, 3)
+        result["source"] = f"hf://buckets/{bucket_id}/{remote_name}"
+        result["gpu_allocated"] = False
+        return result
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkpoint", type=Path, default=DEFAULT_CHECKPOINT,
                         help="Existing LOCAL filesystem mount of IQ full78 run")
+    parser.add_argument("--bucket", type=str, help=(
+        "Read index and first base shard directly from the HF bucket (no FUSE). "
+        "Only kofecheckmate/iq-glm53-all256 is allowed."
+    ))
     parser.add_argument("--max-shard-gib", type=int, default=MAX_SHARD_GIB)
     args = parser.parse_args()
     if not 1 <= args.max_shard_gib <= 8:
         parser.error("max-shard-gib must be 1..8")
     print("IQ_FIRST_SHARD_DIAGNOSTIC=CPU_ONLY_NO_PAID_JOB", flush=True)
-    result = read_shard(args.checkpoint, max_shard_gib=args.max_shard_gib)
+    if args.bucket:
+        result = read_first_remote_bucket_shard(args.bucket)
+    else:
+        result = read_shard(args.checkpoint, max_shard_gib=args.max_shard_gib)
     print("IQ_FIRST_SHARD_SUCCESS=" + json.dumps(result, sort_keys=True), flush=True)
 
 
