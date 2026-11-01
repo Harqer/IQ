@@ -147,7 +147,11 @@ def generate(
         raise ValueError(f"prompt must contain 1..{MAX_PROMPT_TOKENS} tokens")
 
     prompt_tokens = int(input_ids.shape[1])
-    input_ids = input_ids.to("cuda:0")
+    device = (
+        engine.model.embed_tokens.weight.device
+        if engine is not None else torch.device("cuda:0")
+    )
+    input_ids = input_ids.to(device)
     if engine is not None:
         try:
             return generate_stateful(
