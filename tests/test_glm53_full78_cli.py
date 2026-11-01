@@ -19,6 +19,24 @@ class CLITests(unittest.TestCase):
         self.assertNotIn("/mocha", command[-1])
         self.assertIn("git checkout -q " + "a" * 40, command[-1])
 
+    def test_hf_job_kwargs_match_installed_sdk_before_billing(self):
+        # Regression for HfApi.run_job() unexpected attempts kwarg.
+        options = cli.job_options("a" * 40)
+        self.assertNotIn("attempts", options)
+        self.assertEqual(options["flavor"], "h200")
+        self.assertEqual(options["timeout"], "30m")
+        self.assertEqual(options["expose"], [8000])
+        self.assertTrue(all(v.read_only for v in options["volumes"]))
+        cli.validate_jobs_api(options)
+
+    def test_sdk_mismatch_rejected_without_submitting_job(self):
+        def old_api(*, image, command):
+            return None
+        options = cli.job_options("a" * 40)
+        with patch.object(cli, "run_job", old_api):
+            with self.assertRaisesRegex(RuntimeError, "incompatible"):
+                cli.validate_jobs_api(options)
+
     def test_credential_must_match_checkpoint_owner(self):
         with patch.object(cli, "get_token", return_value="secret"):
             with patch.object(cli, "whoami", return_value={"name": "Visionboxx"}):
