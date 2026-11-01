@@ -21,6 +21,7 @@ import torch
 from scripts import serve_iq_hf as existing_chat
 from scripts.iq_hf_full78_conversation import load_runtime
 from iq_model.hybrid_inference import IQHybridInferenceEngine
+from scripts.verify_iq_mamba3_native_step import verify_native_mimo_step
 
 DEFAULT_CHECKPOINT = "/checkpoints/IQ/runs/glm53-full78-local-20261025a"
 
@@ -30,6 +31,11 @@ def main() -> None:
     # Full-prefix recomputation is no longer the production inference path.
     existing_chat.MAX_PROMPT_TOKENS = 2048
     existing_chat.MAX_NEW_TOKENS = 256
+    # Verify REAL pinned MIMO prefill/decode equivalence on the H200 before
+    # spending minutes reading 315 baseline shards and thousands of experts.
+    # A broken/unsupported recurrent kernel MUST fail closed, not quietly
+    # route tokens through the old full-prefix implementation.
+    verify_native_mimo_step(torch.device("cuda:0"))
     tokenizer, model, streamer = load_runtime(
         Path(os.getenv("IQ_CHECKPOINT_DIR", DEFAULT_CHECKPOINT)),
         Path(os.getenv("IQ_TOKENIZER_DIR", "/tokenizer")),
