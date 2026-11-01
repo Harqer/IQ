@@ -21,6 +21,7 @@ from collections import defaultdict
 import gc
 import json
 from pathlib import Path
+from time import perf_counter
 import sys
 from typing import Any
 
@@ -122,8 +123,20 @@ def load_base_weights(model: IQHybridForCausalLM, root: Path,
     params = dict(model.named_parameters())
     buffers = dict(model.named_buffers())
     for i, name in enumerate(sorted(base), 1):
+        shard_path = root / name
         expected_keys = set(base[name])
-        tensors = load_file(str(root / name), device="cpu")
+        started = perf_counter()
+        print(
+            f"{REPORT_PREFIX}_BASE_SHARD_START={i}/{len(base)} "
+            f"file={name} bytes={shard_path.stat().st_size}",
+            flush=True,
+        )
+        tensors = load_file(str(shard_path), device="cpu")
+        print(
+            f"{REPORT_PREFIX}_BASE_SHARD_READ={i}/{len(base)} "
+            f"file={name} seconds={perf_counter()-started:.2f}",
+            flush=True,
+        )
         if set(tensors) != expected_keys:
             raise RuntimeError(
                 f"Base checkpoint shard keys differ: {name}; "
@@ -140,6 +153,11 @@ def load_base_weights(model: IQHybridForCausalLM, root: Path,
                 raise RuntimeError(f"Nonfinite/nonfloating checkpoint tensor: {key}")
             target.copy_(value.to(device=target.device, dtype=target.dtype))
         del tensors
+        print(
+            f"{REPORT_PREFIX}_BASE_SHARD_LOADED={i}/{len(base)} "
+            f"file={name} seconds={perf_counter()-started:.2f}",
+            flush=True,
+        )
         if i % 25 == 0 or i == len(base):
             free, total = torch.cuda.mem_get_info()
             print(
