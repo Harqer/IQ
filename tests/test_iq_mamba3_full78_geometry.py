@@ -32,6 +32,14 @@ class FakeMamba:
                 zero.clone(), summed, zero.clone(), zero.clone(),
             )
         return tokens + 0.25 * torch.cumsum(tokens, dim=1)
+    def _get_states_from_cache(self, inference_params, batch_size):
+        if self.layer_idx not in inference_params.key_value_memory_dict:
+            zero = torch.zeros((batch_size, self.options["d_model"]), dtype=torch.bfloat16)
+            inference_params.key_value_memory_dict[self.layer_idx] = (
+                zero.clone(), zero.clone(), zero.clone(), zero.clone(),
+            )
+        return inference_params.key_value_memory_dict[self.layer_idx]
+
     def step(self, token, angle, state, k, v):
         next_state = state + token
         return token + 0.25 * next_state, angle, next_state, k, v
@@ -60,7 +68,7 @@ class ProductionGeometryTests(unittest.TestCase):
                    side_effect=make_cpu_random):
             report = verify_full78_mimo_geometry(torch.device("cuda:0"), config)
         self.assertEqual(report["width"], 4096)
-        self.assertEqual(report["checked_lengths"], [13, 16, 17, 33])
+        self.assertEqual(report["checked_lengths"], [13, 16, 17, 18, 33])
         self.assertLess(report["max_absolute_error"], 0.01)
         self.assertEqual([m.layer_idx for m in FakeMamba.instances], [0, 1])
         self.assertEqual(FakeMamba.instances[0].options["d_model"], 4096)
