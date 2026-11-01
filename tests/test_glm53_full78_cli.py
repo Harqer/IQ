@@ -88,9 +88,15 @@ class CLITests(unittest.TestCase):
 
     def test_chat_dialogue_and_cleanup_with_fake_client(self):
         fake = MagicMock()
-        fake.chat.completions.create.return_value.choices = [
-            MagicMock(message=MagicMock(content="amber"))
-        ]
+        def stream_response(**kwargs):
+            self.assertTrue(kwargs["stream"])
+            return iter((
+                MagicMock(choices=[MagicMock(delta=MagicMock(content="amber"),
+                                              finish_reason=None)]),
+                MagicMock(choices=[MagicMock(delta=MagicMock(content=None),
+                                              finish_reason="stop")]),
+            ))
+        fake.chat.completions.create.side_effect = stream_response
         with patch.object(cli, "InferenceClient", return_value=fake):
             with patch("builtins.input", side_effect=["Remember amber", "What was the word?", "/quit"]):
                 cli.chat_loop(
@@ -100,6 +106,21 @@ class CLITests(unittest.TestCase):
         h = fake.chat.completions.create.call_args_list[-1].kwargs["messages"]
         self.assertEqual([x["role"] for x in h], ["user", "assistant", "user"])
         self.assertEqual(h[0]["content"], "Remember amber")
+
+    def test_live_stream_retains_full_text(self):
+        fake = MagicMock()
+        fake.chat.completions.create.return_value = iter((
+            MagicMock(choices=[MagicMock(delta=MagicMock(content="hello "),
+                                          finish_reason=None)]),
+            MagicMock(choices=[MagicMock(delta=MagicMock(content="world"),
+                                          finish_reason=None)]),
+            MagicMock(choices=[MagicMock(delta=MagicMock(content=None),
+                                          finish_reason="stop")]),
+        ))
+        with patch("builtins.print"):
+            result = cli.reply(fake, [{"role": "user", "content": "Hi"}], 128)
+        self.assertEqual(result, "hello world")
+        self.assertEqual(fake.chat.completions.create.call_args.kwargs["max_tokens"], 128)
 
     def test_successful_cancellation_verified(self):
         response = MagicMock(status=MagicMock(stage="CANCELED"))
