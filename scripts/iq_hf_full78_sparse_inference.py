@@ -179,7 +179,7 @@ def load_base_weights(model: IQHybridForCausalLM, root: Path,
     if total_size > budget_gib * 1024**3:
         raise RuntimeError(f"Base tensors exceed bounded GPU residency {budget_gib} GiB")
     print(f"{REPORT_PREFIX}_BASELINE_BYTES={total_size} shards={len(base)}", flush=True)
-    workers_raw = os.getenv("IQ_BASELINE_STAGE_WORKERS", "4")
+    workers_raw = os.getenv("IQ_BASELINE_STAGE_WORKERS", "2")
     try:
         workers = int(workers_raw)
     except ValueError as exc:
@@ -326,7 +326,7 @@ class ExpertStreamer:
         )
         self.stage_workers = (
             stage_workers if stage_workers is not None
-            else int(os.getenv("IQ_EXPERT_STAGE_WORKERS", "8"))
+            else int(os.getenv("IQ_EXPERT_STAGE_WORKERS", "4"))
         )
         if self.gpu_budget_bytes <= 0 or self.disk_budget_bytes <= 0:
             raise ValueError("Expert cache budgets must be positive")
