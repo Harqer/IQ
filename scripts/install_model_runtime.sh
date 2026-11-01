@@ -48,6 +48,7 @@ source_dir=$(mktemp -d -t iq-mamba3-source.XXXXXX)
 trap 'rm -f "$snapshot" "$constraints"; rm -rf "$source_dir"' EXIT
 git clone --quiet --filter=blob:none https://github.com/state-spaces/mamba.git "$source_dir"
 git -C "$source_dir" checkout --quiet --detach "$MAMBA3_COMMIT"
+git -C "$source_dir" submodule update --init --recursive --quiet
 actual_commit=$(git -C "$source_dir" rev-parse HEAD)
 if [[ "$actual_commit" != "$MAMBA3_COMMIT" ]]; then
   echo >&2 "Mamba3 source revision differs: $actual_commit"
