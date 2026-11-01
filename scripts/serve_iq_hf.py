@@ -56,9 +56,59 @@ def build_model():
     return tokenizer, model
 
 
+def generate_stateful(engine, tokenizer, input_ids: torch.Tensor,
+                      max_new_tokens: int, on_token=None):
+    """Production full78 decode: native MIMO/context caches + exact MoE routing.
+
+    Every forward step runs the complete IQ hybrid architecture for the
+    current token. Never recompute the full prefix or silently fall back.
+    """
+    logits = engine.sync_prompt(input_ids)
+    prompt_tokens = int(input_ids.shape[1])
+    generated = []
+    last_emitted = ""
+    finish_reason = "length"
+    stop_ids = set()
+    if isinstance(getattr(tokenizer, "eos_token_id", None), int):
+        stop_ids.add(int(tokenizer.eos_token_id))
+    eot_id = tokenizer.convert_tokens_to_ids("<|eot_id|>")
+    if isinstance(eot_id, int) and 0 <= eot_id < len(tokenizer):
+        stop_ids.add(eot_id)
+    print(f"IQ_STATEFUL_GENERATION_START=prompt_tokens={prompt_tokens} "
+          f"max_new_tokens={max_new_tokens}", flush=True)
+    for step in range(max_new_tokens):
+        started = time.monotonic()
+        next_scores = logits[:, -1, :].float()
+        if not bool(torch.isfinite(next_scores).all()):
+            raise RuntimeError("Nonfinite IQ stateful decode logits")
+        next_token = next_scores.argmax(dim=-1, keepdim=True)
+        token_id = int(next_token.item())
+        generated.append(token_id)
+        decoded = tokenizer.decode(generated, skip_special_tokens=True)
+        if on_token is not None and decoded.startswith(last_emitted):
+            part = decoded[len(last_emitted):]
+            if part:
+                on_token(part)
+                last_emitted = decoded
+        print(f"IQ_STATEFUL_GENERATION_TOKEN={step+1}/{max_new_tokens} "
+              f"elapsed_seconds={time.monotonic()-started:.3f}", flush=True)
+        if token_id in stop_ids:
+            finish_reason = "stop"
+            break
+        if step + 1 < max_new_tokens:
+            # Do not process an output token twice. The last sampled token
+            # remains pending until the next request tokenizes its context.
+            if engine.state.length >= engine.max_context_tokens:
+                finish_reason = "length"
+                break
+            logits = engine.decode_token(next_token)
+    return (tokenizer.decode(generated, skip_special_tokens=True),
+            finish_reason, prompt_tokens, len(generated))
+
+
 def generate(
     tokenizer, model, messages: list[dict], max_new_tokens: int,
-    prompt_format: str = "chat", on_token=None,
+    prompt_format: str = "chat", on_token=None, engine=None,
 ) -> tuple[str, str, int, int]:
     if prompt_format == "completion":
         if len(messages) != 1 or messages[0]["role"] != "user":
@@ -96,7 +146,23 @@ def generate(
         raise ValueError(f"prompt must contain 1..{MAX_PROMPT_TOKENS} tokens")
 
     prompt_tokens = int(input_ids.shape[1])
-    input_ids = input_ids.to("cuda:0")
+    device = (
+        engine.model.embed_tokens.weight.device
+        if engine is not None else torch.device("cuda:0")
+    )
+    input_ids = input_ids.to(device)
+    if engine is not None:
+        try:
+            with torch.inference_mode():
+                return generate_stateful(
+                    engine, tokenizer, input_ids,
+                    max_new_tokens=max_new_tokens, on_token=on_token,
+                )
+        except Exception:
+            # Native MIMO and context caches may already have been mutated
+            # before the failure. Never reuse a partially advanced state.
+            engine.reset()
+            raise
     generated: list[int] = []
     finish_reason = "length"
     diagnostics = os.getenv("IQ_DIAGNOSTICS", "0") == "1"
@@ -220,7 +286,7 @@ def generate(
     return (tokenizer.decode(generated, skip_special_tokens=True), finish_reason, prompt_tokens, len(generated))
 
 
-def create_handler(tokenizer, model):
+def create_handler(tokenizer, model, *, engine=None):
     class Handler(BaseHTTPRequestHandler):
         def respond(self, status: int, payload: dict) -> None:
             data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -299,18 +365,31 @@ def create_handler(tokenizer, model):
                                           + "\n\n").encode("utf-8"))
                         self.wfile.flush()
                     send_chunk({"role": "assistant", "content": ""})
-                    _, reason, _, _ = generate(
-                        tokenizer, model, messages, tokens, prompt_format,
-                        on_token=lambda part: send_chunk({"content": part}),
-                    )
+                    if engine is not None:
+                        _, reason, _, _ = generate(
+                            tokenizer, model, messages, tokens, prompt_format,
+                            on_token=lambda part: send_chunk({"content": part}),
+                            engine=engine,
+                        )
+                    else:
+                        _, reason, _, _ = generate(
+                            tokenizer, model, messages, tokens, prompt_format,
+                            on_token=lambda part: send_chunk({"content": part}),
+                        )
                     send_chunk({}, reason)
                     self.wfile.write(b"data: [DONE]\n\n")
                     self.wfile.flush()
                     self.close_connection = True
                     return
-                response, finish_reason, prompt_tokens, completion_tokens = generate(
-                    tokenizer, model, messages, tokens, prompt_format
-                )
+                if engine is not None:
+                    response, finish_reason, prompt_tokens, completion_tokens = generate(
+                        tokenizer, model, messages, tokens, prompt_format,
+                        engine=engine,
+                    )
+                else:
+                    response, finish_reason, prompt_tokens, completion_tokens = generate(
+                        tokenizer, model, messages, tokens, prompt_format,
+                    )
             except (ValueError, KeyError, TypeError) as exc:
                 if locals().get("started_stream", False):
                     traceback.print_exc(file=sys.stderr)

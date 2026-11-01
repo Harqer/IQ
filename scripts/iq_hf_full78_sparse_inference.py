@@ -267,9 +267,24 @@ def hydrate_expert(shard: Path, *, prefix: str, hidden: int,
             raise RuntimeError(f"Selected expert geometry mismatch {full_key}")
         if not src.dtype.is_floating_point:
             raise RuntimeError(f"Nonfloating selected expert weight {full_key}")
-        # Validate once on the destination, avoiding repeated CPU-side
-        # BF16 scans that previously serialized every expert hydrate.
-        copied = src.to(device=device, dtype=dtype)
+        # Stage the one selected tensor in pinned host memory where CUDA
+        # permits; non-blocking H2D copies then overlap host staging. The
+        # destination finite check below synchronizes the actual transfer.
+        # This is a transfer optimization, not a weight/model fallback.
+        pinned = (
+            device.type == "cuda"
+            and os.getenv("IQ_EXPERT_PINNED_CPU", "1") == "1"
+        )
+        if pinned:
+            try:
+                src = src.pin_memory()
+            except RuntimeError as exc:
+                print(
+                    f"{REPORT_PREFIX}_PINNED_HOST_UNAVAILABLE="
+                    f"{type(exc).__name__}: {exc}", flush=True,
+                )
+                pinned = False
+        copied = src.to(device=device, dtype=dtype, non_blocking=pinned)
         target.weight = nn.Parameter(copied, requires_grad=False)
         validated.append((full_key, copied))
     if not bool(torch.stack([torch.isfinite(t).all() for _, t in validated]).all().item()):
