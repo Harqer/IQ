@@ -151,6 +151,26 @@ def run_conversation(tokenizer: Any, model: Any, turns: list[str], *,
     return results
 
 
+def load_runtime(checkpoint: Path, tokenizer_root: Path,
+                 *, device: torch.device) -> tuple[Any, IQHybridForCausalLM, ExpertStreamer]:
+    """Construct full78 once; return a live sparse-expert model and streamer."""
+    if not torch.cuda.is_available() or device.type != "cuda":
+        raise RuntimeError("full78 dialogue requires real CUDA")
+    if torch.cuda.get_device_properties(device).total_memory < REQUIRED_DEVICE_MEMORY_GIB * 1024**3:
+        raise RuntimeError("full78 dialogue requires >=120 GiB H200-class GPU")
+    _, config, weight_map = read_checkpoint(checkpoint)
+    base, experts = partition_weight_map(weight_map)
+    tokenizer = validate_tokenizer(tokenizer_root)
+    model = IQHybridForCausalLM(
+        config, device=device, dtype=torch.bfloat16, sparse_routed_moe=True,
+    ).eval()
+    load_base_weights(model, checkpoint, base)
+    streamer = ExpertStreamer(
+        checkpoint, model, experts, max_active=MAX_ACTIVE_EXPERTS,
+    )
+    return tokenizer, model, streamer
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--checkpoint", type=Path,
@@ -169,20 +189,9 @@ def main() -> None:
     if not 1 <= args.max_new_tokens <= MAX_NEW_TOKENS:
         p.error("max-new-tokens must be 1..16")
     turns = load_turns(args.conversation)
-    if not torch.cuda.is_available():
-        p.error("H200 CUDA required; this is not simulated inference")
     device = torch.device("cuda:0")
-    if torch.cuda.get_device_properties(device).total_memory < REQUIRED_DEVICE_MEMORY_GIB * 1024**3:
-        p.error("Requires an H200-class GPU with at least 120 GiB VRAM")
-    _, config, weight_map = read_checkpoint(args.checkpoint)
-    base, experts = partition_weight_map(weight_map)
-    tokenizer = validate_tokenizer(args.tokenizer)
-    model = IQHybridForCausalLM(
-        config, device=device, dtype=torch.bfloat16, sparse_routed_moe=True,
-    ).eval()
-    load_base_weights(model, args.checkpoint, base)
-    streamer = ExpertStreamer(
-        args.checkpoint, model, experts, max_active=MAX_ACTIVE_EXPERTS,
+    tokenizer, model, streamer = load_runtime(
+        args.checkpoint, args.tokenizer, device=device,
     )
     print("IQ_FULL78_DIALOGUE_READY=" + json.dumps({
         "physical_layers": 235, "test_turns": len(turns),
