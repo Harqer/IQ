@@ -258,17 +258,26 @@ def hydrate_expert(shard: Path, *, prefix: str, hidden: int,
     expected = {prefix + kind + "_proj.weight" for kind in ("gate", "up", "down")}
     if set(saved) != expected:
         raise RuntimeError(f"Selected expert shard index mismatch {shard.name}")
+    validated: list[tuple[str, torch.Tensor]] = []
     for full_key, src in saved.items():
         name = full_key[len(prefix):]
         which, _, param_name = name.partition(".")
         target = getattr(expert, which)
         if param_name != "weight" or tuple(target.weight.shape) != tuple(src.shape):
             raise RuntimeError(f"Selected expert geometry mismatch {full_key}")
-        if not bool(torch.isfinite(src).all()):
-            raise RuntimeError(f"Nonfinite selected expert weight {full_key}")
-        target.weight = nn.Parameter(
-            src.to(device=device, dtype=dtype), requires_grad=False,
-        )
+        if not src.dtype.is_floating_point:
+            raise RuntimeError(f"Nonfloating selected expert weight {full_key}")
+        # Validate once on the destination, avoiding repeated CPU-side
+        # BF16 scans that previously serialized every expert hydrate.
+        copied = src.to(device=device, dtype=dtype)
+        target.weight = nn.Parameter(copied, requires_grad=False)
+        validated.append((full_key, copied))
+    if not bool(torch.stack([torch.isfinite(t).all() for _, t in validated]).all().item()):
+        corrupt = [
+            key for key, value in validated
+            if not bool(torch.isfinite(value).all().item())
+        ]
+        raise RuntimeError(f"Nonfinite selected expert weight(s): {corrupt[:3]}")
     return expert.eval()
 
 
