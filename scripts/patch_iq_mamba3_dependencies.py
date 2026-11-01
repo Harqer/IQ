@@ -23,14 +23,14 @@ TARGETS = ("pyproject.toml", "setup.py")
 KERNEL_RELATIVE_PATH = "mamba_ssm/ops/tilelang/mamba3/mamba3_mimo_fwd.py"
 KERNEL_PATCH = "mimo-fwd-valid-length-guard-v1"
 UPSTREAM_V_READ = (
-    "                for cs, p in T.Parallel(chunk_size, P):\\n"
+    "                for cs, p in T.Parallel(chunk_size, P):\n"
     "                    v_shared[cs, p] = V[i_b, chunk_start+cs, i_h, p]"
 )
 SAFE_V_READ = (
-    "                for cs, p in T.Parallel(chunk_size, P):\\n"
-    "                    if chunk_start + cs < S:\\n"
-    "                        v_shared[cs, p] = V[i_b, chunk_start+cs, i_h, p]\\n"
-    "                    else:\\n"
+    "                for cs, p in T.Parallel(chunk_size, P):\n"
+    "                    if chunk_start + cs < S:\n"
+    "                        v_shared[cs, p] = V[i_b, chunk_start+cs, i_h, p]\n"
+    "                    else:\n"
     "                        v_shared[cs, p] = 0.0"
 )
 
