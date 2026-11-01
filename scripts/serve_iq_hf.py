@@ -228,7 +228,7 @@ def create_handler(tokenizer, model):
                     messages = [{"role": "user", "content": data.get("prompt", "")}]
                 if (
                     not isinstance(messages, list)
-                    or not 1 <= len(messages) <= 24
+                    or not 1 <= len(messages) <= 64
                     or any(
                         not isinstance(message, dict)
                         or message.get("role") not in ("system", "user", "assistant")
@@ -237,8 +237,9 @@ def create_handler(tokenizer, model):
                         for message in messages
                     )
                 ):
-                    raise ValueError("invalid messages: expected 1..24 chat messages")
+                    raise ValueError("invalid messages: expected 1..64 chat messages")
                 compatible = self.path != "/chat"
+                started_stream = False
                 streaming = data.get("stream", False)
                 if type(streaming) is not bool:
                     raise ValueError("stream must be a boolean")
@@ -258,6 +259,7 @@ def create_handler(tokenizer, model):
                     self.send_header("Cache-Control", "no-cache")
                     self.send_header("Connection", "close")
                     self.end_headers()
+                    started_stream = True
                     def send_chunk(delta: dict, finish=None):
                         payload = {
                             "id": "chatcmpl-iq",
@@ -286,13 +288,15 @@ def create_handler(tokenizer, model):
                     tokenizer, model, messages, tokens, prompt_format
                 )
             except (ValueError, KeyError, TypeError) as exc:
-                self.respond(400, {"error": str(exc)})
+                if locals().get("started_stream", False):
+                    traceback.print_exc(file=sys.stderr)
+                    self.close_connection = True
+                else:
+                    self.respond(400, {"error": str(exc)})
                 return
             except Exception:  # noqa: BLE001 - HTTP inference boundary
                 traceback.print_exc(file=sys.stderr)
-                if getattr(self, "_headers_buffer", None) is not None and self.wfile.closed:
-                    return
-                if "streaming" in locals() and streaming:
+                if locals().get("started_stream", False):
                     # Headers may already be sent. Never send a fake successful
                     # completion or attempt an invalid second HTTP response.
                     self.close_connection = True
