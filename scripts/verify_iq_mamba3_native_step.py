@@ -100,7 +100,7 @@ def verify_full78_mimo_geometry(device: torch.device, config) -> dict[str, objec
     # the real production-width GPU input/output path and recurrent states.
     max_abs = 0.0
     try:
-        for length in (13, 16, 17, 33):
+        for length in (13, 16, 17, 18, 33):
             source = torch.randn(
                 (1, length, config.d_model),
                 device=device, dtype=torch.bfloat16,
@@ -123,6 +123,29 @@ def verify_full78_mimo_geometry(device: torch.device, config) -> dict[str, objec
             )
             if second_prefix.shape != first[:, :-1].shape:
                 raise RuntimeError("Full78 geometry prefill changed width")
+            if length in (13, 18, 33):
+                aligned_state = SimpleNamespace(
+                    seqlen_offset=0, key_value_memory_dict={},
+                )
+                aligned_output = native_mimo_aligned_prefill(
+                    current, first, aligned_state,
+                    chunk_size=config.chunk_size,
+                )
+                torch.cuda.synchronize(device)
+                native_reference = current(first)
+                torch.cuda.synchronize(device)
+                torch.testing.assert_close(
+                    aligned_output.float(), native_reference.float(),
+                    atol=0.05, rtol=0.05,
+                )
+                recurrent_states = aligned_state.key_value_memory_dict.get(1)
+                if recurrent_states is None or len(recurrent_states) != 4:
+                    raise RuntimeError("Aligned native MIMO prefill cache is incomplete")
+                print(
+                    f"IQ_NATIVE_FULL78_ALIGNED_PREFILL_PASS=tokens={length} "
+                    f"native_steps={length % config.chunk_size}",
+                    flush=True,
+                )
             error = float((step.float() - full.float()).abs().max())
             max_abs = max(max_abs, error)
             print(
@@ -132,7 +155,7 @@ def verify_full78_mimo_geometry(device: torch.device, config) -> dict[str, objec
     finally:
         del previous, current
         torch.cuda.empty_cache()
-    return {"width": config.d_model, "checked_lengths": [13, 16, 17, 33],
+    return {"width": config.d_model, "checked_lengths": [13, 16, 17, 18, 33],
             "max_absolute_error": max_abs}
 
 
