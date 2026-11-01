@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from hashlib import sha256
@@ -1021,6 +1022,16 @@ class IQHybridForCausalLM(nn.Module):
         x = self.embed_tokens(input_ids)
         moe_outputs: list[MoEOutput | StableLatentMoEOutput] = []
         attnres_state = self.attnres.init_state(x) if self.attnres is not None else None
+        # First full78 prefill boundary tracing localizes asynchronous CUDA
+        # illegal-address errors. All layers use their original kernels;
+        # synchronizing changes execution ordering, never tensor math.
+        # Turn off only after production kernels are proven on H200.
+        prefill_guard = (
+            mamba_inference_params is not None
+            and x.device.type == "cuda"
+            and getattr(mamba_inference_params, "seqlen_offset", 0) == 0
+            and os.getenv("IQ_FULL78_SYNC_PREFILL", "1") == "1"
+        )
         for layer_index, (layer_type, layer) in enumerate(
             zip(
                 self.config.schedule.layers,
@@ -1028,6 +1039,20 @@ class IQHybridForCausalLM(nn.Module):
                 strict=True,
             )
         ):
+            if prefill_guard:
+                try:
+                    torch.cuda.synchronize(x.device)
+                except RuntimeError as exc:
+                    raise HybridModelError(
+                        f"CUDA error before physical layer {layer_index} "
+                        f"({layer_type.value}); previous layer or AttnRes "
+                        "operation launched the failing kernel"
+                    ) from exc
+                print(
+                    f"IQ_CUDA_PREFILL_LAYER_START=physical={layer_index} "
+                    f"type={layer_type.value} tokens={input_ids.shape[1]}",
+                    flush=True,
+                )
             layer_input = (
                 self.attnres.read(attnres_state)
                 if self.attnres is not None and attnres_state is not None
@@ -1060,6 +1085,19 @@ class IQHybridForCausalLM(nn.Module):
                     f"unsupported runtime layer type: {layer_type.value}"
                 )
 
+            if prefill_guard:
+                try:
+                    torch.cuda.synchronize(x.device)
+                except RuntimeError as exc:
+                    raise HybridModelError(
+                        f"CUDA kernel failed during physical layer {layer_index} "
+                        f"({layer_type.value}); inspect this layer's native "
+                        "kernel and incoming tensor geometry"
+                    ) from exc
+                print(
+                    f"IQ_CUDA_PREFILL_LAYER_KERNEL_PASS=physical={layer_index} "
+                    f"type={layer_type.value}", flush=True,
+                )
             if self.multimodal is not None:
                 layer_output, visual_memory = self.multimodal.fuse(
                     layer_index,
@@ -1077,6 +1115,14 @@ class IQHybridForCausalLM(nn.Module):
                 x = layer_output
             else:
                 x = layer_output
+            if prefill_guard:
+                try:
+                    torch.cuda.synchronize(x.device)
+                except RuntimeError as exc:
+                    raise HybridModelError(
+                        f"CUDA error updating AttnRes at physical layer "
+                        f"{layer_index} ({layer_type.value})"
+                    ) from exc
 
         if self.attnres is not None:
             assert attnres_state is not None
