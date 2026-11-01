@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import io
+import stat
 from pathlib import Path
 import tempfile
 import unittest
@@ -36,6 +37,48 @@ class CLITests(unittest.TestCase):
         with patch.object(cli, "run_job", old_api):
             with self.assertRaisesRegex(RuntimeError, "incompatible"):
                 cli.validate_jobs_api(options)
+
+    def test_hf_job_log_stream_is_supported_before_billing(self):
+        cli.validate_logs_api()
+        def incompatible(*, job_id):
+            return iter(())
+        with patch.object(cli, "fetch_job_logs", incompatible):
+            with self.assertRaisesRegex(RuntimeError, "fetch_job_logs"):
+                cli.validate_logs_api()
+
+    def test_remote_job_log_stream_prints_and_saves_every_line(self):
+        with tempfile.TemporaryDirectory() as temp:
+            job_id = "b" * 24
+            path = Path(temp) / "job.log"
+            failure = []
+            with patch.object(cli, "fetch_job_logs", return_value=iter([
+                "IQ_HF_FULL78_BASE_SHARD_STAGED=1/315\n",
+                "IQ_HF_FULL78_BASE_SHARD_LOADED=1/315\n",
+            ])) as fetch:
+                with patch("builtins.print"):
+                    cli.follow_job_logs(job_id, path, failure)
+            fetch.assert_called_once_with(
+                job_id=job_id, namespace=cli.EXPECTED_ACCOUNT,
+                follow=True, tail=100,
+            )
+            self.assertEqual(failure, [])
+            self.assertEqual(path.read_text().splitlines(), [
+                "IQ_HF_FULL78_BASE_SHARD_STAGED=1/315",
+                "IQ_HF_FULL78_BASE_SHARD_LOADED=1/315",
+            ])
+            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+
+    def test_remote_log_failure_reports_error_and_readiness_fails_closed(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "job.log"
+            failures = []
+            with patch.object(cli, "fetch_job_logs",
+                              side_effect=RuntimeError("remote logs unavailable")):
+                with patch("builtins.print"):
+                    cli.follow_job_logs("b" * 24, path, failures)
+            self.assertTrue(failures)
+            with self.assertRaisesRegex(RuntimeError, "log stream failed"):
+                cli.wait_for_server("b" * 24, "token", 1, failures)
 
     def test_credential_must_match_checkpoint_owner(self):
         with patch.object(cli, "get_token", return_value="secret"):
