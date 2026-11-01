@@ -326,7 +326,7 @@ class ExpertStreamer:
         )
         self.stage_workers = (
             stage_workers if stage_workers is not None
-            else int(os.getenv("IQ_EXPERT_STAGE_WORKERS", "8"))
+            else int(os.getenv("IQ_EXPERT_STAGE_WORKERS", "4"))
         )
         if self.gpu_budget_bytes <= 0 or self.disk_budget_bytes <= 0:
             raise ValueError("Expert cache budgets must be positive")
