@@ -44,6 +44,10 @@ def load_turns(path: Path) -> list[str]:
 def tokenize_conversation(tokenizer: Any, messages: list[dict[str, str]],
                           *, prompt_format: str, max_context_tokens: int) -> list[int]:
     """No silent truncation; raw completion is an explicit separate baseline."""
+    if prompt_format == "auto":
+        prompt_format = (
+            "chat" if getattr(tokenizer, "chat_template", None) else "transcript"
+        )
     if prompt_format == "chat":
         if not callable(getattr(tokenizer, "apply_chat_template", None)):
             raise ValueError("Tokenizer has no chat template; use --prompt-format transcript")
@@ -66,7 +70,7 @@ def tokenize_conversation(tokenizer: Any, messages: list[dict[str, str]],
         ) + "\nAssistant:"
         encoded = tokenizer.encode(text, add_special_tokens=True)
     else:
-        raise ValueError("prompt_format must be chat or transcript")
+        raise ValueError("prompt_format must be auto, chat or transcript")
     if (not isinstance(encoded, list) or
         not all(type(x) is int and 0 <= x < len(tokenizer) for x in encoded) or
         not 1 <= len(encoded) <= max_context_tokens):
@@ -178,8 +182,8 @@ def main() -> None:
     p.add_argument("--tokenizer", type=Path, default=Path("/tokenizer"))
     p.add_argument("--conversation", type=Path,
                    default=Path("scripts/iq_full78_sample_conversation.json"))
-    p.add_argument("--prompt-format", choices=("chat", "transcript"),
-                   default="chat")
+    p.add_argument("--prompt-format", choices=("auto", "chat", "transcript"),
+                   default="auto")
     p.add_argument("--max-new-tokens", type=int, default=8)
     p.add_argument("--max-context-tokens", type=int, default=96)
     p.add_argument("--output", type=Path)
@@ -193,15 +197,17 @@ def main() -> None:
     tokenizer, model, streamer = load_runtime(
         args.checkpoint, args.tokenizer, device=device,
     )
+    selected_format = ("chat" if getattr(tokenizer, "chat_template", None)
+                       else "transcript") if args.prompt_format == "auto" else args.prompt_format
     print("IQ_FULL78_DIALOGUE_READY=" + json.dumps({
         "physical_layers": 235, "test_turns": len(turns),
         "max_new_tokens_per_turn": args.max_new_tokens,
         "max_context_tokens": args.max_context_tokens,
-        "mode": args.prompt_format, "device": str(device),
+        "mode": selected_format, "device": str(device),
     }), flush=True)
     try:
         results = run_conversation(
-            tokenizer, model, turns, prompt_format=args.prompt_format,
+            tokenizer, model, turns, prompt_format=selected_format,
             max_context_tokens=args.max_context_tokens,
             max_new_tokens=args.max_new_tokens, device=device,
         )
