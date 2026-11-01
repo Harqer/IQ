@@ -5,11 +5,15 @@ import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import torch
 from safetensors.torch import save_file
 
-from scripts.diagnose_glm53_first_shard import find_first_base_shard, read_shard
+from scripts.diagnose_glm53_first_shard import (
+    find_first_base_shard, read_shard, read_first_remote_bucket_shard,
+)
 
 
 class FirstShardTests(unittest.TestCase):
@@ -34,6 +38,58 @@ class FirstShardTests(unittest.TestCase):
             report = read_shard(root)
             self.assertEqual(report["tensor_count"], 1)
             self.assertGreater(report["bytes"], 0)
+
+    def test_remote_bucket_reads_only_index_and_one_bounded_shard(self):
+        with TemporaryDirectory() as temp:
+            source = Path(temp) / "source.safetensors"
+            save_file({"layers.0.norm.weight": torch.ones(3)}, str(source))
+            copied = []
+
+            def download(bucket_id, *, files):
+                self.assertEqual(bucket_id, "kofecheckmate/iq-glm53-all256")
+                self.assertEqual(len(files), 1)
+                remote, local = files[0]
+                copied.append(remote)
+                target = Path(local)
+                if remote.endswith("model.safetensors.index.json"):
+                    target.write_text(json.dumps({
+                        "weight_map": {
+                            "layers.0.norm.weight": "model-context-000.safetensors",
+                        }
+                    }))
+                else:
+                    self.assertTrue(remote.endswith("model-context-000.safetensors"))
+                    target.write_bytes(source.read_bytes())
+
+            with patch("huggingface_hub.get_token", return_value="test-token"):
+                with patch("huggingface_hub.download_bucket_files", side_effect=download):
+                    with patch("huggingface_hub.get_bucket_file_metadata",
+                               return_value=SimpleNamespace(size=source.stat().st_size)):
+                        result = read_first_remote_bucket_shard(
+                            "kofecheckmate/iq-glm53-all256"
+                        )
+            self.assertEqual(len(copied), 2)
+            self.assertEqual(result["tensor_count"], 1)
+            self.assertIs(result["gpu_allocated"], False)
+
+    def test_remote_bucket_size_cap_blocks_download(self):
+        with TemporaryDirectory() as temp:
+            def download(_bucket_id, *, files):
+                remote, local = files[0]
+                if remote.endswith(".json"):
+                    Path(local).write_text(json.dumps({
+                        "weight_map": {"x.weight": "model-context-000.safetensors"}
+                    }))
+                else:
+                    self.fail("Oversized shard should never download")
+            with patch("huggingface_hub.get_token", return_value="test-token"):
+                with patch("huggingface_hub.download_bucket_files", side_effect=download):
+                    with patch("huggingface_hub.get_bucket_file_metadata",
+                               return_value=SimpleNamespace(size=513*1024**2)):
+                        with self.assertRaisesRegex(ValueError, "512 MiB"):
+                            read_first_remote_bucket_shard(
+                                "kofecheckmate/iq-glm53-all256"
+                            )
 
     def test_nonfinite_tensor_rejected(self):
         with TemporaryDirectory() as td:
