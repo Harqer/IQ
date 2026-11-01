@@ -51,11 +51,11 @@ class ProductionGeometryTests(unittest.TestCase):
         def make_cpu_random(shape, **kwargs):
             kwargs["device"] = "cpu"
             return original_randn(shape, **kwargs)
-        with patch.dict(sys.modules, {"mamba_ssm": SimpleNamespace(Mamba3=FakeMamba)}), \\
+        with patch.dict(sys.modules, {"mamba_ssm": SimpleNamespace(Mamba3=FakeMamba)}), \
              patch("scripts.verify_iq_mamba3_native_step.torch.cuda.is_available",
-                   return_value=True), \\
-             patch("scripts.verify_iq_mamba3_native_step.torch.cuda.synchronize"), \\
-             patch("scripts.verify_iq_mamba3_native_step.torch.cuda.empty_cache"), \\
+                   return_value=True), \
+             patch("scripts.verify_iq_mamba3_native_step.torch.cuda.synchronize"), \
+             patch("scripts.verify_iq_mamba3_native_step.torch.cuda.empty_cache"), \
              patch("scripts.verify_iq_mamba3_native_step.torch.randn",
                    side_effect=make_cpu_random):
             report = verify_full78_mimo_geometry(torch.device("cuda:0"), config)
@@ -72,7 +72,7 @@ class ProductionGeometryTests(unittest.TestCase):
             rope_fraction=0.5, outproj_norm=False,
             mimo_rank=1, chunk_size=16, num_layers=79,
         )
-        with patch.dict(sys.modules, {"mamba_ssm": SimpleNamespace(Mamba3=FakeMamba)}), \\
+        with patch.dict(sys.modules, {"mamba_ssm": SimpleNamespace(Mamba3=FakeMamba)}), \
              patch("scripts.verify_iq_mamba3_native_step.torch.cuda.is_available",
                    return_value=True):
             with self.assertRaisesRegex(ValueError, "Expected full78 native width"):
