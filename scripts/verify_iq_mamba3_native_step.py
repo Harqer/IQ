@@ -10,6 +10,8 @@ from types import SimpleNamespace
 
 import torch
 
+from iq_model.state.mamba3 import native_mimo_aligned_prefill
+
 
 @torch.inference_mode()
 def verify_native_mimo_step(device: torch.device) -> dict[str, float]:
