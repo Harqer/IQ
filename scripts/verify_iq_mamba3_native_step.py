@@ -52,5 +52,85 @@ def verify_native_mimo_step(device: torch.device) -> dict[str, float]:
     return result
 
 
+@torch.inference_mode()
+def verify_full78_mimo_geometry(device: torch.device, config) -> dict[str, object]:
+    """Fail closed on IQ's *actual* MIMO width/heads and multi-layer prefill.
+
+    Original smoke probes use d_model=256; IQ full78 uses d_model=4096.
+    This checks the exact checkpoint geometry at two independent native MIMO
+    layers, including real fused return-state prefill, tail chunks and CuTe
+    decoding. It runs before the 36-GiB base checkpoint is loaded.
+    """
+    if device.type != "cuda" or not torch.cuda.is_available():
+        raise RuntimeError("Full78 geometry requires real CUDA")
+    from mamba_ssm import Mamba3
+
+    options = dict(
+        d_model=config.d_model,
+        d_state=config.d_state,
+        expand=config.expand,
+        headdim=config.headdim,
+        rope_fraction=config.rope_fraction,
+        is_outproj_norm=config.outproj_norm,
+        is_mimo=True,
+        mimo_rank=config.mimo_rank,
+        chunk_size=config.chunk_size,
+        n_layer=config.num_layers,
+        dtype=torch.bfloat16,
+        device=device,
+    )
+    if config.d_model <= 256 or config.mimo_rank != 4:
+        raise ValueError("Expected full78 native width >256 and MIMO rank 4")
+    if config.d_model * config.expand % config.headdim != 0:
+        raise ValueError("MIMO head geometry is inconsistent")
+    print(
+        "IQ_NATIVE_FULL78_GEOMETRY_START="
+        f"width={config.d_model} state={config.d_state} "
+        f"heads={int(config.d_model*config.expand/config.headdim)} "
+        f"headdim={config.headdim} rank={config.mimo_rank} "
+        f"chunk={config.chunk_size}", flush=True,
+    )
+    previous = Mamba3(**options, layer_idx=0).eval()
+    current = Mamba3(**options, layer_idx=1).eval()
+    # Two sizes cover an incomplete final chunk and a chunk boundary. The
+    # second layer receives outputs from a preceding, equally wide mixer.
+    max_abs = 0.0
+    try:
+        for length in (17, 33):
+            source = torch.randn(
+                (1, length, config.d_model),
+                device=device, dtype=torch.bfloat16,
+            ) * 0.01
+            first = previous(source)
+            torch.cuda.synchronize(device)
+            print(f"IQ_NATIVE_FULL78_FIRST_LAYER_PASS=tokens={length}", flush=True)
+            state = SimpleNamespace(seqlen_offset=0, key_value_memory_dict={})
+            second_prefix = current(first[:, :-1], inference_params=state)
+            torch.cuda.synchronize(device)
+            values = state.key_value_memory_dict.get(1)
+            if values is None or len(values) != 4:
+                raise RuntimeError("Full78 MIMO geometry state missing")
+            step, *_ = current.step(first[:, -1], *values)
+            torch.cuda.synchronize(device)
+            full = current(first)[:, -1]
+            torch.cuda.synchronize(device)
+            torch.testing.assert_close(
+                step.float(), full.float(), atol=0.05, rtol=0.05,
+            )
+            if second_prefix.shape != first[:, :-1].shape:
+                raise RuntimeError("Full78 geometry prefill changed width")
+            error = float((step.float() - full.float()).abs().max())
+            max_abs = max(max_abs, error)
+            print(
+                f"IQ_NATIVE_FULL78_GEOMETRY_PASS=tokens={length} "
+                f"max_abs={error:.6f}", flush=True,
+            )
+    finally:
+        del previous, current
+        torch.cuda.empty_cache()
+    return {"width": config.d_model, "checked_lengths": [17, 33],
+            "max_absolute_error": max_abs}
+
+
 if __name__ == "__main__":
     verify_native_mimo_step(torch.device("cuda:0"))
