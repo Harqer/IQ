@@ -240,6 +240,40 @@ def cancel_and_verify(job_id: str) -> bool:
     return False
 
 
+def job_options(commit: str) -> dict:
+    """Construct the HF Job request without invoking the paid API.
+
+    No attempts= argument: supported SDKs default to one attempt, and
+    currently installed versions may reject the newer optional parameter.
+    """
+    return {
+        "image": IMAGE,
+        "command": command_for(commit),
+        "flavor": "h200",
+        "timeout": "30m",
+        "namespace": EXPECTED_ACCOUNT,
+        "volumes": [
+            Volume(type="bucket", source=CHECKPOINT,
+                   mount_path="/checkpoints", read_only=True),
+            Volume(type="model", source=TOKENIZER,
+                   mount_path="/tokenizer", read_only=True),
+        ],
+        "expose": [PORT],
+    }
+
+
+def validate_jobs_api(options: dict) -> None:
+    """Check all submission kwargs against the installed HF SDK before billing."""
+    try:
+        inspect.signature(run_job).bind(**options)
+    except (ValueError, TypeError) as exc:
+        raise RuntimeError(
+            "Installed huggingface_hub Jobs API is incompatible with the "
+            f"requested H200 job parameters: {exc}. "
+            "Upgrade huggingface_hub before submitting a paid job."
+        ) from exc
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run-h200", action="store_true",
@@ -254,10 +288,10 @@ def main() -> int:
         parser.error("max-tokens must be 1..16")
     if not 1 <= args.ready_timeout <= 1400 or args.request_timeout < 1:
         parser.error("Invalid readiness/request timeout")
-    if "expose" not in inspect.signature(run_job).parameters:
-        parser.error("Upgrade huggingface_hub: python -m pip install -U huggingface_hub")
     commit = checked_commit()
     token = validate_auth()
+    options = job_options(commit)
+    validate_jobs_api(options)
     print(f"IQ full78 CLI preflight OK, commit={commit}", flush=True)
     if not args.run_h200:
         print(
@@ -268,17 +302,7 @@ def main() -> int:
         return 0
     job_id: str | None = None
     try:
-        job = run_job(
-            image=IMAGE, command=command_for(commit), flavor="h200",
-            timeout="30m", attempts=1, namespace=EXPECTED_ACCOUNT,
-            volumes=[
-                Volume(type="bucket", source=CHECKPOINT,
-                       mount_path="/checkpoints", read_only=True),
-                Volume(type="model", source=TOKENIZER,
-                       mount_path="/tokenizer", read_only=True),
-            ],
-            expose=[PORT],
-        )
+        job = run_job(**options)
         job_id = str(job.id)
         print(
             f"HF_JOB_ID={job_id}\n"
