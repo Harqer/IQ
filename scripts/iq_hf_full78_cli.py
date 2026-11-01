@@ -13,6 +13,7 @@ NOT proof of coherent language or knowledge transfer.
 """
 from __future__ import annotations
 
+from datetime import datetime
 import argparse
 import inspect
 import json
@@ -53,8 +54,83 @@ def normalized_stage(raw: object) -> str:
 
 
 MAX_TOKENS = 256
+HF_JOB_LIMIT_SECONDS = 1800
+HF_JOB_RESERVE_SECONDS = 90
 MAX_HISTORY_MESSAGES = 64
 DEFAULT_LOG_DIR = Path.home() / "iq-h200-logs"
+
+
+def job_deadline_epoch(job: object) -> float:
+    """HF timeout is measured from job creation, including installation."""
+    created = getattr(job, "created_at", None)
+    if isinstance(created, datetime):
+        if created.tzinfo is None:
+            raise RuntimeError("HF Job creation time is missing its timezone")
+        return created.timestamp() + HF_JOB_LIMIT_SECONDS
+    if isinstance(created, str):
+        parsed = datetime.fromisoformat(created.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            raise RuntimeError("HF Job creation time is missing its timezone")
+        return parsed.timestamp() + HF_JOB_LIMIT_SECONDS
+    raise RuntimeError("HF Job creation timestamp is unavailable; refusing unbounded session")
+
+
+def remaining_seconds(deadline_epoch: float) -> int:
+    return max(0, int(deadline_epoch - time.time()))
+
+
+def report_deadline(deadline_epoch: float) -> None:
+    remaining = remaining_seconds(deadline_epoch)
+    print(
+        f"IQ_H200_TIME_REMAINING_SECONDS={remaining} "
+        f"minutes={remaining // 60} seconds={remaining % 60}",
+        flush=True,
+    )
+
+
+def show_deadline_until_stopped(deadline_epoch: float, stop: threading.Event) -> None:
+    # Runs even while input() waits for a question; no silent billed idle time.
+    report_deadline(deadline_epoch)
+    while not stop.wait(60):
+        report_deadline(deadline_epoch)
+        if remaining_seconds(deadline_epoch) <= HF_JOB_RESERVE_SECONDS:
+            print("IQ_H200_DEADLINE_WARNING=Job close to expiry; requests are disabled", flush=True)
+            return
+
+
+def check_request_budget(deadline_epoch: float, configured_timeout: int) -> int:
+    remaining = remaining_seconds(deadline_epoch)
+    budget = remaining - HF_JOB_RESERVE_SECONDS
+    if budget < 1:
+        raise TimeoutError(
+            f"H200 job expires too soon for new inference: {remaining}s remaining; "
+            "the next request would risk endpoint termination. Start a fresh job."
+        )
+    return min(configured_timeout, budget)
+
+
+def classify_request_error(job_id: str, deadline_epoch: float, error: Exception) -> RuntimeError:
+    remaining = remaining_seconds(deadline_epoch)
+    try:
+        stage = normalized_stage(
+            inspect_job(job_id=job_id, namespace=EXPECTED_ACCOUNT).status.stage
+        )
+    except Exception as status_error:
+        stage = f"UNKNOWN ({type(status_error).__name__})"
+    if remaining <= HF_JOB_RESERVE_SECONDS:
+        category = "JOB_DEADLINE_EXPIRED_OR_IMMINENT"
+    elif stage == "ERROR":
+        category = "REMOTE_JOB_FAILED"
+    elif stage in TERMINAL:
+        category = f"REMOTE_JOB_STOPPED_{stage}"
+    elif stage == "RUNNING":
+        category = "ENDPOINT_OR_PROXY_ERROR_WHILE_RUNNING"
+    else:
+        category = f"REMOTE_JOB_STAGE_{stage}"
+    return RuntimeError(
+        f"IQ_H200_REQUEST_FAILURE={category} stage={stage} "
+        f"remaining_seconds={remaining} error={type(error).__name__}: {error}"
+    )
 
 
 def git(*arguments: str) -> str:
@@ -248,6 +324,8 @@ def reply(client: InferenceClient, history: list[dict[str, str]], max_tokens: in
 
 
 def chat_loop(base: str, token: str, *, max_tokens: int, timeout: int,
+              job_id: str, deadline_epoch: float,
+              smoke_prompt: str | None = None,
               transcript: Path | None = None) -> None:
     client = InferenceClient(base_url=base, token=token, timeout=timeout)
     history: list[dict[str, str]] = []
@@ -257,9 +335,19 @@ def chat_loop(base: str, token: str, *, max_tokens: int, timeout: int,
         flush=True,
     )
     try:
+        # Automatically exercise the remote endpoint as soon as it is healthy.
+        # This avoids idling until the 30-minute job expires.
+        pending_smoke = smoke_prompt
         while True:
-            try:
-                message = input("You: ").strip()
+            if pending_smoke is not None:
+                message = pending_smoke
+                pending_smoke = None
+                print(f"You [automatic smoke]: {message}", flush=True)
+            else:
+                try:
+                    message = input("You: ").strip()
+                except EOFError:
+                    break
             except EOFError:
                 break
             if not message:
@@ -277,7 +365,13 @@ def chat_loop(base: str, token: str, *, max_tokens: int, timeout: int,
                 print("Conversation history limit reached. Type /clear to start over.", flush=True)
                 continue
             proposal = history + [{"role": "user", "content": message}]
-            answer = reply(client, proposal, max_tokens)
+            report_deadline(deadline_epoch)
+            try:
+                client.timeout = check_request_budget(deadline_epoch, timeout)
+                answer = reply(client, proposal, max_tokens)
+            except Exception as error:
+                raise classify_request_error(job_id, deadline_epoch, error) from error
+            report_deadline(deadline_epoch)
             # Keep only successful exchanges; never silently drop prior turns.
             history = proposal + [{"role": "assistant", "content": answer}]
     finally:
@@ -370,6 +464,8 @@ def main() -> int:
     parser.add_argument("--ready-timeout", type=int, default=1200,
                         help="Maximum server readiness wait in seconds (<=1400)")
     parser.add_argument("--request-timeout", type=int, default=1200)
+    parser.add_argument("--smoke-prompt", type=str, default=None,
+                        help="Automatically submit this test question when chat becomes ready")
     parser.add_argument("--transcript", type=Path)
     parser.add_argument("--log-dir", type=Path, default=DEFAULT_LOG_DIR,
                         help="Save live H200 container logs locally (default ~/iq-h200-logs)")
@@ -393,9 +489,18 @@ def main() -> int:
         return 0
     job_id: str | None = None
     log_thread: threading.Thread | None = None
+    deadline_stop = threading.Event()
+    countdown_thread: threading.Thread | None = None
     try:
         job = run_job(**options)
         job_id = str(job.id)
+        deadline_epoch = job_deadline_epoch(job)
+        countdown_thread = threading.Thread(
+            target=show_deadline_until_stopped,
+            args=(deadline_epoch, deadline_stop),
+            name="iq-h200-deadline", daemon=True,
+        )
+        countdown_thread.start()
         print(
             f"HF_JOB_ID={job_id}\n"
             f"HF_JOB_URL=https://huggingface.co/jobs/{EXPECTED_ACCOUNT}/{job_id}\n"
@@ -407,13 +512,16 @@ def main() -> int:
                                log_failures=log_failures)
         chat_loop(
             base, token, max_tokens=args.max_tokens,
-            timeout=args.request_timeout, transcript=args.transcript,
+            timeout=args.request_timeout, job_id=job_id,
+            deadline_epoch=deadline_epoch, smoke_prompt=args.smoke_prompt,
+            transcript=args.transcript,
         )
         return 0
     except KeyboardInterrupt:
         print("\nInterrupt requested; canceling the H200 Job.", flush=True)
         return 130
     finally:
+        deadline_stop.set()
         if job_id is not None:
             if not cancel_and_verify(job_id):
                 print("WARNING: Cancellation unverified. Manually cancel the HF Job.",
