@@ -9,18 +9,28 @@ from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from time import perf_counter
+from time import perf_counter, sleep
+import errno
 from typing import Iterator
 import os
-import shutil
 
 MAX_WORKERS = 8
 MAX_SHARD_BYTES = 2 * 1024**3
 COPY_BUFFER_BYTES = 4 * 1024**2
+MAX_READ_RETRIES = 6
+RETRYABLE_READ_ERRNOS = {errno.EIO, errno.ESTALE, errno.ETIMEDOUT, errno.ECONNRESET, errno.ECONNABORTED, errno.EAGAIN}
+PROGRESS_BYTES = 256 * 1024**2
 
 
 def _copy_shard(source: Path, target: Path) -> tuple[int, float]:
-    """Copy one immutable shard without trusting a partial transfer."""
+    """Stage one immutable shard with bounded resume on transient mount errors.
+
+    Every completed chunk stays in the temporary local file. A failed source
+    read closes and reopens the remote handle, seeks to the exact last
+    successfully written byte, and retries. Local write errors are fatal.
+    Short reads, changed sizes, missing data, and exhausted retries fail
+    closed; only a fully verified-size copy is atomically published.
+    """
     if source.is_symlink() or not source.is_file():
         raise FileNotFoundError(f"Missing or symlinked checkpoint shard: {source.name}")
     expected_size = source.stat().st_size
@@ -28,15 +38,84 @@ def _copy_shard(source: Path, target: Path) -> tuple[int, float]:
         raise ValueError(f"Shard outside 0..2 GiB staging limit: {source.name}")
     started = perf_counter()
     temporary = target.with_name(target.name + ".partial")
+    copied = 0
+    retries = 0
+    next_progress = PROGRESS_BYTES
     try:
-        with source.open("rb") as src, temporary.open("xb") as dst:
-            shutil.copyfileobj(src, dst, length=COPY_BUFFER_BYTES)
-        copied_size = temporary.stat().st_size
-        if copied_size != expected_size or source.stat().st_size != expected_size:
+        with temporary.open("xb") as dst:
+            while copied < expected_size:
+                # Source-only retry scope: never retry errors from local SSD.
+                try:
+                    src = source.open("rb")
+                    src.seek(copied)
+                except OSError as exc:
+                    if "src" in locals() and not src.closed:
+                        src.close()
+                    source_error = exc
+                else:
+                    source_error = None
+                    with src:
+                        while copied < expected_size:
+                            requested = min(COPY_BUFFER_BYTES, expected_size - copied)
+                            try:
+                                chunk = src.read(requested)
+                            except OSError as exc:
+                                source_error = exc
+                                break
+                            if not chunk:
+                                source_error = OSError(
+                                    errno.EIO, "Premature EOF in checkpoint shard",
+                                    source.name,
+                                )
+                                break
+                            if len(chunk) > requested:
+                                raise IOError(f"Source returned oversized chunk: {source.name}")
+                            # A local disk write failure MUST NOT be classified
+                            # as transient remote bucket I/O.
+                            written = dst.write(chunk)
+                            if written != len(chunk):
+                                raise IOError(f"Short local shard write: {source.name}")
+                            copied += written
+                            if copied >= next_progress and expected_size > PROGRESS_BYTES:
+                                print(
+                                    "IQ_SHARD_STAGE_PROGRESS="
+                                    f"file={source.name} bytes={copied}/{expected_size} "
+                                    f"seconds={perf_counter()-started:.1f}",
+                                    flush=True,
+                                )
+                                next_progress += PROGRESS_BYTES
+                if source_error is None:
+                    continue
+                if (source_error.errno not in RETRYABLE_READ_ERRNOS
+                        or retries >= MAX_READ_RETRIES):
+                    raise IOError(
+                        f"Remote checkpoint read exhausted: {source.name} "
+                        f"offset={copied}/{expected_size} retries={retries}"
+                    ) from source_error
+                retries += 1
+                print(
+                    "IQ_SHARD_SOURCE_READ_RETRY="
+                    f"file={source.name} offset={copied}/{expected_size} "
+                    f"attempt={retries}/{MAX_READ_RETRIES} "
+                    f"errno={source_error.errno}",
+                    flush=True,
+                )
+                sleep(min(2 ** (retries - 1), 8))
+            if dst.tell() != expected_size:
+                raise IOError(f"Short staged checkpoint shard: {source.name}")
+        if (temporary.stat().st_size != expected_size
+                or source.stat().st_size != expected_size):
             raise IOError(f"Short or changing checkpoint shard: {source.name}")
         os.replace(temporary, target)
     finally:
         temporary.unlink(missing_ok=True)
+    if retries:
+        print(
+            f"IQ_SHARD_SOURCE_READ_RECOVERED=file={source.name} "
+            f"bytes={expected_size} retries={retries} "
+            f"seconds={perf_counter()-started:.2f}",
+            flush=True,
+        )
     return expected_size, perf_counter() - started
 
 
