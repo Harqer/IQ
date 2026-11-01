@@ -43,6 +43,12 @@ CHECKPOINT = "kofecheckmate/iq-glm53-all256"
 TOKENIZER = "unsloth/Meta-Llama-3.1-8B"
 PORT = 8000
 TERMINAL = {"COMPLETED", "CANCELED", "ERROR", "DELETED"}
+def normalized_stage(raw: object) -> str:
+    # HF Hub exposes stage as an enum in some versions and a string in others.
+    value = getattr(raw, "value", raw)
+    return str(value).rsplit(".", 1)[-1].upper()
+
+
 MAX_TOKENS = 16
 MAX_HISTORY_MESSAGES = 16
 
@@ -127,7 +133,7 @@ def wait_for_server(job_id: str, token: str, deadline_seconds: int) -> str:
     end = time.monotonic() + deadline_seconds
     last_stage = None
     while time.monotonic() < end:
-        stage = str(inspect_job(job_id=job_id, namespace=EXPECTED_ACCOUNT).status.stage).upper()
+        stage = normalized_stage(inspect_job(job_id=job_id, namespace=EXPECTED_ACCOUNT).status.stage)
         if stage in TERMINAL:
             raise RuntimeError(f"HF Job ended before chat became ready ({stage}). See job logs.")
         if stage != last_stage:
@@ -179,13 +185,13 @@ def chat_loop(base: str, token: str, *, max_tokens: int, timeout: int,
             if message == "/help":
                 print("Commands: /clear, /quit, /help", flush=True)
                 continue
+            if len(history) + 2 > MAX_HISTORY_MESSAGES:
+                print("Conversation history limit reached. Type /clear to start over.", flush=True)
+                continue
             proposal = history + [{"role": "user", "content": message}]
             answer = reply(client, proposal, max_tokens)
             print("IQ:", answer, flush=True)
-            # Keep only successful exchanges. Reject silent memory loss:
-            # a long conversation will eventually require explicit /clear.
-            if len(proposal) + 1 > MAX_HISTORY_MESSAGES:
-                raise RuntimeError("Chat history limit reached; use /clear before continuing.")
+            # Keep only successful exchanges; never silently drop prior turns.
             history = proposal + [{"role": "assistant", "content": answer}]
     finally:
         if transcript is not None:
@@ -206,9 +212,9 @@ def cancel_and_verify(job_id: str) -> bool:
         except Exception as error:
             # The Job might have already timed out/terminated.
             try:
-                stage = str(inspect_job(
+                stage = normalized_stage(inspect_job(
                     job_id=job_id, namespace=EXPECTED_ACCOUNT,
-                ).status.stage).upper()
+                ).status.stage)
                 if stage in TERMINAL:
                     print(f"Job already terminal: {stage}", flush=True)
                     return True
@@ -218,9 +224,9 @@ def cancel_and_verify(job_id: str) -> bool:
             time.sleep(2)
     for _ in range(5):
         try:
-            stage = str(inspect_job(
+            stage = normalized_stage(inspect_job(
                 job_id=job_id, namespace=EXPECTED_ACCOUNT,
-            ).status.stage).upper()
+            ).status.stage)
             if stage in TERMINAL:
                 print(f"IQ_HF_JOB_TERMINATED={stage}", flush=True)
                 return True
