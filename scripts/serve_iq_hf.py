@@ -19,7 +19,7 @@ from transformers import AutoTokenizer
 from iq_transfer import load_complete_iq_checkpoint
 
 MAX_PROMPT_TOKENS = 2048
-MAX_NEW_TOKENS = 64
+MAX_NEW_TOKENS = 256
 
 
 def build_model():
@@ -58,7 +58,7 @@ def build_model():
 
 def generate(
     tokenizer, model, messages: list[dict], max_new_tokens: int,
-    prompt_format: str = "chat",
+    prompt_format: str = "chat", on_token=None,
 ) -> tuple[str, str, int, int]:
     if prompt_format == "completion":
         if len(messages) != 1 or messages[0]["role"] != "user":
@@ -104,8 +104,13 @@ def generate(
     eot_id = tokenizer.convert_tokens_to_ids("<|eot_id|>")
     if isinstance(eot_id, int) and 0 <= eot_id < len(tokenizer):
         stop_ids.add(eot_id)
+    last_emitted = ""
     with torch.inference_mode():
-        for _ in range(max_new_tokens):
+        for step in range(max_new_tokens):
+            started = time.monotonic()
+            if step == 0:
+                print(f"IQ_GENERATION_START=prompt_tokens={prompt_tokens} "
+                      f"requested_new_tokens={max_new_tokens}", flush=True)
             if diagnostics and not generated:
                 traced: list[tuple[int, torch.Tensor]] = []
                 handles = []
@@ -176,6 +181,14 @@ def generate(
             next_token = logits.argmax(dim=-1, keepdim=True)
             token_id = int(next_token[0, 0].item())
             generated.append(token_id)
+            decoded = tokenizer.decode(generated, skip_special_tokens=True)
+            if on_token is not None and decoded.startswith(last_emitted):
+                delta = decoded[len(last_emitted):]
+                if delta:
+                    on_token(delta)
+                    last_emitted = decoded
+            print(f"IQ_GENERATION_TOKEN={step + 1}/{max_new_tokens} "
+                  f"seconds={time.monotonic()-started:.2f}", flush=True)
             input_ids = torch.cat((input_ids, next_token), dim=1)
             if token_id in stop_ids:
                 finish_reason = "stop"
@@ -226,14 +239,49 @@ def create_handler(tokenizer, model):
                 ):
                     raise ValueError("invalid messages: expected 1..24 chat messages")
                 compatible = self.path != "/chat"
-                if compatible and data.get("stream", False):
-                    raise ValueError("streaming is not supported by IQ yet")
-                tokens = data.get("max_tokens", 16) if compatible else data.get("max_new_tokens", 16)
+                streaming = data.get("stream", False)
+                if type(streaming) is not bool:
+                    raise ValueError("stream must be a boolean")
+                if not compatible and streaming:
+                    raise ValueError("stream only supported for OpenAI-compatible chat")
+                tokens = data.get("max_tokens", 128) if compatible else data.get("max_new_tokens", 128)
                 if type(tokens) is not int or not 1 <= tokens <= MAX_NEW_TOKENS:
                     raise ValueError(f"max_new_tokens must be 1..{MAX_NEW_TOKENS}")
                 prompt_format = data.get("prompt_format", "chat")
                 if compatible and prompt_format != "chat":
                     raise ValueError("prompt_format applies only to legacy /chat")
+                if streaming:
+                    # Server-Sent Events: the user sees tokens as they are actually
+                    # generated instead of waiting for the entire completion.
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+                    self.send_header("Cache-Control", "no-cache")
+                    self.send_header("Connection", "close")
+                    self.end_headers()
+                    def send_chunk(delta: dict, finish=None):
+                        payload = {
+                            "id": "chatcmpl-iq",
+                            "object": "chat.completion.chunk",
+                            "created": int(time.time()),
+                            "model": "IQ",
+                            "choices": [{
+                                "index": 0, "delta": delta,
+                                "finish_reason": finish,
+                            }],
+                        }
+                        self.wfile.write(("data: " + json.dumps(payload, ensure_ascii=False)
+                                          + "\\n\\n").encode("utf-8"))
+                        self.wfile.flush()
+                    send_chunk({"role": "assistant", "content": ""})
+                    _, reason, _, _ = generate(
+                        tokenizer, model, messages, tokens, prompt_format,
+                        on_token=lambda part: send_chunk({"content": part}),
+                    )
+                    send_chunk({}, reason)
+                    self.wfile.write(b"data: [DONE]\\n\\n")
+                    self.wfile.flush()
+                    self.close_connection = True
+                    return
                 response, finish_reason, prompt_tokens, completion_tokens = generate(
                     tokenizer, model, messages, tokens, prompt_format
                 )
@@ -242,6 +290,13 @@ def create_handler(tokenizer, model):
                 return
             except Exception:  # noqa: BLE001 - HTTP inference boundary
                 traceback.print_exc(file=sys.stderr)
+                if getattr(self, "_headers_buffer", None) is not None and self.wfile.closed:
+                    return
+                if "streaming" in locals() and streaming:
+                    # Headers may already be sent. Never send a fake successful
+                    # completion or attempt an invalid second HTTP response.
+                    self.close_connection = True
+                    return
                 self.respond(500, {"error": "inference failed; see job logs"})
                 return
             if compatible:
