@@ -275,11 +275,14 @@ def health_ready(base: str, token: str) -> bool:
 
 
 def wait_for_server(job_id: str, token: str, deadline_seconds: int,
-                    log_failures: list[str] | None = None) -> str:
+                    log_failures: list[str] | None = None,
+                    job_deadline_epoch: float | None = None) -> str:
     base = endpoint(job_id)
     end = time.monotonic() + deadline_seconds
     last_stage = None
     while time.monotonic() < end:
+        if job_deadline_epoch is not None and remaining_seconds(job_deadline_epoch) <= HF_JOB_RESERVE_SECONDS:
+            raise TimeoutError("H200 Job is approaching its 30-minute deadline during startup")
         if log_failures:
             raise RuntimeError("H200 Job log stream failed: " + log_failures[0])
         stage = normalized_stage(inspect_job(job_id=job_id, namespace=EXPECTED_ACCOUNT).status.stage)
@@ -327,7 +330,6 @@ def chat_loop(base: str, token: str, *, max_tokens: int, timeout: int,
               job_id: str, deadline_epoch: float,
               smoke_prompt: str | None = None,
               transcript: Path | None = None) -> None:
-    client = InferenceClient(base_url=base, token=token, timeout=timeout)
     history: list[dict[str, str]] = []
     print(
         "IQ full78 CLI: type a question; /clear clears history; "
@@ -367,7 +369,8 @@ def chat_loop(base: str, token: str, *, max_tokens: int, timeout: int,
             proposal = history + [{"role": "user", "content": message}]
             report_deadline(deadline_epoch)
             try:
-                client.timeout = check_request_budget(deadline_epoch, timeout)
+                bounded_timeout = check_request_budget(deadline_epoch, timeout)
+                client = InferenceClient(base_url=base, token=token, timeout=bounded_timeout)
                 answer = reply(client, proposal, max_tokens)
             except Exception as error:
                 raise classify_request_error(job_id, deadline_epoch, error) from error
@@ -509,7 +512,8 @@ def main() -> int:
         )
         log_thread, log_failures, logfile = launch_log_follower(job_id, args.log_dir)
         base = wait_for_server(job_id, token, args.ready_timeout,
-                               log_failures=log_failures)
+                               log_failures=log_failures,
+                               job_deadline_epoch=deadline_epoch)
         chat_loop(
             base, token, max_tokens=args.max_tokens,
             timeout=args.request_timeout, job_id=job_id,
