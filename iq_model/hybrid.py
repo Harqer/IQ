@@ -613,6 +613,7 @@ class Mamba3ResidualLayer(nn.Module):
         *,
         attention_mask: torch.Tensor | None,
         document_ids: torch.Tensor | None,
+        inference_params: Any | None = None,
     ) -> torch.Tensor:
         normalized = self.norm(x)
         layout = pack_mamba_varlen(
@@ -623,6 +624,7 @@ class Mamba3ResidualLayer(nn.Module):
         mixed = self.mamba(
             layout.packed_hidden_states,
             cu_seqlens=layout.cu_seqlens,
+            inference_params=inference_params,
         )
         mixed = unpack_mamba_varlen(mixed, layout)
         return x + self.residual_dropout(mixed)
@@ -909,6 +911,7 @@ class IQHybridForCausalLM(nn.Module):
         audio_streaming: bool = False,
         media_document_ids: torch.Tensor | None = None,
         return_hidden_states: bool = False,
+        mamba_inference_params: Any | None = None,
     ) -> HybridCausalLMOutput:
         if input_ids.ndim != 2:
             raise ValueError("input_ids must have shape [batch, sequence]")
@@ -1035,6 +1038,7 @@ class IQHybridForCausalLM(nn.Module):
                     layer_input,
                     attention_mask=attention_mask,
                     document_ids=document_ids,
+                    inference_params=mamba_inference_params,
                 )
             elif layer_type is HybridLayerType.MOE:
                 moe_output = layer(layer_input)
