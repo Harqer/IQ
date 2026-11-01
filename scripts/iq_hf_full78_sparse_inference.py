@@ -297,6 +297,7 @@ class ExpertStreamer:
     def before(self, physical: int, layer: nn.Module, inputs: tuple) -> None:
         if not inputs:
             raise RuntimeError("MoE loader got empty layer inputs")
+        started = perf_counter()
         moe = layer.moe
         x = layer.norm(inputs[0])
         route = moe._route(x.reshape(-1, x.shape[-1]))[1]
@@ -305,9 +306,13 @@ class ExpertStreamer:
             raise RuntimeError(
                 f"Too many live experts for bounded smoke: {physical} -> {len(ids)}"
             )
+        print(
+            f"{REPORT_PREFIX}_MOE_LAYER_START=physical={physical} "
+            f"selected_experts={len(ids)}", flush=True,
+        )
         conf = moe.config
         device = x.device
-        for slot in ids:
+        for number, slot in enumerate(ids, 1):
             if not isinstance(moe.routed_experts[slot], UnloadedRoutedExpert):
                 raise RuntimeError("Stale MoE expert occupied a slot")
             path = self.root / self.expert_map[physical][slot]
@@ -320,9 +325,16 @@ class ExpertStreamer:
                 beta=conf.situ_beta, linear_beta=conf.situ_linear_beta,
                 device=device, dtype=x.dtype, bias=conf.expert_bias,
             )
+            if number == 1 or number % 16 == 0 or number == len(ids):
+                print(
+                    f"{REPORT_PREFIX}_MOE_EXPERTS_LOADED=physical={physical} "
+                    f"loaded={number}/{len(ids)} elapsed_seconds={perf_counter()-started:.2f}",
+                    flush=True,
+                )
         # The actual production MoE forward repeats exact routing with
         # unchanged layer input; it cannot execute any unselected Identity.
         layer._iq_live_experts = ids
+        layer._iq_expert_started = started
 
     def after(self, physical: int, layer: nn.Module, output: Any) -> None:
         ids = getattr(layer, "_iq_live_experts", None)
@@ -339,6 +351,12 @@ class ExpertStreamer:
         del layer._iq_live_experts
         self.forward_count += 1
         self.experts_loaded += len(ids)
+        print(
+            f"{REPORT_PREFIX}_MOE_LAYER_PASS=physical={physical} "
+            f"selected_experts={len(ids)} "
+            f"elapsed_seconds={perf_counter()-getattr(layer, '_iq_expert_started', perf_counter()):.2f}",
+            flush=True,
+        )
         if self.forward_count % 10 == 0 or self.forward_count == 78:
             print(
                 f"{REPORT_PREFIX}_MOE_PROGRESS={self.forward_count}/78 "
