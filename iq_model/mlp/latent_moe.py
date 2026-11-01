@@ -188,7 +188,14 @@ class StableLatentMoE(nn.Module):
         latent = self.latent_down(flat)
 
         routed = torch.zeros_like(latent)
-        for expert_index, expert in enumerate(self.routed_experts):
+        # Sparse top-k routing: execute ONLY experts selected for this batch.
+        # Scanning every entry (256 per MoE layer on full78) incurs one
+        # synchronizing nonzero/where operation per unselected expert and
+        # makes first-token latency prohibitively high. A single unique()
+        # transfer keeps the exact selected slots, weights and gradients.
+        selected_slots = selected.unique(sorted=True).tolist()
+        for expert_index in selected_slots:
+            expert = self.routed_experts[expert_index]
             token_rows, slots = torch.where(selected == expert_index)
             if token_rows.numel() == 0:
                 continue
