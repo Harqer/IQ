@@ -188,28 +188,26 @@ class StableLatentMoE(nn.Module):
         latent = self.latent_down(flat)
 
         routed = torch.zeros_like(latent)
-        # Sparse top-k routing: execute ONLY experts selected for this batch.
-        # Scanning every entry (256 per MoE layer on full78) incurs one
-        # synchronizing nonzero/where operation per unselected expert and
-        # makes first-token latency prohibitively high. A single unique()
-        # transfer keeps the exact selected slots, weights and gradients.
-        selected_slots = selected.unique(sorted=True).tolist()
-        for expert_index in selected_slots:
-            expert = self.routed_experts[expert_index]
-            token_rows, slots = torch.where(selected == expert_index)
-            if token_rows.numel() == 0:
-                continue
-            expert_input = latent.index_select(0, token_rows)
-            expert_output = expert(expert_input)
-            token_weights = weights[
-                token_rows,
-                slots,
-            ].to(expert_output.dtype)
-            routed.index_add_(
-                0,
-                token_rows,
-                expert_output * token_weights.unsqueeze(-1),
-            )
+        # Single-token decode uses one grouped GPU batch matrix multiplication
+        # across the exact top-k resident expert matrices. This is fully
+        # equivalent to the per-expert routing path and keeps the same
+        # sigmoid/top-k weights, shared experts and output normalization.
+        # The general prefill/training path below remains unchanged.
+        if (not self.training and flat.shape[0] == 1
+                and not self.config.expert_bias):
+            slots = selected[0].tolist()
+            experts = [self.routed_experts[i] for i in slots]
+            gate = torch.stack([e.gate_proj.weight for e in experts], dim=0)
+            up = torch.stack([e.up_proj.weight for e in experts], dim=0)
+            down = torch.stack([e.down_proj.weight for e in experts], dim=0)
+            value = latent.expand(len(slots), -1).unsqueeze(-1)
+            gate_out = torch.bmm(gate, value).squeeze(-1)
+            up_out = torch.bmm(up, value).squeeze(-1)
+            activated = experts[0].activation(gate_out, up_out)
+            projected = torch.bmm(down, activated.unsqueeze(-1)).squeeze(-1)
+            routed[0] = (projected * weights[0].to(projected.dtype).unsqueeze(-1)).sum(dim=0)
+        else:
+            self._routed_experts_reference(latent, selected, weights, routed)
 
         routed = self.latent_up(self.latent_norm(routed))
 
@@ -243,6 +241,25 @@ class StableLatentMoE(nn.Module):
             expert_counts=counts,
             routing_bias=self.routing_bias.detach().clone(),
         )
+
+    def _routed_experts_reference(
+        self, latent: torch.Tensor, selected: torch.Tensor,
+        weights: torch.Tensor, routed: torch.Tensor,
+    ) -> None:
+        """Exact per-selected-expert path retained for prefill and training."""
+        selected_slots = selected.unique(sorted=True).tolist()
+        for expert_index in selected_slots:
+            expert = self.routed_experts[expert_index]
+            token_rows, slots = torch.where(selected == expert_index)
+            if token_rows.numel() == 0:
+                continue
+            expert_input = latent.index_select(0, token_rows)
+            expert_output = expert(expert_input)
+            token_weights = weights[token_rows, slots].to(expert_output.dtype)
+            routed.index_add_(
+                0, token_rows,
+                expert_output * token_weights.unsqueeze(-1),
+            )
 
     @torch.no_grad()
     def compute_next_routing_bias(
