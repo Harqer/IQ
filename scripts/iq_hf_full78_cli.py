@@ -228,6 +228,7 @@ def reply(client: InferenceClient, history: list[dict[str, str]], max_tokens: in
         messages=history, max_tokens=max_tokens, stream=True,
     )
     response: list[str] = []
+    completed = False
     print("IQ: ", end="", flush=True)
     for chunk in chunks:
         for choice in chunk.choices:
@@ -235,7 +236,14 @@ def reply(client: InferenceClient, history: list[dict[str, str]], max_tokens: in
             if isinstance(content, str) and content:
                 print(content, end="", flush=True)
                 response.append(content)
+            if getattr(choice, "finish_reason", None) is not None:
+                completed = True
     print(flush=True)
+    if not completed:
+        raise RuntimeError(
+            "IQ response stream ended before generation completed; "
+            "partial output was not saved as a successful reply. See H200 logs."
+        )
     return "".join(response)
 
 
