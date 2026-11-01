@@ -7,9 +7,9 @@ Mount a full78 HF bucket READ ONLY at /checkpoints and a verified Llama 3.1
 tokenizer at /tokenizer. This script does not create Jobs or manage billing.
 
 All *non-routed-expert* weights are loaded strictly. For each MoE forward, its
-real router selects up to 16 distinct experts, which are then read individually
-from the immutable safetensors bucket, executed and unloaded. The full 502 GiB
-model remains logically complete, but the 19,200 experts are never all resident.
+real router selects the necessary experts, which are staged concurrently from
+the immutable safetensors bucket and retained in a bounded GPU/SSD LRU.
+The full 502 GiB model remains accessible but never entirely GPU-resident.
 
 This is experimental first-token inference: failed kernels, I/O, or finite
 checks fail closed. No quantization, SISO Mamba fallback or zeroed experts.
@@ -17,7 +17,7 @@ checks fail closed. No quantization, SISO Mamba fallback or zeroed experts.
 from __future__ import annotations
 
 import argparse
-from collections import defaultdict
+from collections import OrderedDict, defaultdict
 import gc
 import json
 from pathlib import Path
@@ -29,6 +29,7 @@ import torch
 from torch import nn
 from safetensors.torch import load_file
 from scripts.iq_h200_staging import iter_staged_shards
+from scripts.iq_h200_expert_cache import ExpertDiskCache
 import os
 
 from iq_model.architecture import HybridLayerType
@@ -272,15 +273,53 @@ def hydrate_expert(shard: Path, *, prefix: str, hidden: int,
 
 
 class ExpertStreamer:
-    """Pre-hook hydrates routed weights; post-hook releases them each forward."""
+    """Keep REAL routed weights in a bounded GPU LRU across forward passes.
+
+    The production router still chooses all selected experts for each layer.
+    Cache misses are concurrently staged on local SSD, then loaded into GPU;
+    cached experts are reused on subsequent tokens/turns. The cache never
+    substitutes a different expert, changes a router score or drops a token.
+    """
 
     def __init__(self, root: Path, model: IQHybridForCausalLM,
                  expert_map: dict[int, dict[int, str]], *,
-                 max_active: int = MAX_ACTIVE_EXPERTS):
+                 max_active: int = MAX_ACTIVE_EXPERTS,
+                 gpu_budget_bytes: int | None = None,
+                 disk_budget_bytes: int | None = None,
+                 stage_workers: int | None = None,
+                 stage_parent: Path | None = None):
         self.root = root
         self.model = model
         self.expert_map = expert_map
         self.max_active = max_active
+        self.gpu_budget_bytes = (
+            gpu_budget_bytes if gpu_budget_bytes is not None
+            else self._budget_env("IQ_EXPERT_GPU_CACHE_GIB", 32)
+        )
+        self.disk_budget_bytes = (
+            disk_budget_bytes if disk_budget_bytes is not None
+            else self._budget_env("IQ_EXPERT_DISK_CACHE_GIB", 20)
+        )
+        self.stage_workers = (
+            stage_workers if stage_workers is not None
+            else int(os.getenv("IQ_EXPERT_STAGE_WORKERS", "8"))
+        )
+        if self.gpu_budget_bytes <= 0 or self.disk_budget_bytes <= 0:
+            raise ValueError("Expert cache budgets must be positive")
+        if not 1 <= self.stage_workers <= 8:
+            raise ValueError("IQ_EXPERT_STAGE_WORKERS must be 1..8")
+        if stage_parent is None:
+            configured = os.getenv("IQ_EXPERT_STAGE_DIR")
+            stage_parent = Path(configured) if configured else None
+        self.disk = ExpertDiskCache(
+            root, max_bytes=self.disk_budget_bytes, workers=self.stage_workers,
+            stage_parent=stage_parent,
+        )
+        self.gpu_lru: OrderedDict[tuple[int, int], int] = OrderedDict()
+        self.gpu_bytes = 0
+        self.gpu_hits = 0
+        self.gpu_misses = 0
+        self.evictions = 0
         self.forward_count = 0
         self.experts_loaded = 0
         self.handles = []
@@ -293,10 +332,64 @@ class ExpertStreamer:
             self.handles.append(layer.register_forward_hook(
                 lambda mod, inputs, output, n=physical: self.after(n, mod, output),
             ))
+        print(
+            f"{REPORT_PREFIX}_EXPERT_CACHE_CONFIG="
+            f"gpu_gib={self.gpu_budget_bytes/1024**3:.1f} "
+            f"ssd_gib={self.disk_budget_bytes/1024**3:.1f} "
+            f"stage_workers={self.stage_workers}", flush=True,
+        )
+
+    @staticmethod
+    def _budget_env(key: str, default_gib: int) -> int:
+        try:
+            gib = float(os.getenv(key, str(default_gib)))
+        except ValueError as exc:
+            raise ValueError(f"{key} must be a positive number of GiB") from exc
+        if not 0 < gib <= 80:
+            raise ValueError(f"{key} must be in (0, 80] GiB")
+        return int(gib * 1024**3)
+
+    def _evict_one(self, protected: set[tuple[int, int]]) -> bool:
+        victim = next((key for key in self.gpu_lru if key not in protected), None)
+        if victim is None:
+            return False
+        physical, slot = victim
+        old = self.model.layers[physical].moe.routed_experts[slot]
+        if isinstance(old, UnloadedRoutedExpert):
+            raise RuntimeError("Corrupt GPU expert cache: missing resident module")
+        self.model.layers[physical].moe.routed_experts[slot] = UnloadedRoutedExpert()
+        self.gpu_bytes -= self.gpu_lru.pop(victim)
+        self.evictions += 1
+        return True
+
+    def _make_room(self, size: int, protected: set[tuple[int, int]],
+                   device: torch.device) -> None:
+        if size > self.gpu_budget_bytes:
+            raise MemoryError("One routed expert exceeds GPU cache budget")
+        while self.gpu_bytes + size > self.gpu_budget_bytes:
+            if not self._evict_one(protected):
+                raise MemoryError(
+                    "Selected routed experts exceed the configured GPU cache; "
+                    "increase IQ_EXPERT_GPU_CACHE_GIB without changing routing"
+                )
+        if device.type == "cuda":
+            free, _ = torch.cuda.mem_get_info(device)
+            # Leave headroom for temporary activations and CUDA kernels.
+            if free < size + 8 * 1024**3:
+                while free < size + 8 * 1024**3 and self._evict_one(protected):
+                    torch.cuda.empty_cache()
+                    free, _ = torch.cuda.mem_get_info(device)
+                if free < size + 8 * 1024**3:
+                    raise MemoryError(
+                        "GPU free memory is insufficient for the routed expert "
+                        "and an 8-GiB activation reserve"
+                    )
 
     def before(self, physical: int, layer: nn.Module, inputs: tuple) -> None:
         if not inputs:
             raise RuntimeError("MoE loader got empty layer inputs")
+        if hasattr(layer, "_iq_live_experts"):
+            raise RuntimeError("Previous MoE forward did not complete safely")
         started = perf_counter()
         moe = layer.moe
         x = layer.norm(inputs[0])
@@ -304,35 +397,59 @@ class ExpertStreamer:
         ids = sorted(set(int(i) for i in route.reshape(-1).tolist()))
         if not ids or len(ids) > self.max_active:
             raise RuntimeError(
-                f"Too many live experts for bounded smoke: {physical} -> {len(ids)}"
+                f"Too many live experts for exact routing: {physical} -> {len(ids)}"
             )
+        active = {(physical, slot) for slot in ids}
+        misses = [slot for slot in ids if (physical, slot) not in self.gpu_lru]
+        self.gpu_hits += len(ids) - len(misses)
+        self.gpu_misses += len(misses)
+        for slot in ids:
+            key = (physical, slot)
+            if key in self.gpu_lru:
+                if isinstance(moe.routed_experts[slot], UnloadedRoutedExpert):
+                    raise RuntimeError("GPU cache claims an unloaded routed expert")
+                self.gpu_lru.move_to_end(key)
+            elif not isinstance(moe.routed_experts[slot], UnloadedRoutedExpert):
+                raise RuntimeError("Unexpected live MoE expert without cache entry")
         print(
             f"{REPORT_PREFIX}_MOE_LAYER_START=physical={physical} "
-            f"selected_experts={len(ids)}", flush=True,
+            f"selected_experts={len(ids)} gpu_cache_hits={len(ids)-len(misses)} "
+            f"misses={len(misses)}", flush=True,
         )
+        names = [self.expert_map[physical][slot] for slot in misses]
+        # One stage() call copies all missing selected files concurrently,
+        # rather than sequential remote FUSE reads one slot at a time.
+        paths = self.disk.stage(names) if names else {}
         conf = moe.config
-        device = x.device
-        for number, slot in enumerate(ids, 1):
-            if not isinstance(moe.routed_experts[slot], UnloadedRoutedExpert):
-                raise RuntimeError("Stale MoE expert occupied a slot")
-            path = self.root / self.expert_map[physical][slot]
-            if not path.is_file() or path.is_symlink():
-                raise RuntimeError(f"Cannot read selected HF bucket expert {physical}:{slot}")
+        for number, slot in enumerate(misses, 1):
+            key = (physical, slot)
+            path = paths[self.expert_map[physical][slot]]
+            estimated_bytes = path.stat().st_size
+            self._make_room(estimated_bytes, active, x.device)
             prefix = f"layers.{physical}.moe.routed_experts.{slot}."
-            moe.routed_experts[slot] = hydrate_expert(
+            expert = hydrate_expert(
                 path, prefix=prefix, hidden=conf.latent_size,
                 intermediate=conf.expert_intermediate_size,
                 beta=conf.situ_beta, linear_beta=conf.situ_linear_beta,
-                device=device, dtype=x.dtype, bias=conf.expert_bias,
+                device=x.device, dtype=x.dtype, bias=conf.expert_bias,
             )
-            if number == 1 or number % 16 == 0 or number == len(ids):
+            actual_bytes = sum(
+                tensor.numel() * tensor.element_size()
+                for tensor in expert.parameters()
+            )
+            # Metadata overhead means estimate >= real data. Explicitly
+            # reject any unexpected increase that would overrun the bound.
+            if self.gpu_bytes + actual_bytes > self.gpu_budget_bytes:
+                raise MemoryError("Hydrated expert would exceed GPU LRU budget")
+            moe.routed_experts[slot] = expert
+            self.gpu_lru[key] = actual_bytes
+            self.gpu_bytes += actual_bytes
+            if number == 1 or number == len(misses) or number % 16 == 0:
                 print(
-                    f"{REPORT_PREFIX}_MOE_EXPERTS_LOADED=physical={physical} "
-                    f"loaded={number}/{len(ids)} elapsed_seconds={perf_counter()-started:.2f}",
-                    flush=True,
+                    f"{REPORT_PREFIX}_MOE_EXPERT_CACHE_MISS=physical={physical} "
+                    f"hydrated={number}/{len(misses)} "
+                    f"seconds={perf_counter()-started:.2f}", flush=True,
                 )
-        # The actual production MoE forward repeats exact routing with
-        # unchanged layer input; it cannot execute any unselected Identity.
         layer._iq_live_experts = ids
         layer._iq_expert_started = started
 
@@ -343,30 +460,35 @@ class ExpertStreamer:
         observed = set(int(i) for i in output.selected_experts.reshape(-1).tolist())
         if observed != set(ids):
             raise RuntimeError(
-                f"Actual MoE execution selected unexpected experts at {physical}: "
+                f"MoE actual routing changed: physical={physical} "
                 f"loaded={ids} observed={sorted(observed)}"
             )
-        for slot in ids:
-            layer.moe.routed_experts[slot] = UnloadedRoutedExpert()
+        # Unlike the old per-forward loader, leave the selected modules
+        # resident. They can be reused by the next generated token and are
+        # evicted only when the global GPU budget actually needs the space.
         del layer._iq_live_experts
         self.forward_count += 1
         self.experts_loaded += len(ids)
         print(
             f"{REPORT_PREFIX}_MOE_LAYER_PASS=physical={physical} "
             f"selected_experts={len(ids)} "
-            f"elapsed_seconds={perf_counter()-getattr(layer, '_iq_expert_started', perf_counter()):.2f}",
-            flush=True,
+            f"elapsed_seconds={perf_counter()-layer._iq_expert_started:.2f} "
+            f"gpu_cache_gib={self.gpu_bytes/1024**3:.2f} "
+            f"gpu_hits_total={self.gpu_hits} "
+            f"ssd_hits_total={self.disk.hits} "
+            f"remote_copies_total={self.disk.copies}", flush=True,
         )
-        if self.forward_count % 10 == 0 or self.forward_count == 78:
-            print(
-                f"{REPORT_PREFIX}_MOE_PROGRESS={self.forward_count}/78 "
-                f"selected_shards={self.experts_loaded}", flush=True,
-            )
+        del layer._iq_expert_started
 
     def close(self) -> None:
         for h in self.handles:
             h.remove()
         self.handles.clear()
+        for physical, slot in list(self.gpu_lru):
+            self.model.layers[physical].moe.routed_experts[slot] = UnloadedRoutedExpert()
+        self.gpu_lru.clear()
+        self.gpu_bytes = 0
+        self.disk.close()
 
 
 def validate_tokenizer(directory: Path):
