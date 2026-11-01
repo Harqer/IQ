@@ -23,6 +23,12 @@ class ExpertDiskCache:
             raise ValueError("Expert staging workers must be 1..8")
         if max_bytes <= 0:
             raise ValueError("Expert staging budget must be positive")
+        if stage_parent is not None:
+            parent = stage_parent.resolve(strict=True)
+            source = source_root.resolve(strict=True)
+            if not parent.is_dir() or parent == source or source in parent.parents:
+                raise ValueError("Expert staging must not write inside checkpoint bucket")
+            stage_parent = parent
         self.source_root = source_root
         self.max_bytes = max_bytes
         self.workers = workers
