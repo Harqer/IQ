@@ -134,8 +134,8 @@ class StagingTests(unittest.TestCase):
                     return IntermittentSource(file)
                 return file
 
-            with patch.object(Path, "open", patched_open), \\
-                 patch("scripts.iq_h200_staging.COPY_BUFFER_BYTES", 64), \\
+            with patch.object(Path, "open", patched_open), \
+                 patch("scripts.iq_h200_staging.COPY_BUFFER_BYTES", 64), \
                  patch("scripts.iq_h200_staging.sleep"):
                 size, _ = _copy_shard(source, target)
             self.assertTrue(injected["error"])
@@ -160,7 +160,7 @@ class StagingTests(unittest.TestCase):
                     raise OSError(errno.EIO, "Simulated persistently unavailable bucket")
                 return original_open(self, mode, *args, **kwargs)
 
-            with patch.object(Path, "open", fail_open), \\
+            with patch.object(Path, "open", fail_open), \
                  patch("scripts.iq_h200_staging.sleep"):
                 with self.assertRaisesRegex(IOError, "Remote checkpoint read exhausted"):
                     _copy_shard(source, destination)
@@ -201,7 +201,7 @@ class StagingTests(unittest.TestCase):
                     return EarlyEOFSource(file)
                 return file
 
-            with patch.object(Path, "open", short_open), \\
+            with patch.object(Path, "open", short_open), \
                  patch("scripts.iq_h200_staging.sleep"):
                 with self.assertRaisesRegex(IOError, "Remote checkpoint read exhausted"):
                     _copy_shard(source, target)
