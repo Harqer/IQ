@@ -133,7 +133,31 @@ def generate(
                     for handle in handles:
                         handle.remove()
             else:
-                result = model(input_ids)
+                # Trace all 235 physical layers on the first token, including
+                # Mamba-3 kernel compilation. This identifies a stuck layer
+                # without launching a separate GPU diagnostic job.
+                handles = []
+                if not generated and os.getenv("IQ_TRACE_FIRST_TOKEN", "1") == "1":
+                    def make_pre(index: int):
+                        def trace_start(_mod, _inputs):
+                            print(f"IQ_FULL78_LAYER_START={index}/235",
+                                  flush=True)
+                        return trace_start
+
+                    def make_post(index: int):
+                        def trace_end(_mod, _inputs, _output):
+                            print(f"IQ_FULL78_LAYER_PASS={index}/235",
+                                  flush=True)
+                        return trace_end
+
+                    for index, layer in enumerate(model.layers):
+                        handles.append(layer.register_forward_pre_hook(make_pre(index)))
+                        handles.append(layer.register_forward_hook(make_post(index)))
+                try:
+                    result = model(input_ids)
+                finally:
+                    for handle in handles:
+                        handle.remove()
             logits = result.logits[:, -1, :].float()
             if not bool(torch.isfinite(logits).all()):
                 raise RuntimeError("non-finite IQ logits")
