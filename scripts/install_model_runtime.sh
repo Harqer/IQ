@@ -41,12 +41,31 @@ export PIP_CONSTRAINT="$constraints"
 python -m pip install "setuptools>=61.0.0" wheel packaging ninja
 python -m pip install -r requirements-model.txt
 
-# Upstream Mamba-3 requires a source build against the SAME installed CUDA
-# PyTorch ABI. Prevent build isolation from replacing it.
+# Build the original pinned Mamba-3 CUDA source with only its known-bad
+# dependency metadata adjusted for TileLang prefill + CuTe decode compatibility.
+# Fail closed on any unexpected model-source edit.
+source_dir=$(mktemp -d -t iq-mamba3-source.XXXXXX)
+trap 'rm -f "$snapshot" "$constraints"; rm -rf "$source_dir"' EXIT
+git clone --quiet --filter=blob:none https://github.com/state-spaces/mamba.git "$source_dir"
+git -C "$source_dir" checkout --quiet --detach "$MAMBA3_COMMIT"
+git -C "$source_dir" submodule update --init --recursive --quiet
+actual_commit=$(git -C "$source_dir" rev-parse HEAD)
+if [[ "$actual_commit" != "$MAMBA3_COMMIT" ]]; then
+  echo >&2 "Mamba3 source revision differs: $actual_commit"
+  exit 2
+fi
+python scripts/patch_iq_mamba3_dependencies.py "$source_dir"
+changed_files=$(git -C "$source_dir" diff --name-only)
+if [[ "$changed_files" != $'pyproject.toml\nsetup.py' ]]; then
+  echo >&2 "Unexpected Mamba3 source edits: $changed_files"
+  exit 2
+fi
 MAMBA_FORCE_BUILD=TRUE python -m pip install \
   --no-build-isolation \
   --no-cache-dir \
-  "mamba-ssm @ git+https://github.com/state-spaces/mamba.git@${MAMBA3_COMMIT}"
+  "$source_dir"
+python scripts/patch_iq_mamba3_dependencies.py \
+  --record-installed "$source_dir" --source-commit "$MAMBA3_COMMIT"
 
 # The container inherits unrelated build tools (notably spin) whose Click
 # range can conflict with Hugging Face Hub. Validate IQ's full transitive

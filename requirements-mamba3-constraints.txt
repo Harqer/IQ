@@ -1,5 +1,10 @@
-# Mamba-3 MIMO at source commit e9594ce1c732d97440f0332fdc43170a2294dbfa
-# TileLang 0.1.8 JIT breaks with apache-tvm-ffi >= 0.1.10:
-# https://github.com/state-spaces/mamba/issues/986
-tilelang==0.1.8
-apache-tvm-ffi==0.1.9
+# Native Mamba-3 MIMO inference stack for HF H200.
+# 0.1.8 + 0.1.9 supports TileLang prefill, but CUTLASS CuTe step needs
+# tvm-ffi's map_dataclass_to_tuple keyword (>=0.1.10).
+# TileLang 0.1.12 + TVM-FFI 0.1.11 coordinates both requirements.
+# Mamba source metadata is patched with a fail-closed helper at install time;
+# no architecture, weight, CUDA kernel, or model source is modified.
+tilelang==0.1.12
+apache-tvm-ffi==0.1.11
+quack-kernels==0.6.5
+nvidia-cutlass-dsl==4.8.1
