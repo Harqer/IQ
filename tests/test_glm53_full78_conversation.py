@@ -8,6 +8,7 @@ import unittest
 
 import torch
 
+from scripts.iq_hf_full78_chat_client import validate_endpoint
 from scripts.iq_hf_full78_conversation import (
     generate_reply, load_turns, run_conversation, tokenize_conversation,
 )
@@ -104,6 +105,25 @@ class ConversationTests(unittest.TestCase):
                 FakeTokenizer(), [{"role": "user", "content": "Hello"}],
                 prompt_format="chat", max_context_tokens=2,
             )
+
+    def test_auto_prompt_format_on_base_model(self):
+        tok = FakeTokenizer()
+        ids = tokenize_conversation(
+            tok, [{"role": "user", "content": "Hello"}],
+            prompt_format="auto", max_context_tokens=32,
+        )
+        self.assertEqual(ids, [1, 5, 6])
+        self.assertEqual(tok.histories[-1][0]["role"], "transcript")
+
+    def test_chat_endpoint_must_be_hugging_face_https(self):
+        self.assertEqual(
+            validate_endpoint("https://example.hf.space"),
+            "https://example.hf.space",
+        )
+        for url in ("http://example.hf.space", "https://evil.example.com",
+                    "https://huggingface.co.attacker.com"):
+            with self.subTest(url=url), self.assertRaises(ValueError):
+                validate_endpoint(url)
 
     def test_conversation_json_rejects_invalid(self):
         with tempfile.TemporaryDirectory() as td:
