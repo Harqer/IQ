@@ -21,7 +21,8 @@ import torch
 from scripts import serve_iq_hf as existing_chat
 from scripts.iq_hf_full78_conversation import load_runtime
 from iq_model.hybrid_inference import IQHybridInferenceEngine
-from scripts.verify_iq_mamba3_native_step import verify_native_mimo_step
+from scripts.verify_iq_mamba3_native_step import (verify_native_mimo_step, verify_full78_mimo_geometry)
+from scripts.iq_hf_full78_sparse_inference import read_checkpoint
 
 DEFAULT_CHECKPOINT = "/checkpoints/IQ/runs/glm53-full78-local-20261025a"
 
@@ -36,8 +37,11 @@ def main() -> None:
     # A broken/unsupported recurrent kernel MUST fail closed, not quietly
     # route tokens through the old full-prefix implementation.
     verify_native_mimo_step(torch.device("cuda:0"))
+    checkpoint = Path(os.getenv("IQ_CHECKPOINT_DIR", DEFAULT_CHECKPOINT))
+    _, checkpoint_config, _ = read_checkpoint(checkpoint)
+    verify_full78_mimo_geometry(torch.device("cuda:0"), checkpoint_config.mamba3)
     tokenizer, model, streamer = load_runtime(
-        Path(os.getenv("IQ_CHECKPOINT_DIR", DEFAULT_CHECKPOINT)),
+        checkpoint,
         Path(os.getenv("IQ_TOKENIZER_DIR", "/tokenizer")),
         device=torch.device("cuda:0"),
     )

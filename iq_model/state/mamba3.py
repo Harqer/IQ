@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from importlib import metadata
 from typing import Any
@@ -295,11 +296,30 @@ class Mamba3MIMOState(nn.Module):
             raise Mamba3MIMORuntimeError(
                 "IQ Mamba-3 MIMO forward requires CUDA; no CPU/SISO fallback is allowed"
             )
-        output = self.core(
-            hidden_states,
-            cu_seqlens=cu_seqlens,
-            inference_params=inference_params,
-        )
+        try:
+            output = self.core(
+                hidden_states,
+                cu_seqlens=cu_seqlens,
+                inference_params=inference_params,
+            )
+            # Native CUDA launches asynchronously: synchronize at the mixer
+            # boundary while diagnosing the first full78 conversational run,
+            # so an illegal address cannot be misattributed to torch.isfinite
+            # or a subsequent MoE/attention layer.
+            if os.getenv("IQ_MIMO_SYNC_KERNEL", "1") == "1":
+                torch.cuda.synchronize(hidden_states.device)
+        except RuntimeError as exc:
+            raise Mamba3MIMORuntimeError(
+                "Native Mamba-3 MIMO CUDA kernel failed: "
+                f"mamba_layer={self.layer_idx} "
+                f"shape={tuple(hidden_states.shape)} "
+                f"stride={tuple(hidden_states.stride())} "
+                f"chunk={self.config.chunk_size} "
+                f"d_state={self.config.d_state} "
+                f"rank={self.config.mimo_rank} "
+                f"varlen={cu_seqlens is not None} "
+                f"stateful_prefill={inference_params is not None}"
+            ) from exc
         if output.shape != hidden_states.shape:
             raise Mamba3MIMORuntimeError(
                 f"Mamba-3 output shape changed unexpectedly: {tuple(output.shape)}"
