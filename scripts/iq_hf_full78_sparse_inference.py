@@ -28,6 +28,8 @@ from typing import Any
 import torch
 from torch import nn
 from safetensors.torch import load_file
+from scripts.iq_h200_staging import iter_staged_shards
+import os
 
 from iq_model.architecture import HybridLayerType
 from iq_model.hybrid import IQHybridConfig, IQHybridForCausalLM, UnloadedRoutedExpert
@@ -120,29 +122,46 @@ def load_base_weights(model: IQHybridForCausalLM, root: Path,
     if total_size > budget_gib * 1024**3:
         raise RuntimeError(f"Base tensors exceed bounded GPU residency {budget_gib} GiB")
     print(f"{REPORT_PREFIX}_BASELINE_BYTES={total_size} shards={len(base)}", flush=True)
+    workers_raw = os.getenv("IQ_BASELINE_STAGE_WORKERS", "4")
+    try:
+        workers = int(workers_raw)
+    except ValueError as exc:
+        raise RuntimeError("IQ_BASELINE_STAGE_WORKERS must be an integer 1..8") from exc
+    stage_parent_raw = os.getenv("IQ_BASELINE_STAGE_DIR", "")
+    stage_parent = Path(stage_parent_raw) if stage_parent_raw else None
+    print(
+        f"{REPORT_PREFIX}_BASE_STAGE_CONFIG=workers={workers} "
+        f"dir={stage_parent or 'system-temp'}",
+        flush=True,
+    )
     params = dict(model.named_parameters())
     buffers = dict(model.named_buffers())
-    for i, name in enumerate(sorted(base), 1):
-        shard_path = root / name
+    baseline_started = perf_counter()
+    loaded_bytes = 0
+    loaded_count = 0
+    # This iterator overlaps bounded remote bucket reads with CPU validation
+    # and CUDA copies. Each staged file is removed immediately after use.
+    for i, (name, shard_path, staged_bytes, stage_seconds) in enumerate(
+        iter_staged_shards(root, sorted(base), workers=workers, stage_parent=stage_parent), 1
+    ):
         expected_keys = set(base[name])
         started = perf_counter()
         print(
-            f"{REPORT_PREFIX}_BASE_SHARD_START={i}/{len(base)} "
-            f"file={name} bytes={shard_path.stat().st_size}",
+            f"{REPORT_PREFIX}_BASE_SHARD_STAGED={i}/{len(base)} "
+            f"file={name} bytes={staged_bytes} "
+            f"stage_seconds={stage_seconds:.2f}",
             flush=True,
         )
+        decoded_at = perf_counter()
         tensors = load_file(str(shard_path), device="cpu")
-        print(
-            f"{REPORT_PREFIX}_BASE_SHARD_READ={i}/{len(base)} "
-            f"file={name} seconds={perf_counter()-started:.2f}",
-            flush=True,
-        )
+        decode_seconds = perf_counter() - decoded_at
         if set(tensors) != expected_keys:
             raise RuntimeError(
                 f"Base checkpoint shard keys differ: {name}; "
                 f"missing={sorted(expected_keys-set(tensors))[:10]} "
                 f"extra={sorted(set(tensors)-expected_keys)[:10]}"
             )
+        checked_at = perf_counter()
         for key, value in tensors.items():
             target = params.get(key)
             if target is None:
@@ -152,20 +171,33 @@ def load_base_weights(model: IQHybridForCausalLM, root: Path,
             if not value.dtype.is_floating_point or not bool(torch.isfinite(value).all()):
                 raise RuntimeError(f"Nonfinite/nonfloating checkpoint tensor: {key}")
             target.copy_(value.to(device=target.device, dtype=target.dtype))
+        copy_validate_seconds = perf_counter() - checked_at
         del tensors
+        loaded_bytes += staged_bytes
+        loaded_count = i
         print(
             f"{REPORT_PREFIX}_BASE_SHARD_LOADED={i}/{len(base)} "
-            f"file={name} seconds={perf_counter()-started:.2f}",
+            f"file={name} decode_seconds={decode_seconds:.2f} "
+            f"validate_and_copy_seconds={copy_validate_seconds:.2f} "
+            f"total_seconds={perf_counter()-started:.2f}",
             flush=True,
         )
         if i % 25 == 0 or i == len(base):
-            free, total = torch.cuda.mem_get_info()
+            free, _ = torch.cuda.mem_get_info()
             print(
                 f"{REPORT_PREFIX}_BASE_LOADED={i}/{len(base)} "
-                f"cuda_free_gib={free/1024**3:.1f}",
+                f"cuda_free_gib={free/1024**3:.1f} "
+                f"elapsed_seconds={perf_counter()-baseline_started:.2f}",
                 flush=True,
             )
-
+    if loaded_count != len(base) or loaded_bytes != total_size:
+        raise RuntimeError("Incomplete staged baseline load")
+    print(
+        f"{REPORT_PREFIX}_BASELINE_LOAD_PASS=shards={loaded_count} "
+        f"bytes={loaded_bytes} "
+        f"seconds={perf_counter()-baseline_started:.2f}",
+        flush=True,
+    )
 
 def hydrate_expert(shard: Path, *, prefix: str, hidden: int,
                    intermediate: int, beta: float, linear_beta: float,
