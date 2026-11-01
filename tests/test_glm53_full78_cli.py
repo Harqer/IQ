@@ -101,6 +101,7 @@ class CLITests(unittest.TestCase):
             with patch("builtins.input", side_effect=["Remember amber", "What was the word?", "/quit"]):
                 cli.chat_loop(
                     "https://example.hf.jobs", "secret", max_tokens=2, timeout=1,
+                    job_id="a" * 24, deadline_epoch=cli.time.time() + 600,
                 )
         self.assertEqual(fake.chat.completions.create.call_count, 2)
         h = fake.chat.completions.create.call_args_list[-1].kwargs["messages"]
