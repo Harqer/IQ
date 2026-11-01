@@ -4,11 +4,40 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from scripts.iq_h200_staging import iter_staged_shards
 
 
 class StagingTests(unittest.TestCase):
+    def test_direct_bucket_samples_bounded_and_cleanup(self):
+        from scripts.benchmark_iq_h200_staging import iter_bucket_samples, BUCKET
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            names = [f"model-context-{i:03d}.safetensors" for i in range(4)]
+            def fake_metadata(bucket, remote):
+                self.assertEqual(bucket, BUCKET)
+                self.assertTrue(remote.startswith("IQ/runs/"))
+                return SimpleNamespace(size=16)
+
+            def fake_download(bucket, *, files):
+                self.assertEqual(bucket, BUCKET)
+                self.assertEqual(len(files), 1)
+                _, local = files[0]
+                Path(local).write_bytes(b"4" * 16)
+
+            with patch("huggingface_hub.get_bucket_file_metadata",
+                       side_effect=fake_metadata):
+                with patch("huggingface_hub.download_bucket_files",
+                           side_effect=fake_download):
+                    completed = []
+                    for name, path, size, _ in iter_bucket_samples(BUCKET, names, 2):
+                        self.assertEqual(path.read_bytes(), b"4" * 16)
+                        self.assertEqual(size, 16)
+                        completed.append(name)
+                    self.assertEqual(completed, names)
+
     def test_staging_preserves_bytes_uses_bounded_window_and_cleans_up(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
