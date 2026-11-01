@@ -123,7 +123,7 @@ def iter_staged_shards(
     source_root: Path,
     filenames: list[str],
     *,
-    workers: int = 4,
+    workers: int = 2,
     stage_parent: Path | None = None,
 ) -> Iterator[tuple[str, Path, int, float]]:
     """Yield (source filename, staged path, bytes, stage seconds) in order.
