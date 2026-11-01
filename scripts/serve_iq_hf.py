@@ -56,7 +56,6 @@ def build_model():
     return tokenizer, model
 
 
-@torch.inference_mode()
 def generate_stateful(engine, tokenizer, input_ids: torch.Tensor,
                       max_new_tokens: int, on_token=None):
     """Production full78 decode: native MIMO/context caches + exact MoE routing.
@@ -154,10 +153,11 @@ def generate(
     input_ids = input_ids.to(device)
     if engine is not None:
         try:
-            return generate_stateful(
-                engine, tokenizer, input_ids,
-                max_new_tokens=max_new_tokens, on_token=on_token,
-            )
+            with torch.inference_mode():
+                return generate_stateful(
+                    engine, tokenizer, input_ids,
+                    max_new_tokens=max_new_tokens, on_token=on_token,
+                )
         except Exception:
             # Native MIMO and context caches may already have been mutated
             # before the failure. Never reuse a partially advanced state.
