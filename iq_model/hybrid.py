@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from hashlib import sha256
@@ -613,6 +614,7 @@ class Mamba3ResidualLayer(nn.Module):
         *,
         attention_mask: torch.Tensor | None,
         document_ids: torch.Tensor | None,
+        inference_params: Any | None = None,
     ) -> torch.Tensor:
         normalized = self.norm(x)
         layout = pack_mamba_varlen(
@@ -623,6 +625,7 @@ class Mamba3ResidualLayer(nn.Module):
         mixed = self.mamba(
             layout.packed_hidden_states,
             cu_seqlens=layout.cu_seqlens,
+            inference_params=inference_params,
         )
         mixed = unpack_mamba_varlen(mixed, layout)
         return x + self.residual_dropout(mixed)
@@ -699,6 +702,16 @@ class CompressedContextResidualLayer(nn.Module):
         )
 
 
+class UnloadedRoutedExpert(nn.Module):
+    """Fail closed if the sparse checkpoint hook did not load a selected expert."""
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        raise HybridModelError(
+            "Selected IQ expert was not hydrated from the full78 checkpoint; "
+            "sparse inference cannot fall back to an identity/zero expert"
+        )
+
+
 class IQHybridForCausalLM(nn.Module):
     """Executable heterogeneous Mamba-3 / MoE / CSA / HCA / dense-attention backbone.
 
@@ -713,10 +726,14 @@ class IQHybridForCausalLM(nn.Module):
         *,
         dtype: torch.dtype = torch.bfloat16,
         device: torch.device | str = "cuda",
+        sparse_routed_moe: bool = False,
     ) -> None:
         super().__init__()
         self.config = config
         self.model_config = config.model
+        if sparse_routed_moe and config.moe_variant != "stable_latent":
+            raise HybridModelError("sparse-routed checkpoint execution requires stable_latent MoE")
+        self.sparse_routed_moe = bool(sparse_routed_moe)
         device_obj = torch.device(device)
         if device_obj.type != "cuda":
             raise HybridModelError(
@@ -744,11 +761,35 @@ class IQHybridForCausalLM(nn.Module):
             elif layer_type is HybridLayerType.MOE:
                 if config.moe_variant == "stable_latent":
                     assert config.stable_moe is not None
-                    layer = StableLatentMoELayer(
-                        config.stable_moe,
-                        norm_eps=config.model.rms_norm_eps,
-                        residual_dropout=config.model.residual_dropout,
-                    ).to(device=device_obj, dtype=dtype)
+                    if sparse_routed_moe:
+                        # HF inference smoke: retain the complete 256-way router
+                        # and shared/common tensors, but defer the 256 huge routed
+                        # expert matrices to a strict checkpoint-backed loader.
+                        # A pre-forward hook must hydrate every selected expert;
+                        # an unloaded selected expert raises immediately.
+                        with torch.device("meta"):
+                            layer = StableLatentMoELayer(
+                                config.stable_moe,
+                                norm_eps=config.model.rms_norm_eps,
+                                residual_dropout=config.model.residual_dropout,
+                            )
+                        layer.moe.routed_experts = nn.ModuleList(
+                            UnloadedRoutedExpert() for _ in range(config.stable_moe.num_experts)
+                        )
+                        layer = layer.to_empty(device=device_obj).to(dtype=dtype)
+                        # The checkpoint stores a persistent FP32 bias.
+                        # Preserve it exactly rather than rounding through BF16.
+                        layer.moe.routing_bias = torch.empty(
+                            config.stable_moe.num_experts,
+                            dtype=torch.float32,
+                            device=device_obj,
+                        )
+                    else:
+                        layer = StableLatentMoELayer(
+                            config.stable_moe,
+                            norm_eps=config.model.rms_norm_eps,
+                            residual_dropout=config.model.residual_dropout,
+                        ).to(device=device_obj, dtype=dtype)
                 else:
                     layer = RoutedSwiGLUMoELayer(
                         config.moe,
@@ -871,6 +912,7 @@ class IQHybridForCausalLM(nn.Module):
         audio_streaming: bool = False,
         media_document_ids: torch.Tensor | None = None,
         return_hidden_states: bool = False,
+        mamba_inference_params: Any | None = None,
     ) -> HybridCausalLMOutput:
         if input_ids.ndim != 2:
             raise ValueError("input_ids must have shape [batch, sequence]")
@@ -980,6 +1022,16 @@ class IQHybridForCausalLM(nn.Module):
         x = self.embed_tokens(input_ids)
         moe_outputs: list[MoEOutput | StableLatentMoEOutput] = []
         attnres_state = self.attnres.init_state(x) if self.attnres is not None else None
+        # First full78 prefill boundary tracing localizes asynchronous CUDA
+        # illegal-address errors. All layers use their original kernels;
+        # synchronizing changes execution ordering, never tensor math.
+        # Turn off only after production kernels are proven on H200.
+        prefill_guard = (
+            mamba_inference_params is not None
+            and x.device.type == "cuda"
+            and getattr(mamba_inference_params, "seqlen_offset", 0) == 0
+            and os.getenv("IQ_FULL78_SYNC_PREFILL", "1") == "1"
+        )
         for layer_index, (layer_type, layer) in enumerate(
             zip(
                 self.config.schedule.layers,
@@ -987,6 +1039,20 @@ class IQHybridForCausalLM(nn.Module):
                 strict=True,
             )
         ):
+            if prefill_guard:
+                try:
+                    torch.cuda.synchronize(x.device)
+                except RuntimeError as exc:
+                    raise HybridModelError(
+                        f"CUDA error before physical layer {layer_index} "
+                        f"({layer_type.value}); previous layer or AttnRes "
+                        "operation launched the failing kernel"
+                    ) from exc
+                print(
+                    f"IQ_CUDA_PREFILL_LAYER_START=physical={layer_index} "
+                    f"type={layer_type.value} tokens={input_ids.shape[1]}",
+                    flush=True,
+                )
             layer_input = (
                 self.attnres.read(attnres_state)
                 if self.attnres is not None and attnres_state is not None
@@ -997,6 +1063,7 @@ class IQHybridForCausalLM(nn.Module):
                     layer_input,
                     attention_mask=attention_mask,
                     document_ids=document_ids,
+                    inference_params=mamba_inference_params,
                 )
             elif layer_type is HybridLayerType.MOE:
                 moe_output = layer(layer_input)
@@ -1018,6 +1085,19 @@ class IQHybridForCausalLM(nn.Module):
                     f"unsupported runtime layer type: {layer_type.value}"
                 )
 
+            if prefill_guard:
+                try:
+                    torch.cuda.synchronize(x.device)
+                except RuntimeError as exc:
+                    raise HybridModelError(
+                        f"CUDA kernel failed during physical layer {layer_index} "
+                        f"({layer_type.value}); inspect this layer's native "
+                        "kernel and incoming tensor geometry"
+                    ) from exc
+                print(
+                    f"IQ_CUDA_PREFILL_LAYER_KERNEL_PASS=physical={layer_index} "
+                    f"type={layer_type.value}", flush=True,
+                )
             if self.multimodal is not None:
                 layer_output, visual_memory = self.multimodal.fuse(
                     layer_index,
@@ -1035,6 +1115,14 @@ class IQHybridForCausalLM(nn.Module):
                 x = layer_output
             else:
                 x = layer_output
+            if prefill_guard:
+                try:
+                    torch.cuda.synchronize(x.device)
+                except RuntimeError as exc:
+                    raise HybridModelError(
+                        f"CUDA error updating AttnRes at physical layer "
+                        f"{layer_index} ({layer_type.value})"
+                    ) from exc
 
         if self.attnres is not None:
             assert attnres_state is not None

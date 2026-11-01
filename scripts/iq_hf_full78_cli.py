@@ -1,0 +1,544 @@
+#!/usr/bin/env python3
+"""Interactive full78 IQ chat in YOUR local terminal, backed by one HF H200 Job.
+
+Default is free preflight. --run-h200 explicitly authorizes one 30-minute
+billable GPU Job, loads the full78 sparse checkpoint read-only, and exposes a
+private/authenticated chat endpoint. Type prompts in this CLI; /quit or Ctrl+C
+requests cancellation and verifies shutdown. The server uses full-prefix
+Mamba-3 MIMO and real on-demand expert safetensors. No hidden second GPU Job.
+
+The 235-layer model has not yet completed a full first-token inference; this
+CLI may fail readiness within the Job timeout. A successful HTTP response is
+NOT proof of coherent language or knowledge transfer.
+"""
+from __future__ import annotations
+
+from datetime import datetime
+import argparse
+import inspect
+import json
+import os
+import re
+import signal
+import subprocess
+import sys
+import threading
+import time
+from pathlib import Path
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
+
+from huggingface_hub import (
+    InferenceClient,
+    Volume,
+    cancel_job,
+    fetch_job_logs,
+    get_token,
+    inspect_job,
+    run_job,
+    whoami,
+)
+
+REPO = Path(__file__).resolve().parent.parent
+BRANCH = "audit/glm53-cuda-stack-preflight-20261024"
+EXPECTED_ACCOUNT = "kofecheckmate"
+IMAGE = "pytorch/pytorch:2.10.0-cuda12.8-cudnn9-devel"
+CHECKPOINT = "kofecheckmate/iq-glm53-all256"
+TOKENIZER = "unsloth/Meta-Llama-3.1-8B"
+PORT = 8000
+TERMINAL = {"COMPLETED", "CANCELED", "ERROR", "DELETED"}
+def normalized_stage(raw: object) -> str:
+    # HF Hub exposes stage as an enum in some versions and a string in others.
+    value = getattr(raw, "value", raw)
+    return str(value).rsplit(".", 1)[-1].upper()
+
+
+MAX_TOKENS = 256
+HF_JOB_LIMIT_SECONDS = 1800
+HF_JOB_RESERVE_SECONDS = 90
+MAX_HISTORY_MESSAGES = 64
+DEFAULT_LOG_DIR = Path.home() / "iq-h200-logs"
+
+
+def job_deadline_epoch(job: object) -> float:
+    """HF timeout is measured from job creation, including installation."""
+    created = getattr(job, "created_at", None)
+    if isinstance(created, datetime):
+        if created.tzinfo is None:
+            raise RuntimeError("HF Job creation time is missing its timezone")
+        return created.timestamp() + HF_JOB_LIMIT_SECONDS
+    if isinstance(created, str):
+        parsed = datetime.fromisoformat(created.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            raise RuntimeError("HF Job creation time is missing its timezone")
+        return parsed.timestamp() + HF_JOB_LIMIT_SECONDS
+    raise RuntimeError("HF Job creation timestamp is unavailable; refusing unbounded session")
+
+
+def remaining_seconds(deadline_epoch: float) -> int:
+    return max(0, int(deadline_epoch - time.time()))
+
+
+def report_deadline(deadline_epoch: float) -> None:
+    remaining = remaining_seconds(deadline_epoch)
+    print(
+        f"IQ_H200_TIME_REMAINING_SECONDS={remaining} "
+        f"minutes={remaining // 60} seconds={remaining % 60}",
+        flush=True,
+    )
+
+
+def show_deadline_until_stopped(deadline_epoch: float, stop: threading.Event) -> None:
+    # Runs even while input() waits for a question; no silent billed idle time.
+    report_deadline(deadline_epoch)
+    while not stop.wait(60):
+        report_deadline(deadline_epoch)
+        if remaining_seconds(deadline_epoch) <= HF_JOB_RESERVE_SECONDS:
+            print("IQ_H200_DEADLINE_WARNING=Job close to expiry; requests are disabled", flush=True)
+            return
+
+
+def check_request_budget(deadline_epoch: float, configured_timeout: int) -> int:
+    remaining = remaining_seconds(deadline_epoch)
+    budget = remaining - HF_JOB_RESERVE_SECONDS
+    if budget < 1:
+        raise TimeoutError(
+            f"H200 job expires too soon for new inference: {remaining}s remaining; "
+            "the next request would risk endpoint termination. Start a fresh job."
+        )
+    return min(configured_timeout, budget)
+
+
+def classify_request_error(job_id: str, deadline_epoch: float, error: Exception) -> RuntimeError:
+    remaining = remaining_seconds(deadline_epoch)
+    try:
+        stage = normalized_stage(
+            inspect_job(job_id=job_id, namespace=EXPECTED_ACCOUNT).status.stage
+        )
+    except Exception as status_error:
+        stage = f"UNKNOWN ({type(status_error).__name__})"
+    if remaining <= HF_JOB_RESERVE_SECONDS:
+        category = "JOB_DEADLINE_EXPIRED_OR_IMMINENT"
+    elif stage == "ERROR":
+        category = "REMOTE_JOB_FAILED"
+    elif stage in TERMINAL:
+        category = f"REMOTE_JOB_STOPPED_{stage}"
+    elif stage == "RUNNING":
+        category = "ENDPOINT_OR_PROXY_ERROR_WHILE_RUNNING"
+    else:
+        category = f"REMOTE_JOB_STAGE_{stage}"
+    return RuntimeError(
+        f"IQ_H200_REQUEST_FAILURE={category} stage={stage} "
+        f"remaining_seconds={remaining} error={type(error).__name__}: {error}"
+    )
+
+
+def git(*arguments: str) -> str:
+    return subprocess.check_output(
+        ["git", "-C", str(REPO), *arguments],
+        text=True, stderr=subprocess.PIPE,
+    ).strip()
+
+
+def checked_commit() -> str:
+    branch = git("branch", "--show-current")
+    if branch != BRANCH:
+        raise RuntimeError(
+            f"Expected branch {BRANCH!r}, got {branch!r}. "
+            "Check out the full78 development branch."
+        )
+    if git("status", "--porcelain", "--untracked-files=no"):
+        raise RuntimeError("Tracked local edits present; commit them before launching.")
+    commit = git("rev-parse", "HEAD")
+    if not re.fullmatch(r"[0-9a-f]{40}", commit):
+        raise RuntimeError("Invalid local Git SHA")
+    subprocess.run(
+        ["git", "-C", str(REPO), "fetch", "--quiet", "origin", BRANCH],
+        check=True,
+    )
+    if git("rev-parse", f"origin/{BRANCH}") != commit:
+        raise RuntimeError("Local branch is not at the current remote HEAD: git pull --ff-only.")
+    return commit
+
+
+def validate_auth() -> str:
+    token = get_token()
+    if not token:
+        raise RuntimeError("HF login required: hf auth login")
+    user = whoami(token=token)
+    account = user.get("name") if isinstance(user, dict) else None
+    if account != EXPECTED_ACCOUNT:
+        raise RuntimeError(
+            f"CLI authenticated as {account!r}, expected {EXPECTED_ACCOUNT!r}. "
+            "This prevents accidentally charging the wrong account."
+        )
+    return token
+
+
+def command_for(commit: str) -> list[str]:
+    # Git commit is validated 40-hex; everything else is constant.
+    setup = (
+        "set -euo pipefail; "
+        "apt-get update -qq && "
+        "apt-get install -y -qq git python3-venv python3-dev >/dev/null; "
+        "git clone -q https://github.com/Harqer/IQ.git /workspace/IQ; "
+        "cd /workspace/IQ; "
+        f"git checkout -q {commit}; "
+        "export IQ_TOKENIZER_DIR=/tokenizer; "
+        "bash scripts/hf_container_venv.sh python -m scripts.serve_iq_full78_hf"
+    )
+    return ["bash", "-lc", setup]
+
+
+
+def validate_logs_api() -> None:
+    """Fail locally if SDK cannot stream remote Job logs."""
+    try:
+        inspect.signature(fetch_job_logs).bind(
+            job_id="0" * 24, namespace=EXPECTED_ACCOUNT,
+            follow=True, tail=100,
+        )
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(
+            "Installed huggingface_hub lacks the required fetch_job_logs "
+            f"API: {exc}. Upgrade locally before launching a paid H200."
+        ) from exc
+
+
+def follow_job_logs(job_id: str, path: Path, failures: list[str]) -> None:
+    """Mirror H200 container stdout/stderr live to the terminal and local file.
+
+    This is the HF Job log stream, NOT content stored in the checkpoint
+    bucket, which remains read-only. Runs in a daemon thread so it cannot
+    prevent cancellation or delay process exit if the stream stalls.
+    """
+    try:
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+            for raw in fetch_job_logs(
+                job_id=job_id, namespace=EXPECTED_ACCOUNT,
+                follow=True, tail=100,
+            ):
+                line = str(raw).rstrip("\r\n")
+                if line:
+                    print(f"[H200] {line}", flush=True)
+                    output.write(line + "\n")
+                    output.flush()
+    except Exception as exc:
+        failures.append(str(exc))
+        print(
+            f"IQ_H200_LOG_STREAM_ERROR={type(exc).__name__}: {exc}\n"
+            "Use 'hf jobs logs --follow --namespace kofecheckmate JOB_ID' "
+            "to inspect the container logs directly.",
+            file=sys.stderr, flush=True,
+        )
+
+
+def launch_log_follower(job_id: str, log_dir: Path) -> tuple[threading.Thread, list[str], Path]:
+    """Start remote log streaming immediately after a job is submitted."""
+    if not re.fullmatch(r"[0-9a-f]{24}", job_id):
+        raise RuntimeError("Invalid HF Job ID for log stream")
+    log_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if log_dir.is_symlink() or not log_dir.is_dir():
+        raise RuntimeError("Unsafe local H200 logging directory")
+    logfile = log_dir / f"{job_id}.log"
+    if logfile.exists() or logfile.is_symlink():
+        raise RuntimeError(f"Refusing to overwrite H200 log: {logfile}")
+    # Restrict the locally stored logs to this user by default.
+    failures: list[str] = []
+    t = threading.Thread(
+        target=follow_job_logs,
+        args=(job_id, logfile, failures),
+        name="iq-h200-log-stream", daemon=True,
+    )
+    t.start()
+    print(f"IQ_H200_LOG_FILE={logfile}", flush=True)
+    return t, failures, logfile
+
+
+def endpoint(job_id: str) -> str:
+    if not re.fullmatch(r"[0-9a-f]{24}", job_id):
+        raise RuntimeError("Unexpected Hugging Face Job ID")
+    return f"https://{job_id}--{PORT}.hf.jobs"
+
+
+def health_ready(base: str, token: str) -> bool:
+    req = Request(
+        f"{base}/health",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    try:
+        with urlopen(req, timeout=10) as response:
+            return json.load(response).get("status") == "ready"
+    except (HTTPError, URLError, TimeoutError, ValueError, OSError):
+        return False
+
+
+def wait_for_server(job_id: str, token: str, deadline_seconds: int,
+                    log_failures: list[str] | None = None,
+                    job_deadline_epoch: float | None = None) -> str:
+    base = endpoint(job_id)
+    end = time.monotonic() + deadline_seconds
+    last_stage = None
+    while time.monotonic() < end:
+        if job_deadline_epoch is not None and remaining_seconds(job_deadline_epoch) <= HF_JOB_RESERVE_SECONDS:
+            raise TimeoutError("H200 Job is approaching its 30-minute deadline during startup")
+        if log_failures:
+            raise RuntimeError("H200 Job log stream failed: " + log_failures[0])
+        stage = normalized_stage(inspect_job(job_id=job_id, namespace=EXPECTED_ACCOUNT).status.stage)
+        if stage in TERMINAL:
+            raise RuntimeError(f"HF Job ended before chat became ready ({stage}). See job logs.")
+        if stage != last_stage:
+            print(f"HF Job stage: {stage}", flush=True)
+            last_stage = stage
+        if stage == "RUNNING" and health_ready(base, token):
+            print("IQ_FULL78_CLI_READY=1", flush=True)
+            return base
+        time.sleep(10)
+    raise TimeoutError(
+        "IQ full78 chat did not become ready before deadline; "
+        "the H200 Job will be canceled."
+    )
+
+
+def reply(client: InferenceClient, history: list[dict[str, str]], max_tokens: int) -> str:
+    """Print and collect the ACTUAL full78 token stream, preserving chat history."""
+    chunks = client.chat.completions.create(
+        messages=history, max_tokens=max_tokens, stream=True,
+    )
+    response: list[str] = []
+    completed = False
+    print("IQ: ", end="", flush=True)
+    for chunk in chunks:
+        for choice in chunk.choices:
+            content = getattr(choice.delta, "content", None)
+            if isinstance(content, str) and content:
+                print(content, end="", flush=True)
+                response.append(content)
+            if getattr(choice, "finish_reason", None) is not None:
+                completed = True
+    print(flush=True)
+    if not completed:
+        raise RuntimeError(
+            "IQ response stream ended before generation completed; "
+            "partial output was not saved as a successful reply. See H200 logs."
+        )
+    return "".join(response)
+
+
+def chat_loop(base: str, token: str, *, max_tokens: int, timeout: int,
+              job_id: str, deadline_epoch: float,
+              smoke_prompt: str | None = None,
+              transcript: Path | None = None) -> None:
+    history: list[dict[str, str]] = []
+    print(
+        "IQ full78 CLI: type a question; /clear clears history; "
+        "/quit exits AND cancels the H200 job.",
+        flush=True,
+    )
+    try:
+        # Automatically exercise the remote endpoint as soon as it is healthy.
+        # This avoids idling until the 30-minute job expires.
+        pending_smoke = smoke_prompt
+        while True:
+            if pending_smoke is not None:
+                message = pending_smoke
+                pending_smoke = None
+                print(f"You [automatic smoke]: {message}", flush=True)
+            else:
+                try:
+                    message = input("You: ").strip()
+                except EOFError:
+                    break
+            if not message:
+                continue
+            if message == "/quit":
+                break
+            if message == "/clear":
+                history.clear()
+                print("Conversation cleared.", flush=True)
+                continue
+            if message == "/help":
+                print("Commands: /clear, /quit, /help", flush=True)
+                continue
+            if len(history) + 2 > MAX_HISTORY_MESSAGES:
+                print("Conversation history limit reached. Type /clear to start over.", flush=True)
+                continue
+            proposal = history + [{"role": "user", "content": message}]
+            report_deadline(deadline_epoch)
+            try:
+                bounded_timeout = check_request_budget(deadline_epoch, timeout)
+                client = InferenceClient(base_url=base, token=token, timeout=bounded_timeout)
+                answer = reply(client, proposal, max_tokens)
+            except Exception as error:
+                raise classify_request_error(job_id, deadline_epoch, error) from error
+            report_deadline(deadline_epoch)
+            # Keep only successful exchanges; never silently drop prior turns.
+            history = proposal + [{"role": "assistant", "content": answer}]
+    finally:
+        if transcript is not None:
+            if transcript.exists() or transcript.is_symlink():
+                raise RuntimeError(f"Refusing to overwrite existing transcript {transcript}")
+            transcript.write_text(
+                json.dumps(history, indent=2, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+
+
+def cancel_and_verify(job_id: str) -> bool:
+    print(f"Canceling paid H200 Job {job_id}...", flush=True)
+    for attempt in range(3):
+        try:
+            cancel_job(job_id=job_id, namespace=EXPECTED_ACCOUNT)
+            break
+        except Exception as error:
+            # The Job might have already timed out/terminated.
+            try:
+                stage = normalized_stage(inspect_job(
+                    job_id=job_id, namespace=EXPECTED_ACCOUNT,
+                ).status.stage)
+                if stage in TERMINAL:
+                    print(f"Job already terminal: {stage}", flush=True)
+                    return True
+            except Exception:
+                pass
+            print(f"Cancel attempt {attempt+1} failed: {error}", file=sys.stderr)
+            time.sleep(2)
+    for _ in range(5):
+        try:
+            stage = normalized_stage(inspect_job(
+                job_id=job_id, namespace=EXPECTED_ACCOUNT,
+            ).status.stage)
+            if stage in TERMINAL:
+                print(f"IQ_HF_JOB_TERMINATED={stage}", flush=True)
+                return True
+        except Exception as error:
+            print(f"Job status verification failed: {error}", file=sys.stderr)
+        time.sleep(2)
+    print(
+        f"UNVERIFIED CANCELLATION: check https://huggingface.co/jobs/{EXPECTED_ACCOUNT}/{job_id}",
+        file=sys.stderr,
+    )
+    return False
+
+
+def job_options(commit: str) -> dict:
+    """Construct the HF Job request without invoking the paid API.
+
+    No attempts= argument: supported SDKs default to one attempt, and
+    currently installed versions may reject the newer optional parameter.
+    """
+    return {
+        "image": IMAGE,
+        "command": command_for(commit),
+        "flavor": "h200",
+        "timeout": "30m",
+        "namespace": EXPECTED_ACCOUNT,
+        "volumes": [
+            Volume(type="bucket", source=CHECKPOINT,
+                   mount_path="/checkpoints", read_only=True),
+            Volume(type="model", source=TOKENIZER,
+                   mount_path="/tokenizer", read_only=True),
+        ],
+        "expose": [PORT],
+    }
+
+
+def validate_jobs_api(options: dict) -> None:
+    """Check all submission kwargs against the installed HF SDK before billing."""
+    try:
+        inspect.signature(run_job).bind(**options)
+    except (ValueError, TypeError) as exc:
+        raise RuntimeError(
+            "Installed huggingface_hub Jobs API is incompatible with the "
+            f"requested H200 job parameters: {exc}. "
+            "Upgrade huggingface_hub before submitting a paid job."
+        ) from exc
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--run-h200", action="store_true",
+                        help="Explicitly authorize one billable H200 (30-minute timeout)")
+    parser.add_argument("--max-tokens", type=int, default=128,
+                        help="Maximum generated response length (1..256; default 128)")
+    parser.add_argument("--ready-timeout", type=int, default=1200,
+                        help="Maximum server readiness wait in seconds (<=1400)")
+    parser.add_argument("--request-timeout", type=int, default=1200)
+    parser.add_argument("--smoke-prompt", type=str, default=None,
+                        help="Automatically submit this test question when chat becomes ready")
+    parser.add_argument("--transcript", type=Path)
+    parser.add_argument("--log-dir", type=Path, default=DEFAULT_LOG_DIR,
+                        help="Save live H200 container logs locally (default ~/iq-h200-logs)")
+    args = parser.parse_args()
+    if not 1 <= args.max_tokens <= MAX_TOKENS:
+        parser.error("max-tokens must be 1..256")
+    if not 1 <= args.ready_timeout <= 1400 or args.request_timeout < 1:
+        parser.error("Invalid readiness/request timeout")
+    commit = checked_commit()
+    token = validate_auth()
+    options = job_options(commit)
+    validate_jobs_api(options)
+    validate_logs_api()
+    print(f"IQ full78 CLI preflight OK, commit={commit}", flush=True)
+    if not args.run_h200:
+        print(
+            "No GPU started. To launch a billable H200 for 30 minutes, "
+            "rerun with --run-h200.",
+            flush=True,
+        )
+        return 0
+    job_id: str | None = None
+    log_thread: threading.Thread | None = None
+    deadline_stop = threading.Event()
+    countdown_thread: threading.Thread | None = None
+    try:
+        job = run_job(**options)
+        job_id = str(job.id)
+        deadline_epoch = job_deadline_epoch(job)
+        countdown_thread = threading.Thread(
+            target=show_deadline_until_stopped,
+            args=(deadline_epoch, deadline_stop),
+            name="iq-h200-deadline", daemon=True,
+        )
+        countdown_thread.start()
+        print(
+            f"HF_JOB_ID={job_id}\n"
+            f"HF_JOB_URL=https://huggingface.co/jobs/{EXPECTED_ACCOUNT}/{job_id}\n"
+            "The remote GPU auto-times out after 30 minutes.",
+            flush=True,
+        )
+        log_thread, log_failures, logfile = launch_log_follower(job_id, args.log_dir)
+        base = wait_for_server(job_id, token, args.ready_timeout,
+                               log_failures=log_failures,
+                               job_deadline_epoch=deadline_epoch)
+        chat_loop(
+            base, token, max_tokens=args.max_tokens,
+            timeout=args.request_timeout, job_id=job_id,
+            deadline_epoch=deadline_epoch, smoke_prompt=args.smoke_prompt,
+            transcript=args.transcript,
+        )
+        return 0
+    except KeyboardInterrupt:
+        print("\nInterrupt requested; canceling the H200 Job.", flush=True)
+        return 130
+    finally:
+        deadline_stop.set()
+        if job_id is not None:
+            if not cancel_and_verify(job_id):
+                print("WARNING: Cancellation unverified. Manually cancel the HF Job.",
+                      file=sys.stderr)
+        if log_thread is not None:
+            log_thread.join(timeout=2)
+
+
+if __name__ == "__main__":
+    signal.signal(
+        signal.SIGTERM,
+        lambda signum, frame: (_ for _ in ()).throw(KeyboardInterrupt()),
+    )
+    try:
+        sys.exit(main())
+    except Exception as exc:
+        print(f"IQ_FULL78_CLI_ERROR={exc}", file=sys.stderr)
+        sys.exit(1)

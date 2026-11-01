@@ -55,6 +55,22 @@ def _parser() -> argparse.ArgumentParser:
         "--reuse-weight-only",
         help="read-only original canonical 24-stage calibration, reusing matching GLM source layer coordinates",
     )
+    glm_bootstrap.add_argument(
+        "--repair-overlay", action="store_true",
+        help="regenerate only missing stage groups inside a verified temporary full78 overlay",
+    )
+    glm_bootstrap.add_argument(
+        "--repair-max-stages", type=int,
+        help="limit a genuine multi-stage WARM recovery session on a free CUDA worker; 1..78",
+    )
+    glm_bootstrap.add_argument(
+        "--repair-stage-ids",
+        help="comma-separated verified missing source-layer IDs; compute only these stages without re-reading saved WARM maps",
+    )
+    glm_bootstrap.add_argument(
+        "--repair-publish-directory",
+        help="write each complete stage into a remote bucket staging namespace with SHA receipt last",
+    )
     glm_bootstrap.add_argument("--checkpoint-revision", required=True)
     glm_bootstrap.add_argument("--repo-id", default="zai-org/GLM-5.3-BF16")
     glm_bootstrap.add_argument("--donor-license", required=True)
@@ -296,6 +312,69 @@ def main(argv: list[str] | None = None) -> int:
             if args.full_78
             else canonical_glm53_config(routed_experts=args.routed_experts)
         )
+        if args.repair_publish_directory and not args.repair_overlay:
+            parser.error("--repair-publish-directory requires --repair-overlay")
+        if args.repair_overlay:
+            if not args.full_78 or args.source_activations or args.reuse_weight_only:
+                parser.error("--repair-overlay requires full78 weight-only bootstrap without original reuse")
+            from .glm53_partial_repair import PartialCalibrationStageWriter
+            sink = PartialCalibrationStageWriter(
+                args.output, target_config=target_config,
+                publish_directory=args.repair_publish_directory,
+            )
+            if args.repair_max_stages is not None and not (
+                1 <= args.repair_max_stages <= 78
+            ):
+                parser.error("--repair-max-stages must be in 1..78")
+            already_present = len(sink.skip_stages)
+            if args.repair_stage_ids:
+                if args.repair_max_stages is not None:
+                    parser.error("--repair-stage-ids is exclusive with --repair-max-stages")
+                try:
+                    selected = [int(v.strip()) for v in args.repair_stage_ids.split(",")]
+                except ValueError:
+                    parser.error("--repair-stage-ids must contain integer source layers")
+                if (not selected or len(selected) > 8 or
+                    len(set(selected)) != len(selected) or
+                    any(stage not in sink.missing_stages for stage in selected)):
+                    parser.error("repair stage IDs must be unique, currently missing, and 1..8 total")
+            else:
+                selected = sink.missing_stages[
+                    :args.repair_max_stages
+                ] if args.repair_max_stages else list(sink.missing_stages)
+            selected_ids = frozenset(selected)
+            print(json.dumps({
+                "calibration_repair_existing_stages": already_present,
+                "calibration_repair_selected_stages": selected,
+                "calibration_repair_missing_stages": sink.missing_stages,
+                "mode": "incremental_streaming",
+            }, sort_keys=True), flush=True)
+            bootstrap_glm53_calibration(
+                source,
+                source_weights=source_weights,
+                source_hidden_size=inspector.config.hidden_size,
+                target_config=target_config,
+                source_layers=inspector.config.num_hidden_layers,
+                source_first_dense_layers=inspector.layout.first_k_dense_replace,
+                source_num_experts=inspector.layout.n_routed_experts,
+                source_indexer_types=inspector.layout.indexer_types,
+                warm_device=args.warm_device,
+                skip_stages=frozenset(range(78)).difference(selected_ids),
+                stage_sink=sink.write_stage,
+            )
+            if selected_ids.intersection(sink.missing_stages):
+                raise RuntimeError("selected WARM stages were not durably written")
+            if sink.missing_stages:
+                print(json.dumps({
+                    "status": "PARTIAL_STAGE_RECOVERY_COMPLETE",
+                    "stages_completed_this_session": selected,
+                    "remaining_missing_stages": sink.missing_stages,
+                }, sort_keys=True), flush=True)
+            else:
+                print("GLM53_ALL_78_STAGE_FILES_PRESENT_AFTER_REPAIR", flush=True)
+            # Never claim receipt validity: symlinked overlay files must be
+            # materialized and verified remotely before full checkpoint run.
+            return 0
         solution = bootstrap_glm53_calibration(
             source,
             source_weights=source_weights,

@@ -133,7 +133,7 @@ def _installed_mamba() -> dict[str, str]:
         require_mamba3_mimo_runtime,
     )
 
-    for name, expected in (("tilelang", "0.1.8"), ("apache-tvm-ffi", "0.1.9")):
+    for name, expected in (("tilelang", "0.1.12"), ("apache-tvm-ffi", "0.1.11"), ("quack-kernels", "0.6.5"), ("nvidia-cutlass-dsl", "4.8.1")):
         actual = _version(name)
         if actual != expected:
             raise RuntimeContractError(
@@ -151,8 +151,8 @@ def _installed_mamba() -> dict[str, str]:
         "tilelang": _version("tilelang"),
         "tvm_ffi": _version("apache-tvm-ffi"),
         "quack": _version("quack-kernels"),
-        "decode_strategy": "full_prefix",
-        "decode_note": "CuTe step() remains unverified; retain native rank-4 MIMO full-prefix recomputation",
+        "decode_strategy": "native_hybrid_incremental",
+        "decode_note": "CuTe MIMO step must pass pinned-H200 numerical parity before full checkpoint loading",
     }
 
 

@@ -338,7 +338,11 @@ def _copy_tokenizer_assets(source_dir: Path, output_dir: Path) -> None:
     ):
         source = source_dir / name
         if source.is_file():
-            shutil.copy2(source, output_dir / name)
+            from .glm53_bucket_persistence import durable_output, publish_file
+            if durable_output(output_dir):
+                publish_file(output_dir, name, source, idempotent=True)
+            else:
+                shutil.copy2(source, output_dir / name)
 
 
 def _validate_expanded_calibration(
@@ -399,7 +403,9 @@ def compile_glm53_iq_checkpoint(
             "expanded GLM compile requires a NEW empty directory; refusing "
             "to overwrite the original checkpoint or an earlier candidate"
         )
-    output.mkdir(parents=True, exist_ok=True)
+    from .glm53_bucket_persistence import durable_output
+    if not durable_output(output):
+        output.mkdir(parents=True, exist_ok=True)
     calibration = (LazyGLM53Calibration(calibration_dir) if streaming_source
                    else GLM53CalibrationSolution.load(calibration_dir))
     if resume_existing:
@@ -551,7 +557,62 @@ def compile_glm53_iq_checkpoint(
             weight_map,
         )
 
-    for stage in calibration.stages:
+    for stage_number in range(len(calibration.stages)):
+        # An intact stage already has its exact per-expert safetensors.
+        # During resume, DO NOT load large WARM calibration matrices or
+        # compute pseudoinverses just to revisit 258 previously saved shards.
+        # This is critical on 14 GiB RAM machines with 20k existing files.
+        if resume_existing and streaming_source and isinstance(calibration, LazyGLM53Calibration):
+            record = calibration.stages.records[stage_number]
+            stage_id = int(record["stage"])
+            source_layer = int(record["source_layer"])
+            context_physical = int(record["context_physical_layer"])
+            moe_physical = int(record["moe_physical_layer"])
+            prefix = f"model-moe-{stage_id:03d}-"
+            names = [
+                f"model-context-{stage_id:03d}.safetensors",
+                prefix + "common.safetensors",
+                prefix + "shared.safetensors",
+                *(prefix + f"expert-{i:03d}.safetensors"
+                  for i in range(config.stable_moe.num_experts)),
+            ]
+            report = output / (prefix + "projection.json")
+            mounted_ready = report.is_file() and all(
+                (output / name).is_file() for name in names
+            )
+            if durable_output(output) and not mounted_ready:
+                # Remote durability audit is authoritative. A stale NFS view
+                # must NEVER fall through into multi-GiB pseudoinverses.
+                from .glm53_bucket_persistence import remote_checkpoint_sizes
+                remote_checkpoint_sizes(
+                    output, names + [prefix + "projection.json"]
+                )
+                raise GLM53CompileError(
+                    f"HF bucket has all stage {stage_id} shards, but read-only "
+                    "NFS mount is stale. Refresh mount; do not recompute."
+                )
+            if mounted_ready:
+                if source_layer < inspector.layout.first_k_dense_replace:
+                    provenance["selected_source_expert_ids"][str(stage_id)] = None
+                else:
+                    usage_file = record.get("expert_usage")
+                    if not usage_file:
+                        raise GLM53CompileError(f"Missing routing usage at stage {stage_id}")
+                    usage = np.load(Path(calibration_dir) / usage_file, allow_pickle=False)
+                    selected_ids = select_experts_by_usage(
+                        usage, target_experts=config.stable_moe.num_experts,
+                    )
+                    provenance["selected_source_expert_ids"][str(stage_id)] = list(selected_ids)
+                for name in names:
+                    register_saved_shard(
+                        output, name, weight_map,
+                        layer=context_physical if name.startswith("model-context-")
+                        else moe_physical,
+                    )
+                print(f"IQ_FULL78_FAST_RESUMED_STAGE={stage_id}", flush=True)
+                continue
+
+        stage = calibration.stages[stage_number]
         if stage.source_layer < inspector.layout.first_k_dense_replace:
             provenance["selected_source_expert_ids"][str(stage.stage)] = None
         else:
@@ -614,21 +675,42 @@ def compile_glm53_iq_checkpoint(
 
     if reuse_foundation_checkpoint is None:
         assert mamba3_checkpoint is not None
-        with tempfile.TemporaryDirectory(prefix="iq-glm53-mamba-") as temporary:
-            overlay = Path(temporary)
-            compile_official_mamba3_mimo_15b_transplant(
-                checkpoint=mamba3_checkpoint,
-                output_dir=overlay,
-                checkpoint_revision=mamba3_revision,
-                verify_checkpoint_hash=verify_hashes,
+        positions = config.schedule.positions(HybridLayerType.MAMBA3)
+        mamba_files = [
+            f"model-mamba-{ordinal:03d}.safetensors"
+            for ordinal in range(len(positions))
+        ]
+        mamba_mounted_ready = all((output / name).is_file() for name in mamba_files)
+        if resume_existing and durable_output(output) and not mamba_mounted_ready:
+            from .glm53_bucket_persistence import remote_checkpoint_sizes
+            remote_checkpoint_sizes(output, mamba_files)
+            raise GLM53CompileError(
+                "All 79 Mamba shards are durable in HF but mount metadata "
+                "is stale. Refresh the read-only mount; do not reload donor."
             )
-            _translate_mamba_overlay(
-                overlay_dir=overlay,
-                config=config,
-                output_dir=output,
-                weight_map=weight_map,
-                resume_existing=resume_existing,
-            )
+        if resume_existing and mamba_mounted_ready:
+            # Do not torch.load() the complete 1.5B Mamba donor on a
+            # metadata-only continuation. Reuse and validate saved headers.
+            for ordinal, name in enumerate(mamba_files):
+                register_saved_shard(output, name, weight_map,
+                                     layer=positions[ordinal])
+            print("IQ_FULL78_FAST_RESUMED_MAMBA=79", flush=True)
+        else:
+            with tempfile.TemporaryDirectory(prefix="iq-glm53-mamba-") as temporary:
+                overlay = Path(temporary)
+                compile_official_mamba3_mimo_15b_transplant(
+                    checkpoint=mamba3_checkpoint,
+                    output_dir=overlay,
+                    checkpoint_revision=mamba3_revision,
+                    verify_checkpoint_hash=verify_hashes,
+                )
+                _translate_mamba_overlay(
+                    overlay_dir=overlay,
+                    config=config,
+                    output_dir=output,
+                    weight_map=weight_map,
+                    resume_existing=resume_existing,
+                )
 
     if not (
         resume_existing and register_saved_shard(
@@ -652,28 +734,43 @@ def compile_glm53_iq_checkpoint(
             f"missing={missing[:60]} unexpected={unexpected[:60]}"
         )
 
-    config.write_json(str(output / "iq_config.json"))
+    from .glm53_bucket_persistence import (
+        durable_output, local_stage_dir, publish_file,
+        remote_checkpoint_sizes, write_checkpoint_text,
+    )
+    if durable_output(output):
+        with local_stage_dir(output) as td:
+            local_config = Path(td) / "iq_config.json"
+            config.write_json(str(local_config))
+            publish_file(output, "iq_config.json", local_config, idempotent=True)
+    else:
+        config.write_json(str(output / "iq_config.json"))
+
     _copy_tokenizer_assets(
         Path(reuse_foundation_checkpoint)
         if reuse_foundation_checkpoint is not None else Path(mamba3_checkpoint),
         output,
     )
+
+    files = sorted(set(weight_map.values()))
+    if durable_output(output):
+        # These are remote Hub metadata, not stale NFS-mounted stat values.
+        sizes = remote_checkpoint_sizes(output, files)
+        total_size = sum(sizes.values())
+    else:
+        total_size = sum((output / filename).stat().st_size for filename in files)
+
     index = {
-        "metadata": {
-            "total_size": sum(
-                (output / filename).stat().st_size
-                for filename in sorted(set(weight_map.values()))
-            )
-        },
+        "metadata": {"total_size": total_size},
         "weight_map": dict(sorted(weight_map.items())),
     }
-    (output / "model.safetensors.index.json").write_text(
+    write_checkpoint_text(
+        output, "model.safetensors.index.json",
         json.dumps(index, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
     )
-    (output / "transplant_manifest.json").write_text(
+    write_checkpoint_text(
+        output, "transplant_manifest.json",
         json.dumps(provenance, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
     )
     return GLM53CompileResult(
         output_dir=output,

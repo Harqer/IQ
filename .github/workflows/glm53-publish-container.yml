@@ -1,0 +1,80 @@
+name: Publish IQ CUDA GPU Worker
+
+on:
+  push:
+    branches:
+      - audit/glm53-cuda-stack-preflight-20261024
+    paths:
+      - Dockerfile.glm53-hf-gpu
+      - requirements-model.txt
+      - requirements-transfer.txt
+      - iq_transfer/**
+      - scripts/** 
+      - tests/test_glm53_*.py
+      - .github/workflows/glm53-publish-container.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: iq-glm53-container-publish
+  cancel-in-progress: true
+
+jobs:
+  validate-and-publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve lowercase GHCR image name and immutable tag
+        shell: bash
+        run: |
+          echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/iq-glm53-hf-gpu" >> "$GITHUB_ENV"
+          echo "SHA_TAG=sha-${GITHUB_SHA:0:12}" >> "$GITHUB_ENV"
+
+      - name: Authenticate using repository-scoped GITHUB_TOKEN
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build pinned CUDA 12.8 container
+        run: |
+          docker build --progress=plain \
+            -f Dockerfile.glm53-hf-gpu \
+            -t "$IMAGE:$SHA_TAG" \
+            -t "$IMAGE:cuda12.8-edge" .
+
+      - name: Verify actual container package versions and full offline regression suite
+        run: |
+          docker run --rm --env IQ_PROJECTION_DEVICE=cpu \
+            --entrypoint /bin/bash "$IMAGE:$SHA_TAG" -lc '
+              set -euo pipefail
+              python -c "import torch; assert torch.__version__.startswith(\"2.10.0+cu128\"); assert torch.version.cuda == \"12.8\""
+              python scripts/check_glm53_gpu_stack.py --model-runtime --pip-check
+              python -m unittest discover -s tests -p "test_*.py" -q
+              bash -n scripts/run_glm53_gpu_calibration_batch.sh
+            '
+
+      - name: Verify deployment refuses CPU rather than silently training without CUDA
+        run: |
+          docker run --rm --entrypoint /bin/bash "$IMAGE:$SHA_TAG" -lc '
+            set -euo pipefail
+            if python scripts/check_glm53_gpu_stack.py --require-cuda --smoke --pip-check; then
+              echo "Unexpected GPU detected on CPU Actions runner"
+              exit 1
+            fi
+            echo "IQ_GPU_REQUIRED_GATE_WORKING"
+          '
+
+      - name: Publish immutable CUDA container and current branch alias
+        run: |
+          docker push "$IMAGE:$SHA_TAG"
+          docker push "$IMAGE:cuda12.8-edge"
+          docker image inspect "$IMAGE:$SHA_TAG" --format 'Published validated image ID: {{.Id}}'
+          echo "IQ_PUBLISHED_GPU_WORKER=$IMAGE:$SHA_TAG" >> "$GITHUB_STEP_SUMMARY"
+          echo "This is a CUDA-enabled image. No actual GPU was allocated in this build." >> "$GITHUB_STEP_SUMMARY"

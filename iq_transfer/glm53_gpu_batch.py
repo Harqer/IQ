@@ -1,0 +1,228 @@
+"""CUDA-only bounded batched projection of GLM sparse MoE tensors.
+
+One call processes several *real* routed experts using shared GPU-resident
+WARM bases and batched GEMMs. It does not launch a separate benchmark and
+never saves partial output: the caller atomically persists each completed
+expert after the entire batch has passed validation.
+
+The independent CPU/NumPy projection remains the numerical reference.
+"""
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass
+from typing import Any
+
+import numpy as np
+import torch
+
+from .glm53_gpu_projection import ProjectionComputeError, ProjectionOps
+
+
+@dataclass(frozen=True)
+class ExpertSpec:
+    slot: int
+    donor_id: int
+
+
+# GPU memory is the initial scheduling heuristic, not a guarantee that
+# scratch CPU RAM or available CUDA memory can fit the request. Runtime CUDA
+# OOM recovery halves each staged batch without repeating HTTP downloads.
+_MIB = 1024 * 1024
+_MAX_BATCH_EXPERTS = 32
+_MAX_SOURCE_MIB = 2048
+
+
+def _gpu_batch_profile(device_memory_gib: float) -> tuple[int, int]:
+    """(requested experts, BF16 source MiB) for one CUDA device."""
+    if device_memory_gib >= 120:
+        return (24, 2048)  # H200 141 GiB or larger
+    if device_memory_gib >= 80:
+        return (16, 1536)  # RTX PRO 6000 Blackwell 96 GiB
+    if device_memory_gib >= 40:
+        return (8, 1024)   # L40S 48 GiB
+    return (4, 512)        # L4 / T4 / local cards
+
+
+def _cuda_total_gib() -> float:
+    if not torch.cuda.is_available():
+        return 0.0
+    try:
+        device = torch.cuda.current_device()
+        return torch.cuda.get_device_properties(device).total_memory / 1024**3
+    except (RuntimeError, AssertionError) as exc:
+        raise ProjectionComputeError("cannot inspect CUDA capacity") from exc
+
+
+def batch_capacity(
+    *, source_width: int, intermediate_width: int,
+    expert_count: int, maximum: int | None = None,
+    bytes_limit: int | None = None,
+    device_memory_gib: float | None = None,
+) -> int:
+    """Choose a memory-bounded multi-expert CUDA batch; no singleton probes.
+
+    Auto selection scales a FULL transfer across different worker GPUs,
+    not across additional paid Jobs. Both overrides are bounded. Requests
+    that cannot fit one complete BF16 expert fail explicitly.
+    """
+    if source_width <= 0 or intermediate_width <= 0 or expert_count <= 0:
+        raise ProjectionComputeError("invalid expert batch geometry/count")
+    if device_memory_gib is None:
+        device_memory_gib = _cuda_total_gib()
+    if not np.isfinite(device_memory_gib) or device_memory_gib < 0:
+        raise ProjectionComputeError("invalid CUDA device VRAM")
+    suggested_experts, suggested_mib = _gpu_batch_profile(device_memory_gib)
+    if maximum is None:
+        raw = os.environ.get("IQ_MOE_GPU_BATCH_EXPERTS", "auto")
+        if raw.strip().lower() == "auto":
+            maximum = suggested_experts
+        else:
+            try:
+                maximum = int(raw)
+            except ValueError as exc:
+                raise ProjectionComputeError("invalid IQ_MOE_GPU_BATCH_EXPERTS") from exc
+    if not (1 <= maximum <= _MAX_BATCH_EXPERTS):
+        raise ProjectionComputeError("IQ_MOE_GPU_BATCH_EXPERTS must be in 1..32")
+    if bytes_limit is None:
+        raw_mib = os.environ.get("IQ_MOE_GPU_BATCH_SOURCE_MIB", "auto")
+        if raw_mib.strip().lower() == "auto":
+            budget_mib = suggested_mib
+        else:
+            try:
+                budget_mib = int(raw_mib)
+            except ValueError as exc:
+                raise ProjectionComputeError("invalid IQ_MOE_GPU_BATCH_SOURCE_MIB") from exc
+        if not 1 <= budget_mib <= _MAX_SOURCE_MIB:
+            raise ProjectionComputeError("GPU batch BF16 staging limit must be in 1..2048 MiB")
+        bytes_limit = budget_mib * _MIB
+    if bytes_limit <= 0 or bytes_limit > _MAX_SOURCE_MIB * _MIB:
+        raise ProjectionComputeError("invalid expert batch BF16 byte budget")
+    source_bytes = 3 * source_width * intermediate_width * 2
+    if source_bytes > bytes_limit:
+        raise ProjectionComputeError(
+            "one BF16 donor expert exceeds GPU batch host-memory limit"
+        )
+    return min(maximum, expert_count, bytes_limit // source_bytes)
+
+
+def device_bases(ops: ProjectionOps, *, input_inverse: np.ndarray,
+                 output_map: np.ndarray, source_width: int) -> tuple[torch.Tensor, torch.Tensor]:
+    """Upload verified fixed bases once per stage, not once per expert."""
+    if not ops.cuda:
+        raise ProjectionComputeError("batched expert projection requires CUDA")
+    inp, out = np.asarray(input_inverse), np.asarray(output_map)
+    if (inp.ndim != 2 or out.ndim != 2 or
+        inp.shape[0] != source_width or out.shape[0] != source_width or
+        not np.isfinite(inp).all() or not np.isfinite(out).all()):
+        raise ProjectionComputeError("invalid sparse expert projection bases")
+    # Contiguous copies isolate calibration arrays from later accidental edits.
+    with torch.inference_mode():
+        a = torch.from_numpy(np.array(inp, dtype=np.float32, order="C", copy=True)).to(ops.device)
+        b = torch.from_numpy(np.array(out.T, dtype=np.float32, order="C", copy=True)).to(ops.device)
+    return a, b
+
+
+def batched_projection_math(
+    stacked: torch.Tensor,
+    *,
+    kind: str,
+    input_basis: torch.Tensor,
+    output_basis_t: torch.Tensor,
+) -> torch.Tensor:
+    """Pure shape-preserving matmul, testable on CPU without GPU hardware."""
+    if stacked.ndim != 3 or kind not in ("gate", "up", "down"):
+        raise ProjectionComputeError("invalid batched MoE operator")
+    if kind == "down":
+        return torch.matmul(output_basis_t, stacked)
+    return torch.matmul(stacked, input_basis)
+
+
+def _validated_weight(source: Any, key: str, shape: tuple[int, int]) -> torch.Tensor:
+    tensor = source.get(key)
+    if not isinstance(tensor, torch.Tensor) or tuple(tensor.shape) != shape:
+        raise ProjectionComputeError(f"{key}: unexpected donor tensor shape")
+    if tensor.dtype not in (torch.bfloat16, torch.float16, torch.float32, torch.float64):
+        raise ProjectionComputeError(f"{key}: unsupported donor dtype {tensor.dtype}")
+    if not bool(torch.isfinite(tensor).all()):
+        raise ProjectionComputeError(f"{key}: nonfinite source weight")
+    return tensor.detach().to(device="cpu").contiguous()
+
+
+@torch.inference_mode()
+def project_routed_batch(
+    *,
+    source: Any,
+    donor_root: str,
+    specs: list[ExpertSpec],
+    source_width: int,
+    intermediate_width: int,
+    input_basis: torch.Tensor,
+    output_basis_t: torch.Tensor,
+    ops: ProjectionOps,
+) -> list[tuple[dict[str, torch.Tensor], dict[str, dict[str, float | None]]]]:
+    """Return per-expert BF16 CPU weights and provenance-neutral energy metrics.
+
+    Computation uses FP32 CUDA and one batched GEMM per gate/up/down kind.
+    No writes occur here; caller commits shards in slot order, atomically.
+    """
+    if not ops.cuda or not specs or len(specs) > _MAX_BATCH_EXPERTS:
+        raise ProjectionComputeError("invalid CUDA expert batch")
+    if (tuple(input_basis.shape)[0] != source_width or
+        tuple(output_basis_t.shape)[1] != source_width or
+        input_basis.device.type != "cuda" or output_basis_t.device.type != "cuda"):
+        raise ProjectionComputeError("GPU basis shape/device mismatch")
+    if len({s.slot for s in specs}) != len(specs):
+        raise ProjectionComputeError("duplicate expert slot in batch")
+
+    entries: list[tuple[dict[str, torch.Tensor], dict[str, dict[str, float | None]]]] = [
+        ({}, {}) for _ in specs
+    ]
+    for kind in ("gate", "up", "down"):
+        shape = ((intermediate_width, source_width) if kind != "down"
+                 else (source_width, intermediate_width))
+        raw = [
+            _validated_weight(
+                source, f"{donor_root}.experts.{spec.donor_id}.{kind}_proj.weight", shape
+            ) for spec in specs
+        ]
+        # Direct BF16/FP32 tensor -> CUDA FP32; no intermediate NumPy FP64
+        # matrices, unnecessary pseudoinverses, or repeated basis uploads.
+        # Stack BF16 source tensors once on CPU, then perform one contiguous
+        # host->device transfer per operator kind. Avoid B temporary CUDA
+        # source tensors plus the GPU stack copy per batch.
+        host_batch = torch.stack(raw)
+        stacked = host_batch.to(device=ops.device, dtype=torch.float32)
+        del host_batch
+        transformed = batched_projection_math(
+            stacked, kind=kind, input_basis=input_basis,
+            output_basis_t=output_basis_t,
+        )
+        if not bool(torch.isfinite(transformed).all()):
+            raise ProjectionComputeError(f"nonfinite CUDA output in {kind}")
+        # One batched GPU energy reduction and one BF16 device->host transfer
+        # instead of B extra CPU FP64 scans and B independent D2H copies.
+        original_energy = (
+            stacked.square().sum(dim=(-2, -1), dtype=torch.float64).cpu().tolist()
+        )
+        projected_energy_batch = (
+            transformed.square().sum(dim=(-2, -1), dtype=torch.float64).cpu().tolist()
+        )
+        packed_cpu = transformed.to(dtype=torch.bfloat16).cpu()
+        for index in range(len(raw)):
+            source_energy = float(original_energy[index])
+            projected_energy = float(projected_energy_batch[index])
+            if not np.isfinite(source_energy) or not np.isfinite(projected_energy):
+                raise ProjectionComputeError("nonfinite expert projection energy")
+            entries[index][0][f"{kind}_proj.weight"] = (
+                packed_cpu[index].contiguous()
+            )
+            entries[index][1][kind] = {
+                "donor_frobenius_sq": source_energy,
+                "projected_frobenius_sq": projected_energy,
+                "norm_energy_ratio": (
+                    projected_energy / source_energy if source_energy else None
+                ),
+            }
+        del stacked, transformed, raw, packed_cpu
+    return entries

@@ -94,12 +94,34 @@ class TestIQChatProtocol(unittest.TestCase):
                 4, "completion",
             )
 
-    def test_streaming_is_rejected_not_silently_ignored(self):
+    def test_streaming_sends_real_openai_compatible_chunks(self):
+        def fake_generate(tokenizer, model, messages, tokens, prompt_format,
+                          on_token=None):
+            self.assertEqual(tokens, 128)
+            self.assertIsNotNone(on_token)
+            on_token("Hello")
+            on_token(" world")
+            return "Hello world", "stop", 4, 2
+
+        with patch.object(server_module, "generate", side_effect=fake_generate):
+            client = InferenceClient(base_url=self.base, token="fake", timeout=5)
+            result = client.chat.completions.create(
+                messages=[{"role": "user", "content": "Hi"}],
+                max_tokens=128, stream=True,
+            )
+            parts = list(result)
+        self.assertEqual(
+            "".join((choice.delta.content or "") for chunk in parts
+                    for choice in chunk.choices), "Hello world"
+        )
+        self.assertEqual(parts[-1].choices[0].finish_reason, "stop")
+
+    def test_streaming_rejects_invalid_budget_before_sending_headers(self):
         request = Request(
             self.base + "/v1/chat/completions",
             data=json.dumps({
                 "messages": [{"role": "user", "content": "hi"}],
-                "max_tokens": 8,
+                "max_tokens": 257,
                 "stream": True,
             }).encode(),
             headers={"Content-Type": "application/json"},

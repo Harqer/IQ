@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from importlib import metadata
 from typing import Any
@@ -110,17 +111,41 @@ def _installed_source_commit() -> str | None:
         return None
 
     direct_url_text = dist.read_text("direct_url.json")
-    if not direct_url_text:
+    if direct_url_text:
+        try:
+            data = json.loads(direct_url_text)
+        except json.JSONDecodeError:
+            return None
+        vcs = data.get("vcs_info")
+        if isinstance(vcs, dict):
+            commit = vcs.get("commit_id")
+            return str(commit) if commit else None
+
+    # A local source checkout with a strictly verified metadata-only patch
+    # has no VCS direct_url. Require an explicitly recorded original SHA and
+    # compare the installed module AND the narrowly patched TileLang forward
+    # kernel against their exact source fingerprints; reject drift.
+    provenance = dist.locate_file("mamba_ssm/iq_mamba3_provenance.json")
+    module = dist.locate_file("mamba_ssm/modules/mamba3.py")
+    kernel = dist.locate_file(
+        "mamba_ssm/ops/tilelang/mamba3/mamba3_mimo_fwd.py"
+    )
+    if not all(path.is_file() for path in (provenance, module, kernel)):
         return None
     try:
-        data = json.loads(direct_url_text)
-    except json.JSONDecodeError:
+        import hashlib
+        info = json.loads(provenance.read_text(encoding="utf-8"))
+        digest = hashlib.sha256(module.read_bytes()).hexdigest()
+        kernel_digest = hashlib.sha256(kernel.read_bytes()).hexdigest()
+    except (OSError, ValueError, TypeError):
         return None
-    vcs = data.get("vcs_info")
-    if not isinstance(vcs, dict):
+    if (info.get("metadata_patch") != "tilelang0.1.12-tvmffi0.1.11"
+            or info.get("module_sha256") != digest
+            or info.get("kernel_patch") != "mimo-fwd-valid-length-guard-v1"
+            or info.get("kernel_sha256") != kernel_digest):
         return None
-    commit = vcs.get("commit_id")
-    return str(commit) if commit else None
+    commit = info.get("source_commit")
+    return str(commit) if isinstance(commit, str) else None
 
 
 def inspect_mamba3_mimo_runtime(
@@ -178,6 +203,75 @@ def require_mamba3_mimo_runtime(
             f"installed={info.source_commit!r}, required={MAMBA3_UPSTREAM_COMMIT}"
         )
     return info
+
+
+def native_mimo_aligned_prefill(
+    core: nn.Module,
+    hidden_states: torch.Tensor,
+    inference_params: Any,
+    *,
+    chunk_size: int,
+) -> torch.Tensor:
+    """Use the pinned native MIMO full-chunk kernel + CuTe steps for the tail.
+
+    This deliberately avoids submitting a *partial* tile to the TileLang
+    stateful prefill kernel. No zero-token padding, no SISO/CPU fallback:
+    every actual token produces its own native output and updates the four
+    genuine MIMO recurrent states. Assumes fresh prefill (seqlen_offset=0)
+    and fixed-length, unpacked tensor [B,S,d_model].
+    """
+    if getattr(inference_params, "seqlen_offset", None) != 0:
+        raise Mamba3MIMORuntimeError(
+            "Chunk-aligned native MIMO prefill requires a fresh state offset"
+        )
+    if hidden_states.ndim != 3 or hidden_states.shape[1] == 0 or chunk_size < 1:
+        raise ValueError("Expected nonempty [batch, tokens, width] MIMO prefill")
+    layer_idx = getattr(core, "layer_idx", None)
+    cache = getattr(inference_params, "key_value_memory_dict", None)
+    if layer_idx is None or not isinstance(cache, dict):
+        raise Mamba3MIMORuntimeError("MIMO prefill missing native per-layer cache")
+    if layer_idx in cache:
+        raise Mamba3MIMORuntimeError(
+            f"Native MIMO prefill cache unexpectedly populated for layer {layer_idx}"
+        )
+
+    length = hidden_states.shape[1]
+    prefix = (length // chunk_size) * chunk_size
+    pieces: list[torch.Tensor] = []
+    if prefix:
+        # Upstream fills the same four real MIMO states that core.step consumes.
+        out = core(
+            hidden_states[:, :prefix, :].contiguous(),
+            inference_params=inference_params,
+        )
+        if out.shape != (hidden_states.shape[0], prefix, hidden_states.shape[2]):
+            raise Mamba3MIMORuntimeError("Full-chunk MIMO prefix returned wrong shape")
+        pieces.append(out)
+        states = cache.get(layer_idx)
+    else:
+        # A sub-chunk prompt has no full tile. Start from the upstream native
+        # zero states and advance every real token using the native CuTe step.
+        states = core._get_states_from_cache(inference_params, hidden_states.shape[0])
+    if not isinstance(states, (tuple, list)) or len(states) != 4:
+        raise Mamba3MIMORuntimeError(
+            f"Missing four native MIMO states after prefix for layer {layer_idx}"
+        )
+
+    for index in range(prefix, length):
+        result = core.step(hidden_states[:, index, :].contiguous(), *states)
+        if not isinstance(result, tuple) or len(result) != 5:
+            raise Mamba3MIMORuntimeError("Native MIMO CuTe step returned wrong state tuple")
+        token_out, *states = result
+        if token_out.shape != (hidden_states.shape[0], hidden_states.shape[2]):
+            raise Mamba3MIMORuntimeError("Native MIMO CuTe token returned wrong shape")
+        cache[layer_idx] = tuple(states)
+        pieces.append(token_out.unsqueeze(1))
+    if not pieces:
+        raise Mamba3MIMORuntimeError("MIMO prefill produced no native outputs")
+    output = torch.cat(pieces, dim=1) if len(pieces) > 1 else pieces[0]
+    if output.shape != hidden_states.shape:
+        raise Mamba3MIMORuntimeError("MIMO aligned prefill changed token geometry")
+    return output
 
 
 class Mamba3MIMOState(nn.Module):
@@ -277,11 +371,50 @@ class Mamba3MIMOState(nn.Module):
             raise Mamba3MIMORuntimeError(
                 "IQ Mamba-3 MIMO forward requires CUDA; no CPU/SISO fallback is allowed"
             )
-        output = self.core(
-            hidden_states,
-            cu_seqlens=cu_seqlens,
-            inference_params=inference_params,
-        )
+        try:
+            aligned = (
+                inference_params is not None
+                and cu_seqlens is None
+                and getattr(inference_params, "seqlen_offset", 0) == 0
+                and hidden_states.shape[1] % self.config.chunk_size != 0
+                and os.getenv("IQ_MIMO_ALIGNED_PREFILL", "1") == "1"
+            )
+            if aligned:
+                print(
+                    "IQ_MIMO_ALIGNED_PREFILL="
+                    f"layer={self.layer_idx} tokens={hidden_states.shape[1]} "
+                    f"prefix={(hidden_states.shape[1] // self.config.chunk_size) * self.config.chunk_size} "
+                    f"cuTe_tail={hidden_states.shape[1] % self.config.chunk_size}",
+                    flush=True,
+                )
+                output = native_mimo_aligned_prefill(
+                    self.core, hidden_states, inference_params,
+                    chunk_size=self.config.chunk_size,
+                )
+            else:
+                output = self.core(
+                    hidden_states,
+                    cu_seqlens=cu_seqlens,
+                    inference_params=inference_params,
+                )
+            # Native CUDA launches asynchronously: synchronize at the mixer
+            # boundary while diagnosing the first full78 conversational run,
+            # so an illegal address cannot be misattributed to torch.isfinite
+            # or a subsequent MoE/attention layer.
+            if os.getenv("IQ_MIMO_SYNC_KERNEL", "1") == "1":
+                torch.cuda.synchronize(hidden_states.device)
+        except RuntimeError as exc:
+            raise Mamba3MIMORuntimeError(
+                "Native Mamba-3 MIMO CUDA kernel failed: "
+                f"mamba_layer={self.layer_idx} "
+                f"shape={tuple(hidden_states.shape)} "
+                f"stride={tuple(hidden_states.stride())} "
+                f"chunk={self.config.chunk_size} "
+                f"d_state={self.config.d_state} "
+                f"rank={self.config.mimo_rank} "
+                f"varlen={cu_seqlens is not None} "
+                f"stateful_prefill={inference_params is not None}"
+            ) from exc
         if output.shape != hidden_states.shape:
             raise Mamba3MIMORuntimeError(
                 f"Mamba-3 output shape changed unexpectedly: {tuple(output.shape)}"

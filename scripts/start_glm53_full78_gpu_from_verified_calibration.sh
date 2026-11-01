@@ -2,20 +2,10 @@
 # FRESH GPU COMPILATION ONLY from a previously published, hash-verified 78-stage calibration.
 # Deploy ONLY to an HF Jobs cloud worker with source:ro and output:rw buckets.
 set -euo pipefail
-# The BF16 full78 output is over 500 GiB including routed experts and
-# calibration. Never start a paid run against the free 100-GB private quota.
-CAPACITY_GIB="${IQ_CONFIRMED_PRIVATE_STORAGE_GIB:-0}"
-if [[ ! "$CAPACITY_GIB" =~ ^[0-9]+$ ]] || (( CAPACITY_GIB < 600 )); then
-  echo "BLOCKED: full78 BF16 needs verified >=600 GiB free private durable storage; current HF Free tier offers only 100 GB." >&2
-  echo "Upgrade storage or configure an authorized durable output with enough capacity, then explicitly set IQ_CONFIRMED_PRIVATE_STORAGE_GIB." >&2
-  exit 3
-fi
-python scripts/full78_storage_preflight.py
-: "${IQ_STORAGE_ATTESTATION:?Fail-closed: provide recent provider-verified free-space evidence}"
-REQUIRED_BYTES="$(python -c 'from scripts.full78_storage_preflight import required_private_bytes;print(required_private_bytes())')"
-python scripts/glm53_full78_gate.py storage \
-  --attestation "$IQ_STORAGE_ATTESTATION" \
-  --required-bytes "$REQUIRED_BYTES"
+# Resolve actual bucket visibility via Hugging Face, not a private-only quota
+# assumption. Public output requires explicit best-effort acknowledgement;
+# this is NOT permission to use billable GPU Jobs.
+python scripts/check_glm53_storage_policy.py
 if [[ "${IQ_PROJECTION_DEVICE:-}" != cuda ]]; then
   echo "BLOCKED: production GPU resume requires IQ_PROJECTION_DEVICE=cuda; CPU is diagnostics-only" >&2
   exit 3
@@ -25,7 +15,7 @@ if [[ "${IQ_CONFIRM_NO_OTHER_WRITER:-}" != "1" ]]; then
   exit 2
 fi
 if [[ "${IQ_CLOUD_WORKER:-}" != 1 || ! -d /hf-bucket/legacy/visionboxx-macha/calibration || ! -d /out ]]; then
-  echo "FULL78 REQUIREMENT: cloud worker with immutable calibration mount and writable private bucket" >&2
+  echo "FULL78 REQUIREMENT: cloud worker with immutable calibration mount and writable authorized bucket" >&2
   exit 2
 fi
 RUN_ID="${RUN_ID:?Unique run id required}"
@@ -46,11 +36,35 @@ fi
 # Read-only file-by-file verification; the calibration manifest alone is insufficient.
 python scripts/glm53_full78_gate.py calibration --root "$DEST_CALIB"
 python scripts/glm53_calibration_sha256.py verify --root "$DEST_CALIB"
+# Fail closed on missing CUDA, inconsistent packages, or unsupported hardware
+# BEFORE fetching donor tensors or allocating a long-running transfer.
+# The pinned OCI worker already has the transfer/model venv provisioned.
+# Do not recreate a second virtualenv or reinstall dependencies on paid GPU time.
+if [[ "${IQ_HF_CONTAINER_PROVISIONED:-}" != 1 ]]; then
+  source scripts/setup_glm53_gpu_worker.sh
+fi
+python scripts/check_glm53_gpu_stack.py --require-cuda --model-runtime \
+  --min-vram-gib "${IQ_MIN_GPU_VRAM_GIB:-20}" --smoke --pip-check
 mkdir -p "$WORK_ROOT/glm53" "$WORK_ROOT/mamba3"
-hf download zai-org/GLM-5.3-BF16 config.json model.safetensors.index.json \
-  --revision "$DONOR_REV" --local-dir "$WORK_ROOT/glm53"
-hf download state-spaces/mamba3-mimo-1.5b config.json pytorch_model.bin \
-  --revision "$MAMBA_REV" --local-dir "$WORK_ROOT/mamba3"
+# The official image's hf CLI download path previously failed with a
+# Typer/Click Sentinel error on paid H200 hardware. Use the library API,
+# preserving the exact immutable donor revisions instead.
+python - "$WORK_ROOT/glm53" "$WORK_ROOT/mamba3" "$DONOR_REV" "$MAMBA_REV" <<'PY'
+from pathlib import Path
+import sys
+from huggingface_hub import hf_hub_download
+
+glm_dir, mamba_dir, glm_revision, mamba_revision = sys.argv[1:]
+for repo_id, revision, local_dir, files in (
+    ("zai-org/GLM-5.3-BF16", glm_revision, glm_dir, ("config.json", "model.safetensors.index.json")),
+    ("state-spaces/mamba3-mimo-1.5b", mamba_revision, mamba_dir, ("config.json", "pytorch_model.bin")),
+):
+    for filename in files:
+        path = Path(hf_hub_download(repo_id=repo_id, filename=filename, revision=revision, local_dir=local_dir))
+        if not path.is_file() or path.stat().st_size == 0:
+            raise RuntimeError(f"Missing or empty pinned donor file: {repo_id}/{filename}")
+        print("IQ_PINNED_DONOR_READY", repo_id, revision, filename, flush=True)
+PY
 # The official Mamba-3 language model uses the Meta-Llama 3.1 tokenizer,
 # which is separately gated. It is NOT required to transform donor weights.
 # Never block all 78 layers of weight compilation on a tokenizer permission.
@@ -68,27 +82,10 @@ assert all((Path(sys.argv[1])/x['residual_map']).with_suffix('.safetensors').is_
 print("SAVED_FULL78_CALIBRATION_VERIFIED",flush=True)
 PY
 
-echo "FULL78: Fail-fast probe source stage3 slot0 before full GPU compilation."
-timeout 300s python - "$WORK_ROOT/glm53" "$DEST_CALIB" "$DONOR_REV" <<'PY'
-import sys, torch
-from iq_transfer.glm53_lazy_calibration import LazyGLM53Calibration
-from iq_transfer.glm53_moe import select_experts_by_usage
-from iq_transfer.http_range_source import HubSafetensorsSource
-solution = LazyGLM53Calibration(sys.argv[2])
-stage = solution.stages[3]
-selection = select_experts_by_usage(stage.expert_usage, target_experts=256)
-donor_id = selection[0]
-key = f"model.layers.{stage.source_layer}.mlp.experts.{donor_id}.gate_proj.weight"
-source = HubSafetensorsSource(
-    sys.argv[1], repo_id="zai-org/GLM-5.3-BF16", revision=sys.argv[3],
-    max_request_bytes=16 * 1024 * 1024, max_tensor_bytes=512 * 1024 * 1024,
-)
-data = source.get(key)
-assert data.dtype == torch.bfloat16 and data.ndim == 2
-assert torch.isfinite(data.float()).all()
-source.close()
-print(f"UNSAVED_EXPERT_SOURCE_READ_OK stage=3 slot=0 donor={donor_id}", flush=True)
-PY
+# No standalone expert range probe. The full compiler validates source
+# tensor dtype, shape, finiteness and bounded HTTP reads as each REAL batch is
+# transformed and durably written. Do not duplicate paid source reads.
+echo "FULL78: Source tensor validation occurs inside the full transfer; no single-expert benchmark."
 
 # Limit each worker to a recoverable compute window instead of the platform timeout.
 MAX_SECONDS="${IQ_MAX_RUN_SECONDS:-14400}"

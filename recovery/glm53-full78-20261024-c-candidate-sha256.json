@@ -1,0 +1,81 @@
+{
+  "schema_version": 1,
+  "status": "UNVERIFIED_DONOR_EQUIVALENCE__SHA256_INTEGRITY_ONLY",
+  "source_hf_bucket": "hf://buckets/kofecheckmate/iq-glm53-all256/IQ/runs/glm53-full78-20261024-c",
+  "independent_audit_job": "https://huggingface.co/jobs/kofecheckmate/6add3a9b046eb82b1ece0850",
+  "calibration_original_overlap_verified": [
+    {
+      "name": "lexical",
+      "original_integrity_valid": true,
+      "reused_file_equal": true
+    },
+    {
+      "name": "final",
+      "original_integrity_valid": true,
+      "reused_file_equal": true
+    },
+    {
+      "name": "last_layer",
+      "original_integrity_valid": true,
+      "reused_file_equal": true
+    },
+    {
+      "name": "lexical_json",
+      "original_integrity_valid": true,
+      "reused_file_equal": true
+    },
+    {
+      "name": "last_json",
+      "original_integrity_valid": true,
+      "reused_file_equal": true
+    }
+  ],
+  "saved_expert_slots": 41,
+  "expert_tensor_dtype": "BF16",
+  "expert_tensor_expected_shapes": "gate/up/down each [2048, 2048]",
+  "invalid_headers": [],
+  "note": "Hashes prove current persisted bytes and safe shape; NO original run-provenance or comparison against GLM teacher weights exists. Never auto-promote or resume on hash alone.",
+  "expert_sha256": {
+    "model-moe-003-expert-000.safetensors": "080914eb31dc0ca8679d6b57105b5e39bca27c65b1c5f0da64f2448b2c9f1ab7",
+    "model-moe-003-expert-001.safetensors": "e03370734db643b0126f4b5c95c4e105175072bc48f7a330355f137123e4e7a5",
+    "model-moe-003-expert-002.safetensors": "34b12f903a573d899318a72ee78b999da05a96c4dbe8d14dd1e4fdc0ec0c36ef",
+    "model-moe-003-expert-003.safetensors": "4217c48de10fe4ee9f3a412d456c14478ffaabd62f1e4e53640d05f87600a72c",
+    "model-moe-003-expert-004.safetensors": "e62cd0a6bd740638308328375f2552713ca2d7ebc1e2375290e6d82f9710f5a1",
+    "model-moe-003-expert-005.safetensors": "e14e8ad079332a818858b4acc3f9fc98a6c16cc8a9f2e47a71a870f588a96a7d",
+    "model-moe-003-expert-006.safetensors": "a7f9daa5a0af7a4d512891427a00c33362985ff7f1145219b60405723fe8b896",
+    "model-moe-003-expert-007.safetensors": "b6c9628f8cc7c6856e2e4b6c3cb1fbcc4f62a63b4fa7131fbd08e8fa48b4cd42",
+    "model-moe-003-expert-008.safetensors": "4736a62f1cb473b63cdb1d35a93c93dbf54144ad71a03c513f53903cae23f091",
+    "model-moe-003-expert-009.safetensors": "4f3f5b8019877e169d546452f72920f689a99402d48ead07563335ba6b31aa42",
+    "model-moe-003-expert-010.safetensors": "e14ce7b7a5d3016bbde74eda174e2fcf841be57cea749d306f6e44a102e1a2e2",
+    "model-moe-003-expert-011.safetensors": "633a303480879354fffc2da65e35b2fe30b70f899c7850590c3a7b856887acd8",
+    "model-moe-003-expert-012.safetensors": "d63f128d6a5dc1d547779f8e5b4796636ee1f6671bfb085cdb83c23154767df7",
+    "model-moe-003-expert-013.safetensors": "31aa808ca69401069beab4965fd98669c665bff2d0e89dd007f87f343a618f92",
+    "model-moe-003-expert-014.safetensors": "8b0fe94ac91169650504ea0f1dea241382cc428b677f154c17cec226c87a6290",
+    "model-moe-003-expert-015.safetensors": "63fe92e3695f68ff2f0ee4e5f1ebbbebf78b37e4a7c3662a4f9b22014257e00f",
+    "model-moe-003-expert-016.safetensors": "2292da6a03ae02d730a20f47add2be5626a1f9b91496f9877e7d476b7a780892",
+    "model-moe-003-expert-017.safetensors": "b58cf139bcc05c5991bb8d7c279400f043e1366de023c298c758fe6c3b0394c0",
+    "model-moe-003-expert-018.safetensors": "3610a27a969aac05e4cb964b527aed9678f1783aec55cf0cb37207aacfdd62f6",
+    "model-moe-003-expert-019.safetensors": "ff42996549769b5e094af4d627a4f8172b809ad2d75a866b7045378bc7871b23",
+    "model-moe-003-expert-020.safetensors": "c9d32c326742282111ff99a57b929e1a5a2a10df96949fd4114e7eb5a5277298",
+    "model-moe-003-expert-021.safetensors": "9fb10b323a194e528345ab1b947c8e8d93e1d4fa7ca3ed535d21accb7a4b1a47",
+    "model-moe-003-expert-022.safetensors": "3bc162e057c71c5a301558b02de14b3fabd5d9c424f0dca55b9609dd5a55e515",
+    "model-moe-003-expert-023.safetensors": "de88ebe6cd25859ec618239331271ce9d475314cbfd068fbffff95caa1a9b8a6",
+    "model-moe-003-expert-024.safetensors": "e1b0961ba3337fcc16f919593fa8ef47de123afed4f913265b1173defa59b2f6",
+    "model-moe-003-expert-025.safetensors": "9226e5e967f4d5ae951d0e3787eb75913572bfed913a023e7d5e19f5b74102bd",
+    "model-moe-003-expert-026.safetensors": "e000f87a3e065c2a8267d1c6a8945366243ce8760cde6e558133ffdda0b908c3",
+    "model-moe-003-expert-027.safetensors": "3ae968cd415efff2da50218bc8d04cad2e3508bdce582d2733146ed02fead49a",
+    "model-moe-003-expert-028.safetensors": "d514504abb927016dbb94a017828a2186b068d953b204001174e94afab3f5991",
+    "model-moe-003-expert-029.safetensors": "5d74d2a19addcf0aab96e28e1b9d41d9d74218f30790c9e6dc2f9033058bc76d",
+    "model-moe-003-expert-030.safetensors": "68f9d3a8f6154ba2003a86fa2d14d4afd58421f93f0fc9201472dba2ee3664e6",
+    "model-moe-003-expert-031.safetensors": "94dd858d003466a136c281c8b82681973d394df3d2f31a61434e4dd8bb7bd743",
+    "model-moe-003-expert-032.safetensors": "2aa844e8bd76b94c1e85d67497eb99af5e046808280f036ae7cf7c8c30766d69",
+    "model-moe-003-expert-033.safetensors": "42efb34831bb581f34e44e87861eafc5188001c3ac973f33629302ff700c6c38",
+    "model-moe-003-expert-034.safetensors": "6f963866ebbc8cb1cdd4e6254de7103895dc2b7c442c70ff1cd24f3cec86b402",
+    "model-moe-003-expert-035.safetensors": "fef96fc83bb2cf5546303ff82ebbf0b2e243abdb09feb2e5b9a8d2a12b2446b7",
+    "model-moe-003-expert-036.safetensors": "c690dce3cc7c6cef8c4e5300195c2336e6959ed883426f24c1cb0aaadd511546",
+    "model-moe-003-expert-037.safetensors": "38f76a829f586fa8ece056e84c6868a747ba9325fe1363efdc07f0d3ea7c2c5d",
+    "model-moe-003-expert-038.safetensors": "918f79b2c87881f36a924cbb430cf05f116df5124b699984f72d270803cd7b06",
+    "model-moe-003-expert-039.safetensors": "3236b13dda0b26b1c5f761071d4eb6fc8ff49c71896a5e9d99c9ee4f6acec63d",
+    "model-moe-003-expert-040.safetensors": "a8e4273d931c6a45544d332e3f658b9b89715d61df05054c95f5f349a1bfbb3e"
+  }
+}

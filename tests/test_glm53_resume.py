@@ -6,7 +6,7 @@ import unittest
 import torch
 from safetensors.torch import save_file
 from iq_transfer.glm53_resume import (
-    GLM53ResumeError, expected_expert_keys, register_saved_shard,
+    GLM53ResumeError, expected_expert_keys, expected_expert_shapes, register_saved_shard,
     validate_legacy_partial,
 )
 
@@ -29,6 +29,39 @@ class ShardResumeTests(unittest.TestCase):
             with self.assertRaises(GLM53ResumeError):
                 register_saved_shard(root, name, index, layer=11,
                                      expected_keys=keys)
+
+    def test_resumed_expert_requires_exact_shape_and_bf16_dtype(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            name = "model-moe-003-expert-040.safetensors"
+            expected = expected_expert_shapes(
+                11, 40, latent_width=4, intermediate_width=3,
+            )
+            dtypes = {key: "BF16" for key in expected}
+            valid = {key: torch.ones(shape, dtype=torch.bfloat16)
+                     for key, shape in expected.items()}
+            save_file(valid, str(root / name))
+            self.assertTrue(register_saved_shard(
+                root, name, {}, layer=11, expected_keys=set(expected),
+                expected_shapes=expected, expected_dtypes=dtypes,
+            ))
+            broken_shape = dict(valid)
+            gate = "layers.11.moe.routed_experts.40.gate_proj.weight"
+            broken_shape[gate] = torch.zeros(2, 4, dtype=torch.bfloat16)
+            save_file(broken_shape, str(root / name))
+            with self.assertRaisesRegex(GLM53ResumeError, "shape"):
+                register_saved_shard(
+                    root, name, {}, layer=11, expected_keys=set(expected),
+                    expected_shapes=expected, expected_dtypes=dtypes,
+                )
+            broken_dtype = dict(valid)
+            broken_dtype[gate] = valid[gate].float()
+            save_file(broken_dtype, str(root / name))
+            with self.assertRaisesRegex(GLM53ResumeError, "dtype"):
+                register_saved_shard(
+                    root, name, {}, layer=11, expected_keys=set(expected),
+                    expected_shapes=expected, expected_dtypes=dtypes,
+                )
 
     def test_corrupt_and_mismatched_shards_fail_closed(self):
         with TemporaryDirectory() as tmp:

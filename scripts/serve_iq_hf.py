@@ -19,7 +19,7 @@ from transformers import AutoTokenizer
 from iq_transfer import load_complete_iq_checkpoint
 
 MAX_PROMPT_TOKENS = 2048
-MAX_NEW_TOKENS = 64
+MAX_NEW_TOKENS = 256
 
 
 def build_model():
@@ -56,9 +56,59 @@ def build_model():
     return tokenizer, model
 
 
+def generate_stateful(engine, tokenizer, input_ids: torch.Tensor,
+                      max_new_tokens: int, on_token=None):
+    """Production full78 decode: native MIMO/context caches + exact MoE routing.
+
+    Every forward step runs the complete IQ hybrid architecture for the
+    current token. Never recompute the full prefix or silently fall back.
+    """
+    logits = engine.sync_prompt(input_ids)
+    prompt_tokens = int(input_ids.shape[1])
+    generated = []
+    last_emitted = ""
+    finish_reason = "length"
+    stop_ids = set()
+    if isinstance(getattr(tokenizer, "eos_token_id", None), int):
+        stop_ids.add(int(tokenizer.eos_token_id))
+    eot_id = tokenizer.convert_tokens_to_ids("<|eot_id|>")
+    if isinstance(eot_id, int) and 0 <= eot_id < len(tokenizer):
+        stop_ids.add(eot_id)
+    print(f"IQ_STATEFUL_GENERATION_START=prompt_tokens={prompt_tokens} "
+          f"max_new_tokens={max_new_tokens}", flush=True)
+    for step in range(max_new_tokens):
+        started = time.monotonic()
+        next_scores = logits[:, -1, :].float()
+        if not bool(torch.isfinite(next_scores).all()):
+            raise RuntimeError("Nonfinite IQ stateful decode logits")
+        next_token = next_scores.argmax(dim=-1, keepdim=True)
+        token_id = int(next_token.item())
+        generated.append(token_id)
+        decoded = tokenizer.decode(generated, skip_special_tokens=True)
+        if on_token is not None and decoded.startswith(last_emitted):
+            part = decoded[len(last_emitted):]
+            if part:
+                on_token(part)
+                last_emitted = decoded
+        print(f"IQ_STATEFUL_GENERATION_TOKEN={step+1}/{max_new_tokens} "
+              f"elapsed_seconds={time.monotonic()-started:.3f}", flush=True)
+        if token_id in stop_ids:
+            finish_reason = "stop"
+            break
+        if step + 1 < max_new_tokens:
+            # Do not process an output token twice. The last sampled token
+            # remains pending until the next request tokenizes its context.
+            if engine.state.length >= engine.max_context_tokens:
+                finish_reason = "length"
+                break
+            logits = engine.decode_token(next_token)
+    return (tokenizer.decode(generated, skip_special_tokens=True),
+            finish_reason, prompt_tokens, len(generated))
+
+
 def generate(
     tokenizer, model, messages: list[dict], max_new_tokens: int,
-    prompt_format: str = "chat",
+    prompt_format: str = "chat", on_token=None, engine=None,
 ) -> tuple[str, str, int, int]:
     if prompt_format == "completion":
         if len(messages) != 1 or messages[0]["role"] != "user":
@@ -96,7 +146,23 @@ def generate(
         raise ValueError(f"prompt must contain 1..{MAX_PROMPT_TOKENS} tokens")
 
     prompt_tokens = int(input_ids.shape[1])
-    input_ids = input_ids.to("cuda:0")
+    device = (
+        engine.model.embed_tokens.weight.device
+        if engine is not None else torch.device("cuda:0")
+    )
+    input_ids = input_ids.to(device)
+    if engine is not None:
+        try:
+            with torch.inference_mode():
+                return generate_stateful(
+                    engine, tokenizer, input_ids,
+                    max_new_tokens=max_new_tokens, on_token=on_token,
+                )
+        except Exception:
+            # Native MIMO and context caches may already have been mutated
+            # before the failure. Never reuse a partially advanced state.
+            engine.reset()
+            raise
     generated: list[int] = []
     finish_reason = "length"
     diagnostics = os.getenv("IQ_DIAGNOSTICS", "0") == "1"
@@ -104,8 +170,13 @@ def generate(
     eot_id = tokenizer.convert_tokens_to_ids("<|eot_id|>")
     if isinstance(eot_id, int) and 0 <= eot_id < len(tokenizer):
         stop_ids.add(eot_id)
+    last_emitted = ""
     with torch.inference_mode():
-        for _ in range(max_new_tokens):
+        for step in range(max_new_tokens):
+            started = time.monotonic()
+            if step == 0:
+                print(f"IQ_GENERATION_START=prompt_tokens={prompt_tokens} "
+                      f"requested_new_tokens={max_new_tokens}", flush=True)
             if diagnostics and not generated:
                 traced: list[tuple[int, torch.Tensor]] = []
                 handles = []
@@ -128,7 +199,31 @@ def generate(
                     for handle in handles:
                         handle.remove()
             else:
-                result = model(input_ids)
+                # Trace all 235 physical layers on the first token, including
+                # Mamba-3 kernel compilation. This identifies a stuck layer
+                # without launching a separate GPU diagnostic job.
+                handles = []
+                if not generated and os.getenv("IQ_TRACE_FIRST_TOKEN", "1") == "1":
+                    def make_pre(index: int):
+                        def trace_start(_mod, _inputs):
+                            print(f"IQ_FULL78_LAYER_START={index}/235",
+                                  flush=True)
+                        return trace_start
+
+                    def make_post(index: int):
+                        def trace_end(_mod, _inputs, _output):
+                            print(f"IQ_FULL78_LAYER_PASS={index}/235",
+                                  flush=True)
+                        return trace_end
+
+                    for index, layer in enumerate(model.layers):
+                        handles.append(layer.register_forward_pre_hook(make_pre(index)))
+                        handles.append(layer.register_forward_hook(make_post(index)))
+                try:
+                    result = model(input_ids)
+                finally:
+                    for handle in handles:
+                        handle.remove()
             logits = result.logits[:, -1, :].float()
             if not bool(torch.isfinite(logits).all()):
                 raise RuntimeError("non-finite IQ logits")
@@ -176,6 +271,14 @@ def generate(
             next_token = logits.argmax(dim=-1, keepdim=True)
             token_id = int(next_token[0, 0].item())
             generated.append(token_id)
+            decoded = tokenizer.decode(generated, skip_special_tokens=True)
+            if on_token is not None and decoded.startswith(last_emitted):
+                delta = decoded[len(last_emitted):]
+                if delta:
+                    on_token(delta)
+                    last_emitted = decoded
+            print(f"IQ_GENERATION_TOKEN={step + 1}/{max_new_tokens} "
+                  f"seconds={time.monotonic()-started:.2f}", flush=True)
             input_ids = torch.cat((input_ids, next_token), dim=1)
             if token_id in stop_ids:
                 finish_reason = "stop"
@@ -183,7 +286,7 @@ def generate(
     return (tokenizer.decode(generated, skip_special_tokens=True), finish_reason, prompt_tokens, len(generated))
 
 
-def create_handler(tokenizer, model):
+def create_handler(tokenizer, model, *, engine=None):
     class Handler(BaseHTTPRequestHandler):
         def respond(self, status: int, payload: dict) -> None:
             data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -215,7 +318,7 @@ def create_handler(tokenizer, model):
                     messages = [{"role": "user", "content": data.get("prompt", "")}]
                 if (
                     not isinstance(messages, list)
-                    or not 1 <= len(messages) <= 24
+                    or not 1 <= len(messages) <= 64
                     or any(
                         not isinstance(message, dict)
                         or message.get("role") not in ("system", "user", "assistant")
@@ -224,24 +327,83 @@ def create_handler(tokenizer, model):
                         for message in messages
                     )
                 ):
-                    raise ValueError("invalid messages: expected 1..24 chat messages")
+                    raise ValueError("invalid messages: expected 1..64 chat messages")
                 compatible = self.path != "/chat"
-                if compatible and data.get("stream", False):
-                    raise ValueError("streaming is not supported by IQ yet")
-                tokens = data.get("max_tokens", 16) if compatible else data.get("max_new_tokens", 16)
+                started_stream = False
+                streaming = data.get("stream", False)
+                if type(streaming) is not bool:
+                    raise ValueError("stream must be a boolean")
+                if not compatible and streaming:
+                    raise ValueError("stream only supported for OpenAI-compatible chat")
+                tokens = data.get("max_tokens", 128) if compatible else data.get("max_new_tokens", 128)
                 if type(tokens) is not int or not 1 <= tokens <= MAX_NEW_TOKENS:
                     raise ValueError(f"max_new_tokens must be 1..{MAX_NEW_TOKENS}")
                 prompt_format = data.get("prompt_format", "chat")
                 if compatible and prompt_format != "chat":
                     raise ValueError("prompt_format applies only to legacy /chat")
-                response, finish_reason, prompt_tokens, completion_tokens = generate(
-                    tokenizer, model, messages, tokens, prompt_format
-                )
+                if streaming:
+                    # Server-Sent Events: the user sees tokens as they are actually
+                    # generated instead of waiting for the entire completion.
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+                    self.send_header("Cache-Control", "no-cache")
+                    self.send_header("Connection", "close")
+                    self.end_headers()
+                    started_stream = True
+                    def send_chunk(delta: dict, finish=None):
+                        payload = {
+                            "id": "chatcmpl-iq",
+                            "object": "chat.completion.chunk",
+                            "created": int(time.time()),
+                            "model": "IQ",
+                            "choices": [{
+                                "index": 0, "delta": delta,
+                                "finish_reason": finish,
+                            }],
+                        }
+                        self.wfile.write(("data: " + json.dumps(payload, ensure_ascii=False)
+                                          + "\n\n").encode("utf-8"))
+                        self.wfile.flush()
+                    send_chunk({"role": "assistant", "content": ""})
+                    if engine is not None:
+                        _, reason, _, _ = generate(
+                            tokenizer, model, messages, tokens, prompt_format,
+                            on_token=lambda part: send_chunk({"content": part}),
+                            engine=engine,
+                        )
+                    else:
+                        _, reason, _, _ = generate(
+                            tokenizer, model, messages, tokens, prompt_format,
+                            on_token=lambda part: send_chunk({"content": part}),
+                        )
+                    send_chunk({}, reason)
+                    self.wfile.write(b"data: [DONE]\n\n")
+                    self.wfile.flush()
+                    self.close_connection = True
+                    return
+                if engine is not None:
+                    response, finish_reason, prompt_tokens, completion_tokens = generate(
+                        tokenizer, model, messages, tokens, prompt_format,
+                        engine=engine,
+                    )
+                else:
+                    response, finish_reason, prompt_tokens, completion_tokens = generate(
+                        tokenizer, model, messages, tokens, prompt_format,
+                    )
             except (ValueError, KeyError, TypeError) as exc:
-                self.respond(400, {"error": str(exc)})
+                if locals().get("started_stream", False):
+                    traceback.print_exc(file=sys.stderr)
+                    self.close_connection = True
+                else:
+                    self.respond(400, {"error": str(exc)})
                 return
             except Exception:  # noqa: BLE001 - HTTP inference boundary
                 traceback.print_exc(file=sys.stderr)
+                if locals().get("started_stream", False):
+                    # Headers may already be sent. Never send a fake successful
+                    # completion or attempt an invalid second HTTP response.
+                    self.close_connection = True
+                    return
                 self.respond(500, {"error": "inference failed; see job logs"})
                 return
             if compatible:

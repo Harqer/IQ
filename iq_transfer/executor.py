@@ -89,7 +89,7 @@ def _source_value(
     if assignment.source_operator is None:
         raise ExecutionError("donor-backed assignment is missing source_operator")
     if assignment.source_layer is None:
-        if assignment.source_operator not in runtime.source:
+        if assignment.source_operator not in runtime.source.keys():
             raise ExecutionError(
                 f"missing raw donor tensor: {assignment.source_operator}"
             )

@@ -145,8 +145,8 @@ def train_frozen_bridge(
         or z_eval.ndim != 2
         or z_train.shape[0] < 8
         or z_eval.shape[0] < 2
-        or target_train.shape != z_train
-        or target_eval.shape != z_eval
+        or target_train.shape != z_train.shape
+        or target_eval.shape != z_eval.shape
         or z_train.shape[1] != model.basis.shape[1]
         or not all(bool(torch.isfinite(x).all()) for x in (
             z_train, target_train, z_eval, target_eval,

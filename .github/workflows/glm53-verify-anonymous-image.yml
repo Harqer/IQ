@@ -1,0 +1,26 @@
+name: Verify Anonymous Pull of IQ CUDA Image
+on:
+  push:
+    branches:
+      - audit/glm53-cuda-stack-preflight-20261024
+    paths:
+      - .github/workflows/glm53-verify-anonymous-image.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  anonymous-pull:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Check HF Jobs can access GHCR without GitHub registry credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          IMAGE="ghcr.io/harqer/iq-glm53-hf-gpu:sha-cbf2195e71e4"
+          # Fresh runner has not called docker/login-action and has no
+          # registry authentication; this checks exactly how HF Jobs pulls.
+          docker manifest inspect "$IMAGE" >/dev/null
+          echo "ANONYMOUS_GHCR_PULL_PERMITTED=$IMAGE" >> "$GITHUB_STEP_SUMMARY"

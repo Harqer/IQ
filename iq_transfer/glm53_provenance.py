@@ -42,10 +42,14 @@ def enforce_run_provenance(output: Path, calibration: Path, *,
         calibration, glm_revision=glm_revision,
         mamba_revision=mamba_revision, target_fingerprint=target_fingerprint
     )
+    from .glm53_bucket_persistence import (
+        durable_output, read_checkpoint_json, write_checkpoint_text,
+    )
     path = output / FILE
     if resume:
         try:
-            previous = json.loads(path.read_text(encoding="utf-8"))
+            previous = (read_checkpoint_json(output, FILE) if durable_output(output)
+                        else json.loads(path.read_text(encoding="utf-8")))
         except (OSError, ValueError) as exc:
             raise GLM53ProvenanceError(
                 "unsafe legacy checkpoint: no verified run provenance; use a NEW run"
@@ -56,6 +60,13 @@ def enforce_run_provenance(output: Path, calibration: Path, *,
             )
         return expected
 
+    if durable_output(output):
+        # A complete immutable run provenance is committed directly to the Hub.
+        # Never use a temp-file rename on the eventually-consistent mount.
+        write_checkpoint_text(
+            output, FILE, json.dumps(expected, sort_keys=True, indent=2) + "\n"
+        )
+        return expected
     if path.exists() or path.is_symlink():
         raise GLM53ProvenanceError("refuse to overwrite existing run provenance")
     output.mkdir(parents=True, exist_ok=True)
