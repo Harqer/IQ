@@ -23,6 +23,16 @@ def validate_endpoint(url: str) -> str:
         raise ValueError("Endpoint must be an authenticated HTTPS HF Job URL")
     if parsed.query or parsed.fragment:
         raise ValueError("Endpoint must have no query or fragment")
+    host = parsed.hostname.lower()
+    allowed = (
+        host == "huggingface.co"
+        or host.endswith(".huggingface.co")
+        or host == "hf.space"
+        or host.endswith(".hf.space")
+        or host.endswith(".endpoints.huggingface.cloud")
+    )
+    if not allowed:
+        raise ValueError("Refusing to forward HF auth token outside Hugging Face hosts")
     return url.rstrip("/")
 
 
