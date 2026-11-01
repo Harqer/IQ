@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import inspect
 import json
+import os
 import re
 import signal
 import subprocess
@@ -136,7 +137,8 @@ def follow_job_logs(job_id: str, path: Path, failures: list[str]) -> None:
     prevent cancellation or delay process exit if the stream stalls.
     """
     try:
-        with path.open("x", encoding="utf-8") as output:
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as output:
             for raw in fetch_job_logs(
                 job_id=job_id, namespace=EXPECTED_ACCOUNT,
                 follow=True, tail=100,
