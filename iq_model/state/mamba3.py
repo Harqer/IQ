@@ -110,17 +110,35 @@ def _installed_source_commit() -> str | None:
         return None
 
     direct_url_text = dist.read_text("direct_url.json")
-    if not direct_url_text:
+    if direct_url_text:
+        try:
+            data = json.loads(direct_url_text)
+        except json.JSONDecodeError:
+            return None
+        vcs = data.get("vcs_info")
+        if isinstance(vcs, dict):
+            commit = vcs.get("commit_id")
+            return str(commit) if commit else None
+
+    # A local source checkout with a strictly verified metadata-only patch
+    # has no VCS direct_url. Require an explicitly recorded original SHA and
+    # compare the installed Mamba module's actual bytes against the recorded
+    # fingerprint. Do not trust a marker without matching source bytes.
+    provenance = dist.locate_file("mamba_ssm/iq_mamba3_provenance.json")
+    module = dist.locate_file("mamba_ssm/modules/mamba3.py")
+    if not provenance.is_file() or not module.is_file():
         return None
     try:
-        data = json.loads(direct_url_text)
-    except json.JSONDecodeError:
+        import hashlib
+        info = json.loads(provenance.read_text(encoding="utf-8"))
+        digest = hashlib.sha256(module.read_bytes()).hexdigest()
+    except (OSError, ValueError, TypeError):
         return None
-    vcs = data.get("vcs_info")
-    if not isinstance(vcs, dict):
+    if (info.get("metadata_patch") != "tilelang0.1.12-tvmffi0.1.11"
+            or info.get("module_sha256") != digest):
         return None
-    commit = vcs.get("commit_id")
-    return str(commit) if commit else None
+    commit = info.get("source_commit")
+    return str(commit) if isinstance(commit, str) else None
 
 
 def inspect_mamba3_mimo_runtime(
