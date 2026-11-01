@@ -51,7 +51,7 @@ class NativeChunkAlignedTests(unittest.TestCase):
             with self.subTest(length=length):
                 core = FakeNativeMIMO()
                 params = SimpleNamespace(seqlen_offset=0, key_value_memory_dict={})
-                inputs = torch.arange(length * 4, dtype=torch.float32).reshape(1, length, 4) / 1000
+                inputs = torch.arange(length * 4, dtype=torch.float32).reshape(1, length, 4)
                 actual = native_mimo_aligned_prefill(core, inputs, params, chunk_size=16)
                 expected = torch.cumsum(inputs, dim=1)
                 torch.testing.assert_close(actual, expected, atol=0, rtol=0)
