@@ -60,7 +60,7 @@ class ProductionGeometryTests(unittest.TestCase):
                    side_effect=make_cpu_random):
             report = verify_full78_mimo_geometry(torch.device("cuda:0"), config)
         self.assertEqual(report["width"], 4096)
-        self.assertEqual(report["checked_lengths"], [17, 33])
+        self.assertEqual(report["checked_lengths"], [13, 16, 17, 33])
         self.assertLess(report["max_absolute_error"], 0.01)
         self.assertEqual([m.layer_idx for m in FakeMamba.instances], [0, 1])
         self.assertEqual(FakeMamba.instances[0].options["d_model"], 4096)
