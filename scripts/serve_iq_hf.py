@@ -296,7 +296,7 @@ def create_handler(tokenizer, model):
                             }],
                         }
                         self.wfile.write(("data: " + json.dumps(payload, ensure_ascii=False)
-                                          + "\\n\\n").encode("utf-8"))
+                                          + "\n\n").encode("utf-8"))
                         self.wfile.flush()
                     send_chunk({"role": "assistant", "content": ""})
                     _, reason, _, _ = generate(
@@ -304,7 +304,7 @@ def create_handler(tokenizer, model):
                         on_token=lambda part: send_chunk({"content": part}),
                     )
                     send_chunk({}, reason)
-                    self.wfile.write(b"data: [DONE]\\n\\n")
+                    self.wfile.write(b"data: [DONE]\n\n")
                     self.wfile.flush()
                     self.close_connection = True
                     return
