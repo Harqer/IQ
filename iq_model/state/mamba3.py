@@ -123,20 +123,26 @@ def _installed_source_commit() -> str | None:
 
     # A local source checkout with a strictly verified metadata-only patch
     # has no VCS direct_url. Require an explicitly recorded original SHA and
-    # compare the installed Mamba module's actual bytes against the recorded
-    # fingerprint. Do not trust a marker without matching source bytes.
+    # compare the installed module AND the narrowly patched TileLang forward
+    # kernel against their exact source fingerprints; reject drift.
     provenance = dist.locate_file("mamba_ssm/iq_mamba3_provenance.json")
     module = dist.locate_file("mamba_ssm/modules/mamba3.py")
-    if not provenance.is_file() or not module.is_file():
+    kernel = dist.locate_file(
+        "mamba_ssm/ops/tilelang/mamba3/mamba3_mimo_fwd.py"
+    )
+    if not all(path.is_file() for path in (provenance, module, kernel)):
         return None
     try:
         import hashlib
         info = json.loads(provenance.read_text(encoding="utf-8"))
         digest = hashlib.sha256(module.read_bytes()).hexdigest()
+        kernel_digest = hashlib.sha256(kernel.read_bytes()).hexdigest()
     except (OSError, ValueError, TypeError):
         return None
     if (info.get("metadata_patch") != "tilelang0.1.12-tvmffi0.1.11"
-            or info.get("module_sha256") != digest):
+            or info.get("module_sha256") != digest
+            or info.get("kernel_patch") != "mimo-fwd-valid-length-guard-v1"
+            or info.get("kernel_sha256") != kernel_digest):
         return None
     commit = info.get("source_commit")
     return str(commit) if isinstance(commit, str) else None
