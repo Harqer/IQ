@@ -56,10 +56,7 @@ if [[ "$actual_commit" != "$MAMBA3_COMMIT" ]]; then
   exit 2
 fi
 python scripts/patch_iq_mamba3_dependencies.py "$source_dir"
-changed_files=$(git -C "$source_dir" diff --name-only)
-if [[ "$changed_files" !=   echo >&2 "Unexpected Mamba3 source edits: $changed_files"
-  exit 2
-fi
+python scripts/verify_iq_mamba_patch_paths.py "$source_dir"
 MAMBA_FORCE_BUILD=TRUE python -m pip install \
   --no-build-isolation \
   --no-cache-dir \
