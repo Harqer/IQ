@@ -102,6 +102,62 @@ def partition_weight_map(weight_map: dict[str, str]) -> tuple[dict[str, list[str
 
 
 @torch.inference_mode()
+def validate_and_copy_base_tensors(
+    tensors: dict[str, torch.Tensor],
+    expected_keys: set[str],
+    params: dict[str, nn.Parameter],
+    buffers: dict[str, torch.Tensor],
+) -> tuple[float, float]:
+    """Copy real BF16 checkpoint values and verify finiteness on destination.
+
+    A per-tensor CPU BF16 `isfinite(...).all().item()` serialized every
+    shard and dominated H200 startup. Copies now precede device-side finite
+    reductions, with one synchronization per shard. Fail closed on NaN/Inf
+    after the final GPU transfer; inference never sees invalid weights.
+    """
+    if set(tensors) != expected_keys:
+        raise RuntimeError(
+            "Base checkpoint shard keys differ: "
+            f"missing={sorted(expected_keys-set(tensors))[:10]} "
+            f"extra={sorted(set(tensors)-expected_keys)[:10]}"
+        )
+    destinations: list[tuple[str, torch.Tensor]] = []
+    for key, value in tensors.items():
+        target = params.get(key)
+        if target is None:
+            target = buffers.get(key)
+        if target is None or tuple(value.shape) != tuple(target.shape):
+            raise RuntimeError(f"Base checkpoint tensor shape mismatch: {key}")
+        if not value.dtype.is_floating_point or not target.dtype.is_floating_point:
+            raise RuntimeError(f"Nonfloating checkpoint tensor: {key}")
+        destinations.append((key, target))
+    if not destinations:
+        raise RuntimeError("Empty baseline checkpoint shard")
+    device = destinations[0][1].device
+    if any(target.device != device for _, target in destinations):
+        raise RuntimeError("Baseline tensors span multiple devices unexpectedly")
+    copy_started = perf_counter()
+    for key, target in destinations:
+        # copy_ converts dtype as required, avoiding a second temporary
+        # CUDA allocation from value.to(...). Read-only source is unchanged.
+        target.copy_(tensors[key], non_blocking=(device.type == "cuda"))
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
+    copy_seconds = perf_counter() - copy_started
+
+    finite_started = perf_counter()
+    finite_checks = [torch.isfinite(target).all() for _, target in destinations]
+    if not bool(torch.stack(finite_checks).all().item()):
+        invalid = [
+            key for key, target in destinations
+            if not bool(torch.isfinite(target).all().item())
+        ]
+        raise RuntimeError(f"Nonfinite checkpoint tensor(s) after copy: {invalid[:10]}")
+    finite_seconds = perf_counter() - finite_started
+    return copy_seconds, finite_seconds
+
+
+@torch.inference_mode()
 def load_base_weights(model: IQHybridForCausalLM, root: Path,
                       base: dict[str, list[str]], *,
                       budget_gib: int = MAX_BASELINE_GIB) -> None:
@@ -155,30 +211,17 @@ def load_base_weights(model: IQHybridForCausalLM, root: Path,
         decoded_at = perf_counter()
         tensors = load_file(str(shard_path), device="cpu")
         decode_seconds = perf_counter() - decoded_at
-        if set(tensors) != expected_keys:
-            raise RuntimeError(
-                f"Base checkpoint shard keys differ: {name}; "
-                f"missing={sorted(expected_keys-set(tensors))[:10]} "
-                f"extra={sorted(set(tensors)-expected_keys)[:10]}"
-            )
-        checked_at = perf_counter()
-        for key, value in tensors.items():
-            target = params.get(key)
-            if target is None:
-                target = buffers.get(key)
-            if target is None or tuple(value.shape) != tuple(target.shape):
-                raise RuntimeError(f"Base checkpoint tensor shape mismatch: {key}")
-            if not value.dtype.is_floating_point or not bool(torch.isfinite(value).all()):
-                raise RuntimeError(f"Nonfinite/nonfloating checkpoint tensor: {key}")
-            target.copy_(value.to(device=target.device, dtype=target.dtype))
-        copy_validate_seconds = perf_counter() - checked_at
+        copy_seconds, finite_seconds = validate_and_copy_base_tensors(
+            tensors, expected_keys, params, buffers,
+        )
         del tensors
         loaded_bytes += staged_bytes
         loaded_count = i
         print(
             f"{REPORT_PREFIX}_BASE_SHARD_LOADED={i}/{len(base)} "
             f"file={name} decode_seconds={decode_seconds:.2f} "
-            f"validate_and_copy_seconds={copy_validate_seconds:.2f} "
+            f"gpu_copy_seconds={copy_seconds:.2f} "
+            f"finite_check_seconds={finite_seconds:.2f} "
             f"total_seconds={perf_counter()-started:.2f}",
             flush=True,
         )
