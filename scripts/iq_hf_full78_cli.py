@@ -52,8 +52,8 @@ def normalized_stage(raw: object) -> str:
     return str(value).rsplit(".", 1)[-1].upper()
 
 
-MAX_TOKENS = 16
-MAX_HISTORY_MESSAGES = 16
+MAX_TOKENS = 256
+MAX_HISTORY_MESSAGES = 64
 DEFAULT_LOG_DIR = Path.home() / "iq-h200-logs"
 
 
@@ -223,13 +223,28 @@ def wait_for_server(job_id: str, token: str, deadline_seconds: int,
 
 
 def reply(client: InferenceClient, history: list[dict[str, str]], max_tokens: int) -> str:
-    result = client.chat.completions.create(
-        messages=history, max_tokens=max_tokens, stream=False,
+    """Print and collect the ACTUAL full78 token stream, preserving chat history."""
+    chunks = client.chat.completions.create(
+        messages=history, max_tokens=max_tokens, stream=True,
     )
-    response = result.choices[0].message.content
-    if not isinstance(response, str):
-        raise RuntimeError("Malformed IQ response; see HF Job logs")
-    return response
+    response: list[str] = []
+    completed = False
+    print("IQ: ", end="", flush=True)
+    for chunk in chunks:
+        for choice in chunk.choices:
+            content = getattr(choice.delta, "content", None)
+            if isinstance(content, str) and content:
+                print(content, end="", flush=True)
+                response.append(content)
+            if getattr(choice, "finish_reason", None) is not None:
+                completed = True
+    print(flush=True)
+    if not completed:
+        raise RuntimeError(
+            "IQ response stream ended before generation completed; "
+            "partial output was not saved as a successful reply. See H200 logs."
+        )
+    return "".join(response)
 
 
 def chat_loop(base: str, token: str, *, max_tokens: int, timeout: int,
@@ -263,7 +278,6 @@ def chat_loop(base: str, token: str, *, max_tokens: int, timeout: int,
                 continue
             proposal = history + [{"role": "user", "content": message}]
             answer = reply(client, proposal, max_tokens)
-            print("IQ:", answer, flush=True)
             # Keep only successful exchanges; never silently drop prior turns.
             history = proposal + [{"role": "assistant", "content": answer}]
     finally:
@@ -351,16 +365,17 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run-h200", action="store_true",
                         help="Explicitly authorize one billable H200 (30-minute timeout)")
-    parser.add_argument("--max-tokens", type=int, default=8)
+    parser.add_argument("--max-tokens", type=int, default=128,
+                        help="Maximum generated response length (1..256; default 128)")
     parser.add_argument("--ready-timeout", type=int, default=1200,
                         help="Maximum server readiness wait in seconds (<=1400)")
-    parser.add_argument("--request-timeout", type=int, default=300)
+    parser.add_argument("--request-timeout", type=int, default=1200)
     parser.add_argument("--transcript", type=Path)
     parser.add_argument("--log-dir", type=Path, default=DEFAULT_LOG_DIR,
                         help="Save live H200 container logs locally (default ~/iq-h200-logs)")
     args = parser.parse_args()
     if not 1 <= args.max_tokens <= MAX_TOKENS:
-        parser.error("max-tokens must be 1..16")
+        parser.error("max-tokens must be 1..256")
     if not 1 <= args.ready_timeout <= 1400 or args.request_timeout < 1:
         parser.error("Invalid readiness/request timeout")
     commit = checked_commit()

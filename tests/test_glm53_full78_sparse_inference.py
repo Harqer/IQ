@@ -4,11 +4,13 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import torch
 from safetensors.torch import save_file
 
 from iq_model.hybrid import HybridModelError, UnloadedRoutedExpert
+from iq_model.mlp.latent_moe import StableLatentMoE, StableLatentMoEConfig
 from scripts.iq_hf_full78_sparse_inference import (
     hydrate_expert, partition_weight_map, validate_and_copy_base_tensors,
 )
@@ -32,6 +34,22 @@ class SparseFull78Tests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.mapping = fake_full78_map()
+
+    def test_256_way_stable_moe_executes_only_selected_slots(self):
+        config = StableLatentMoEConfig(
+            hidden_size=8, latent_size=4, expert_intermediate_size=8,
+            num_experts=256, top_k=8, num_shared_experts=1,
+        )
+        moe = StableLatentMoE(config).eval()
+        x = torch.randn(2, 8, requires_grad=True)
+        with patch("torch.where", wraps=torch.where) as where:
+            output = moe(x)
+        selected = set(output.selected_experts.flatten().tolist())
+        self.assertLessEqual(where.call_count, len(selected))
+        self.assertLess(where.call_count, 256)
+        self.assertEqual(tuple(output.hidden_states.shape), (2, 8))
+        output.hidden_states.sum().backward()
+        self.assertTrue(torch.isfinite(x.grad).all())
 
     def test_all_78_times_256_experts_partition_strictly(self):
         base, routed = partition_weight_map(self.mapping)
