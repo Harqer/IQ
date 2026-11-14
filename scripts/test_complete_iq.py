@@ -21,6 +21,7 @@ def parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--max-new-tokens", type=int, default=16)
     p.add_argument("--temperature", type=float, default=0.0)
+    p.add_argument("--device-map", default=os.getenv("IQ_DEVICE_MAP"), help="Metadata-only hybrid stage placement JSON")
     return p
 
 
@@ -54,6 +55,7 @@ def main() -> int:
         root,
         device=torch.device("cuda:0"),
         dtype=torch.bfloat16,
+        device_map_path=args.device_map,
     )
 
     print("IQ: checkpoint loaded; generating real tokens", flush=True)
@@ -86,6 +88,8 @@ def main() -> int:
         else:
             probs = torch.softmax(logits / args.temperature, dim=-1)
             next_token = torch.multinomial(probs, num_samples=1)
+        # The LM head can reside on the final GPU; generated token IDs stay on GPU 0.
+        next_token = next_token.to(generated.device)
         generated = torch.cat((generated, next_token), dim=1)
         if tokenizer.eos_token_id is not None and bool(
             (next_token == tokenizer.eos_token_id).all()
