@@ -1104,7 +1104,16 @@ def load_complete_iq_checkpoint(
                                     f"shape mismatch {key}: checkpoint={tuple(value.shape)} "
                                     f"model={tuple(target.shape)}"
                                 )
-                            target.copy_(value.to(device=target.device, dtype=target.dtype))
+                            if value.is_floating_point() and not bool(torch.isfinite(value).all()):
+                                raise CompleteTransplantError(
+                                    f"non-finite weight values: shard={filename} key={key}"
+                                )
+                            if target.dtype != value.dtype:
+                                raise CompleteTransplantError(
+                                    f"dtype mismatch {key}: shard={filename} "
+                                    f"checkpoint={value.dtype} target={target.dtype}"
+                                )
+                            target.copy_(value.to(device=target.device))
                         except (RuntimeError, ValueError) as exc:
                             raise CompleteTransplantError(
                                 f"IQ load failed shard={filename} key={key} "
