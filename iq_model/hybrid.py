@@ -10,6 +10,8 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
+from iq_telemetry import trace_stage
+
 from .architecture import HybridLayerType, HybridSchedule
 from .attention import (
     CompressedContextConfig,
@@ -998,7 +1000,8 @@ class IQHybridForCausalLM(nn.Module):
             )
 
         input_ids = input_ids.to(self._first_device)
-        x = self.embed_tokens(input_ids)
+        with trace_stage("iq.embedding", batch_size=int(input_ids.shape[0]), sequence_length=int(input_ids.shape[1])):
+            x = self.embed_tokens(input_ids)
         moe_outputs: list[MoEOutput | StableLatentMoEOutput] = []
         attnres_state = self.attnres.init_state(x) if self.attnres is not None else None
         for layer_index, (layer_type, layer) in enumerate(
@@ -1028,31 +1031,32 @@ class IQHybridForCausalLM(nn.Module):
                 else x
             )
             try:
-                if layer_type is HybridLayerType.MAMBA3:
-                    layer_output = layer(
-                        layer_input,
-                        attention_mask=local_mask,
-                        document_ids=local_documents,
-                    )
-                elif layer_type is HybridLayerType.MOE:
-                    moe_output = layer(layer_input)
-                    layer_output = moe_output.hidden_states
-                    moe_outputs.append(moe_output)
-                elif layer_type in {
-                    HybridLayerType.DENSE_ATTENTION,
-                    HybridLayerType.CSA,
-                    HybridLayerType.HCA,
-                }:
-                    layer_output = layer(
-                        layer_input,
-                        position_ids=local_positions,
-                        attention_mask=local_mask,
-                        document_ids=local_documents,
-                    )
-                else:
-                    raise HybridModelError(
-                        f"unsupported runtime layer type: {layer_type.value}"
-                    )
+                with trace_stage("iq.layer", layer_index=layer_index, operator=layer_type.value, device=str(stage_device), dtype=str(layer_input.dtype)):
+                    if layer_type is HybridLayerType.MAMBA3:
+                        layer_output = layer(
+                            layer_input,
+                            attention_mask=local_mask,
+                            document_ids=local_documents,
+                        )
+                    elif layer_type is HybridLayerType.MOE:
+                        moe_output = layer(layer_input)
+                        layer_output = moe_output.hidden_states
+                        moe_outputs.append(moe_output)
+                    elif layer_type in {
+                        HybridLayerType.DENSE_ATTENTION,
+                        HybridLayerType.CSA,
+                        HybridLayerType.HCA,
+                    }:
+                        layer_output = layer(
+                            layer_input,
+                            position_ids=local_positions,
+                            attention_mask=local_mask,
+                            document_ids=local_documents,
+                        )
+                    else:
+                        raise HybridModelError(
+                            f"unsupported runtime layer type: {layer_type.value}"
+                        )
 
             except (RuntimeError, ValueError) as exc:
                 memory = (
@@ -1086,7 +1090,8 @@ class IQHybridForCausalLM(nn.Module):
 
         if self.attnres is not None:
             assert attnres_state is not None
-            x = self.attnres.finalize(attnres_state)
+            with trace_stage("iq.attnres.finalize"):
+                x = self.attnres.finalize(attnres_state)
 
         hidden = self.norm(x.to(self._last_device))
         input_ids = input_ids.to(self._last_device)
