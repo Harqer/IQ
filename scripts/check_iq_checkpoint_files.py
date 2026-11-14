@@ -15,6 +15,7 @@ from pathlib import Path
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("checkpoint", type=Path)
+    p.add_argument("--numeric-only", action="store_true", help="Skip tokenizer requirement for numerical token-ID inference")
     args = p.parse_args()
     root = args.checkpoint.resolve()
     config = root / "iq_config.json"
@@ -48,7 +49,7 @@ def main() -> int:
     # HF inference job mounted tokenizer assets separately from IQ shards.
     # Never copy or mutate the immutable checkpoint volume.
     tokenizer_dir = Path(os.getenv("IQ_TOKENIZER_DIR") or root)
-    if not any(
+    if not args.numeric_only and not any(
         (tokenizer_dir / name).is_file()
         for name in ("tokenizer.json", "tokenizer.model")
     ):

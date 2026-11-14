@@ -1005,29 +1005,74 @@ def load_complete_iq_checkpoint(
     *,
     device: torch.device | str = "cuda",
     dtype: torch.dtype = torch.bfloat16,
+    device_map_path: str | Path | None = None,
 ) -> IQHybridForCausalLM:
-    """Load a compiled complete IQ checkpoint with strict tensor coverage."""
+    """Strict, streamed, read-only IQ checkpoint load.
+
+    An optional IQ hybrid device-map JSON assigns complete physical operators
+    to CUDA devices. It does not alter the Mamba-3 MIMO architecture or weights.
+    Input is an HF bucket *mount*, never a local snapshot_download.
+    """
+    from hashlib import sha256
+
     root = Path(checkpoint_dir)
+    config_bytes = (root / "iq_config.json").read_bytes()
+    index_bytes = (root / "model.safetensors.index.json").read_bytes()
     config = IQHybridConfig.from_json(str(root / "iq_config.json"))
-    model = IQHybridForCausalLM(config, dtype=dtype, device=device)
     try:
-        from safetensors.torch import load_file
-    except ImportError as exc:
-        raise CompleteTransplantError("safetensors is required") from exc
-    try:
-        index = json.loads(
-            (root / "model.safetensors.index.json").read_text(encoding="utf-8")
-        )
-    except (OSError, json.JSONDecodeError) as exc:
+        index = json.loads(index_bytes)
+    except json.JSONDecodeError as exc:
         raise CompleteTransplantError("invalid checkpoint index") from exc
     weight_map = index.get("weight_map")
     if not isinstance(weight_map, dict) or not weight_map:
         raise CompleteTransplantError("checkpoint index has no weight_map")
 
+    layer_devices = None
+    if device_map_path is not None:
+        plan = json.loads(Path(device_map_path).read_text(encoding="utf-8"))
+        if plan.get("index_sha256") != sha256(index_bytes).hexdigest():
+            raise CompleteTransplantError("IQ device map: index fingerprint mismatch")
+        if plan.get("config_sha256") != sha256(config_bytes).hexdigest():
+            raise CompleteTransplantError("IQ device map: config fingerprint mismatch")
+        if not plan.get("plan_only") or plan.get("inference_ready"):
+            raise CompleteTransplantError("IQ device map incorrectly claims completed inference")
+        ordinal_devices = plan.get("layer_to_gpu")
+        count = plan.get("device_count")
+        if (
+            not isinstance(ordinal_devices, list)
+            or len(ordinal_devices) != len(config.schedule.layers)
+            or not isinstance(count, int)
+            or count < 1
+            or any(not isinstance(x, int) or x < 0 or x >= count for x in ordinal_devices)
+            or sorted(set(ordinal_devices)) != list(range(count))
+            or any(a > b for a, b in zip(ordinal_devices, ordinal_devices[1:]))
+        ):
+            raise CompleteTransplantError("IQ device map has invalid/noncontiguous physical stages")
+        if torch.cuda.device_count() < count:
+            raise CompleteTransplantError(
+                f"IQ device map requires {count} CUDA devices, found {torch.cuda.device_count()}"
+            )
+        layer_devices = tuple(torch.device(f"cuda:{d}") for d in ordinal_devices)
+        # A shard may contain native controllers for multiple stages.
+        shard_devices = plan.get("shard_to_gpu")
+        if not isinstance(shard_devices, dict) or set(shard_devices) != set(weight_map.values()):
+            raise CompleteTransplantError("IQ device map lacks full shard coverage")
+
+    model = IQHybridForCausalLM(
+        config,
+        dtype=dtype,
+        device=device,
+        layer_devices=layer_devices,
+    )
+    try:
+        from safetensors import safe_open
+    except ImportError as exc:
+        raise CompleteTransplantError("safetensors is required") from exc
+
     parameters = dict(model.named_parameters())
     buffers = dict(model.named_buffers())
     targets = {**parameters, **buffers}
-    expected = set(model.state_dict().keys())
+    expected = set(model.state_dict())
     if set(weight_map) != expected:
         missing = sorted(expected - set(weight_map))
         unexpected = sorted(set(weight_map) - expected)
@@ -1041,18 +1086,48 @@ def load_complete_iq_checkpoint(
 
     with torch.no_grad():
         for filename, keys in sorted(by_file.items()):
-            shard = load_file(str(root / filename), device="cpu")
-            if set(shard) != set(keys):
-                raise CompleteTransplantError(
-                    f"shard/index disagreement for {filename}"
-                )
-            for key, value in shard.items():
-                target = targets[key]
-                if tuple(target.shape) != tuple(value.shape):
-                    raise CompleteTransplantError(
-                        f"shape mismatch {key}: checkpoint={tuple(value.shape)} "
-                        f"model={tuple(target.shape)}"
-                    )
-                target.copy_(value.to(device=target.device, dtype=target.dtype))
+            if Path(filename).name != filename:
+                raise CompleteTransplantError(f"unsafe checkpoint shard path: {filename}")
+            path = root / filename
+            try:
+                with safe_open(str(path), framework="pt", device="cpu") as shard:
+                    if set(shard.keys()) != set(keys):
+                        raise CompleteTransplantError(
+                            f"shard/index disagreement for {filename}"
+                        )
+                    for key in keys:
+                        target = targets[key]
+                        try:
+                            value = shard.get_tensor(key)
+                            if tuple(target.shape) != tuple(value.shape):
+                                raise CompleteTransplantError(
+                                    f"shape mismatch {key}: checkpoint={tuple(value.shape)} "
+                                    f"model={tuple(target.shape)}"
+                                )
+                            if value.is_floating_point() and not bool(torch.isfinite(value).all()):
+                                raise CompleteTransplantError(
+                                    f"non-finite weight values: shard={filename} key={key}"
+                                )
+                            # Preserve the checkpoint's mixed BF16/FP32 tensor
+                            # dtypes rather than silently truncating FP32 to BF16.
+                            # Mamba-3 contains legitimately FP32 state parameters.
+                            staged = value.to(device=target.device)
+                            if target.dtype == staged.dtype:
+                                target.copy_(staged)
+                            else:
+                                target.data = staged
+                            del staged
+                        except (RuntimeError, ValueError) as exc:
+                            raise CompleteTransplantError(
+                                f"IQ load failed shard={filename} key={key} "
+                                f"device={target.device} dtype={target.dtype}: {exc}"
+                            ) from exc
+                        finally:
+                            if "value" in locals():
+                                del value
+            except OSError as exc:
+                raise CompleteTransplantError(f"unable to read mounted shard {path}: {exc}") from exc
     model.eval()
+    # Inference never needs gradients; metadata-only freeze preserves every weight.
+    model.requires_grad_(False)
     return model

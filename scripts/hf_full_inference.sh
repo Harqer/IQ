@@ -16,7 +16,27 @@ checkpoint_dir=$1
 shift
 
 # Fail before expensive source compilation if a mounted checkpoint is absent.
-python scripts/check_iq_checkpoint_files.py "$checkpoint_dir"
+if [[ " $* " == *" --numeric-only "* ]]; then
+  python scripts/check_iq_checkpoint_files.py "$checkpoint_dir" --numeric-only
+  numeric_only=1
+else
+  python scripts/check_iq_checkpoint_files.py "$checkpoint_dir"
+  numeric_only=0
+fi
+
+# Fail before costly GPU runtime installation when the full256 checkpoint has no map.
+if python -c 'import json,sys; c=json.load(open(sys.argv[1])); sys.exit(0 if c["stable_moe"]["num_experts"]>=256 else 1)' "$checkpoint_dir/iq_config.json"; then
+  if [[ -z "${IQ_DEVICE_MAP:-}" ]]; then
+    echo >&2 "Full-256 IQ inference requires IQ_DEVICE_MAP pointing to the verified HF-mounted hybrid plan."
+    exit 2
+  fi
+fi
+if [[ -n "${IQ_DEVICE_MAP:-}" ]]; then
+  python scripts/check_iq_device_map.py "$checkpoint_dir" \
+    --device-map "$IQ_DEVICE_MAP" \
+    --tokenizer-dir "${IQ_TOKENIZER_DIR:-$checkpoint_dir}" \
+    $([[ "$numeric_only" == 1 ]] || printf %s --require-tokenizer)
+fi
 
 # QuACK/CuTe recurrent step() is a separate backend and is not yet certified
 # on the pinned TVM-FFI/CUDA 12.8 stack. Full-prefix MIMO recomputation uses

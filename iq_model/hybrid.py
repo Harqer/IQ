@@ -4,11 +4,13 @@ import json
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from hashlib import sha256
-from typing import Literal
+from typing import Literal, Sequence
 
 import torch
 from torch import nn
 from torch.nn import functional as F
+
+from iq_telemetry import trace_stage
 
 from .architecture import HybridLayerType, HybridSchedule
 from .attention import (
@@ -713,6 +715,7 @@ class IQHybridForCausalLM(nn.Module):
         *,
         dtype: torch.dtype = torch.bfloat16,
         device: torch.device | str = "cuda",
+        layer_devices: Sequence[torch.device | str] | None = None,
     ) -> None:
         super().__init__()
         self.config = config
@@ -722,23 +725,38 @@ class IQHybridForCausalLM(nn.Module):
             raise HybridModelError(
                 "IQHybridForCausalLM requires the production CUDA Mamba-3 MIMO runtime"
             )
+        if layer_devices is None:
+            self._layer_devices = (device_obj,) * len(config.schedule.layers)
+        else:
+            self._layer_devices = tuple(torch.device(d) for d in layer_devices)
+            if len(self._layer_devices) != len(config.schedule.layers):
+                raise HybridModelError("layer_devices must match the physical IQ schedule")
+            if any(d.type != "cuda" for d in self._layer_devices):
+                raise HybridModelError("Mamba-3 MIMO physical layers require CUDA")
+            if config.multimodal is not None and len(set(self._layer_devices)) > 1:
+                raise HybridModelError("Multi-GPU multimodal fusion is not yet supported")
+        self._first_device = self._layer_devices[0]
+        self._last_device = self._layer_devices[-1]
+        if config.model.tie_word_embeddings and self._first_device != self._last_device:
+            raise HybridModelError("Tied embedding/output weights cannot span separate GPUs")
 
         self.embed_tokens = nn.Embedding(
             config.model.vocab_size,
             config.model.hidden_size,
-            device=device_obj,
+            device=self._first_device,
             dtype=dtype,
         )
         self.layers = nn.ModuleList()
         mamba_layer_idx = 0
-        for layer_type in config.schedule.layers:
+        for physical_index, layer_type in enumerate(config.schedule.layers):
+            layer_device = self._layer_devices[physical_index]
             if layer_type is HybridLayerType.MAMBA3:
                 layer = Mamba3ResidualLayer(
                     config.model,
                     config.mamba3,
                     mamba_layer_idx=mamba_layer_idx,
                     dtype=dtype,
-                    device=device_obj,
+                    device=layer_device,
                 )
                 mamba_layer_idx += 1
             elif layer_type is HybridLayerType.MOE:
@@ -748,24 +766,24 @@ class IQHybridForCausalLM(nn.Module):
                         config.stable_moe,
                         norm_eps=config.model.rms_norm_eps,
                         residual_dropout=config.model.residual_dropout,
-                    ).to(device=device_obj, dtype=dtype)
+                    ).to(device=layer_device, dtype=dtype)
                 else:
                     layer = RoutedSwiGLUMoELayer(
                         config.moe,
                         norm_eps=config.model.rms_norm_eps,
                         residual_dropout=config.model.residual_dropout,
-                    ).to(device=device_obj, dtype=dtype)
+                    ).to(device=layer_device, dtype=dtype)
             elif layer_type is HybridLayerType.DENSE_ATTENTION:
                 layer = DenseContextResidualLayer(
                     config.model,
-                ).to(device=device_obj, dtype=dtype)
+                ).to(device=layer_device, dtype=dtype)
             elif layer_type in {HybridLayerType.CSA, HybridLayerType.HCA}:
                 assert config.compressed_context is not None
                 layer = CompressedContextResidualLayer(
                     config.model,
                     config.compressed_context,
                     mode=layer_type,
-                ).to(device=device_obj, dtype=dtype)
+                ).to(device=layer_device, dtype=dtype)
             else:
                 raise HybridModelError(
                     f"unsupported hybrid layer type: {layer_type.value}"
@@ -774,23 +792,27 @@ class IQHybridForCausalLM(nn.Module):
 
         self.attnres = (
             BlockAttentionResidual(config.attnres).to(
-                device=device_obj,
+                device=self._first_device,
                 dtype=dtype,
             )
             if config.attnres is not None
             else None
         )
+        if self.attnres is not None:
+            for i, mixer in enumerate(self.attnres.mixers):
+                mixer.to(device=self._layer_devices[i], dtype=dtype)
+            self.attnres.output_mixer.to(device=self._last_device, dtype=dtype)
         self.norm = RMSNorm(
             config.model.hidden_size,
             config.model.rms_norm_eps,
-        ).to(device=device_obj, dtype=dtype)
+        ).to(device=self._last_device, dtype=dtype)
         self.multimodal = (
             IQMultimodalPathway(
                 config.multimodal,
                 config.model.hidden_size,
                 config.mamba3,
                 dtype=dtype,
-                device=device_obj,
+                device=self._first_device,
             )
             if config.multimodal is not None
             else None
@@ -801,22 +823,22 @@ class IQHybridForCausalLM(nn.Module):
         self.reasoning_verifier: ReasoningVerifierProtocol | None = None
         if config.reasoning is not None:
             self.reasoning = ReasoningRecurrence(config.reasoning).to(
-                device=device_obj, dtype=dtype
+                device=self._last_device, dtype=dtype
             )
             self.reasoning_injector = ReasoningStateInjector(
                 config.model.hidden_size,
                 config.reasoning.state_dim,
-            ).to(device=device_obj, dtype=dtype)
+            ).to(device=self._last_device, dtype=dtype)
             if config.energy_critic is not None:
                 self.reasoning_verifier = ReasoningEnergyCritic(
                     config.energy_critic
-                ).to(device=device_obj, dtype=dtype)
+                ).to(device=self._last_device, dtype=dtype)
 
         self.lm_head = nn.Linear(
             config.model.hidden_size,
             config.model.vocab_size,
             bias=False,
-            device=device_obj,
+            device=self._last_device,
             dtype=dtype,
         )
         nn.init.normal_(
@@ -977,7 +999,9 @@ class IQHybridForCausalLM(nn.Module):
                 "media_document_ids requires document_ids and visual input"
             )
 
-        x = self.embed_tokens(input_ids)
+        input_ids = input_ids.to(self._first_device)
+        with trace_stage("iq.embedding", batch_size=int(input_ids.shape[0]), sequence_length=int(input_ids.shape[1])):
+            x = self.embed_tokens(input_ids)
         moe_outputs: list[MoEOutput | StableLatentMoEOutput] = []
         attnres_state = self.attnres.init_state(x) if self.attnres is not None else None
         for layer_index, (layer_type, layer) in enumerate(
@@ -987,37 +1011,65 @@ class IQHybridForCausalLM(nn.Module):
                 strict=True,
             )
         ):
+            stage_device = self._layer_devices[layer_index]
+            try:
+                x = x.to(stage_device)
+                local_mask = attention_mask.to(stage_device) if attention_mask is not None else None
+                local_documents = document_ids.to(stage_device) if document_ids is not None else None
+                local_positions = position_ids.to(stage_device) if position_ids is not None else None
+                if attnres_state is not None:
+                    attnres_state.block_sources = attnres_state.block_sources.to(stage_device)
+                    attnres_state.prefix_sum = attnres_state.prefix_sum.to(stage_device)
+            except (RuntimeError, ValueError) as exc:
+                raise HybridModelError(
+                    f"IQ stage transfer failed before physical_layer={layer_index} "
+                    f"operator={layer_type.value} destination={stage_device}: {exc}"
+                ) from exc
             layer_input = (
                 self.attnres.read(attnres_state)
                 if self.attnres is not None and attnres_state is not None
                 else x
             )
-            if layer_type is HybridLayerType.MAMBA3:
-                layer_output = layer(
-                    layer_input,
-                    attention_mask=attention_mask,
-                    document_ids=document_ids,
-                )
-            elif layer_type is HybridLayerType.MOE:
-                moe_output = layer(layer_input)
-                layer_output = moe_output.hidden_states
-                moe_outputs.append(moe_output)
-            elif layer_type in {
-                HybridLayerType.DENSE_ATTENTION,
-                HybridLayerType.CSA,
-                HybridLayerType.HCA,
-            }:
-                layer_output = layer(
-                    layer_input,
-                    position_ids=position_ids,
-                    attention_mask=attention_mask,
-                    document_ids=document_ids,
-                )
-            else:
-                raise HybridModelError(
-                    f"unsupported runtime layer type: {layer_type.value}"
-                )
+            try:
+                with trace_stage("iq.layer", layer_index=layer_index, operator=layer_type.value, device=str(stage_device), dtype=str(layer_input.dtype)):
+                    if layer_type is HybridLayerType.MAMBA3:
+                        layer_output = layer(
+                            layer_input,
+                            attention_mask=local_mask,
+                            document_ids=local_documents,
+                        )
+                    elif layer_type is HybridLayerType.MOE:
+                        moe_output = layer(layer_input)
+                        layer_output = moe_output.hidden_states
+                        moe_outputs.append(moe_output)
+                    elif layer_type in {
+                        HybridLayerType.DENSE_ATTENTION,
+                        HybridLayerType.CSA,
+                        HybridLayerType.HCA,
+                    }:
+                        layer_output = layer(
+                            layer_input,
+                            position_ids=local_positions,
+                            attention_mask=local_mask,
+                            document_ids=local_documents,
+                        )
+                    else:
+                        raise HybridModelError(
+                            f"unsupported runtime layer type: {layer_type.value}"
+                        )
 
+            except (RuntimeError, ValueError) as exc:
+                memory = (
+                    torch.cuda.memory_allocated(stage_device)
+                    if stage_device.type == "cuda" else 0
+                )
+                raise HybridModelError(
+                    f"IQ inference error: physical_layer={layer_index} "
+                    f"operator={layer_type.value} device={stage_device} "
+                    f"activation_shape={tuple(layer_input.shape)} "
+                    f"activation_dtype={layer_input.dtype} "
+                    f"allocated_bytes={memory}: {exc}"
+                ) from exc
             if self.multimodal is not None:
                 layer_output, visual_memory = self.multimodal.fuse(
                     layer_index,
@@ -1038,9 +1090,19 @@ class IQHybridForCausalLM(nn.Module):
 
         if self.attnres is not None:
             assert attnres_state is not None
-            x = self.attnres.finalize(attnres_state)
+            with trace_stage("iq.attnres.finalize"):
+                x = self.attnres.finalize(attnres_state)
 
-        hidden = self.norm(x)
+        hidden = self.norm(x.to(self._last_device))
+        input_ids = input_ids.to(self._last_device)
+        if attention_mask is not None:
+            attention_mask = attention_mask.to(self._last_device)
+        if document_ids is not None:
+            document_ids = document_ids.to(self._last_device)
+        if reasoning_context_lengths is not None:
+            reasoning_context_lengths = reasoning_context_lengths.to(self._last_device)
+        if labels is not None:
+            labels = labels.to(self._last_device)
         reasoning_output: ReasoningRecurrenceOutput | None = None
         if self.reasoning is not None:
             reasoning_context_mask, reasoning_injection_mask = _reasoning_masks(
