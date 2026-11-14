@@ -47,6 +47,7 @@ def run_probe(
         "available_model_ids": [],
         "iq_deployment_verified": False,
         "iq_inference_executed": False,
+        "remote_inference_executed": False,
         "checkpoint_weights_verified_by_cerebras": False,
         "status": "unstarted",
     }
@@ -93,7 +94,7 @@ def run_probe(
                 messages=[{"role": "user", "content": "Reply with exactly IQ_OK"}],
                 max_completion_tokens=8,
             )
-        report["iq_inference_executed"] = True
+        report["remote_inference_executed"] = True
         report["response_model"] = getattr(response, "model", None)
         report["status"] = "dedicated_endpoint_responded"
         report["warning"] = (
