@@ -143,7 +143,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         from cerebras.cloud.sdk import Cerebras
-        client = Cerebras(api_key=token)
+        client = Cerebras(api_key=token, warm_tcp_connection=False)
     except Exception as exc:
         print(json.dumps({"status": "client_initialization_error", "error": _safe_error(exc)}, indent=2))
         return 2
