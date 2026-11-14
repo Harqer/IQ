@@ -58,6 +58,14 @@ def main() -> int:
         device_map_path=args.device_map,
     )
 
+    # GeeksforGeeks-style parameter accounting; diagnostic only, no training.
+    total_params = sum(param.numel() for param in model.parameters())
+    trainable_params = sum(param.numel() for param in model.parameters() if param.requires_grad)
+    print(
+        f"IQ: parameters={total_params:,}, trainable={trainable_params:,}; "
+        f"inference layers={len(model.layers)}",
+        flush=True,
+    )
     print("IQ: checkpoint loaded; generating real tokens", flush=True)
     messages = [{"role": "user", "content": args.prompt}]
     try:
