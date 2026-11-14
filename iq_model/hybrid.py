@@ -735,6 +735,8 @@ class IQHybridForCausalLM(nn.Module):
                 raise HybridModelError("Multi-GPU multimodal fusion is not yet supported")
         self._first_device = self._layer_devices[0]
         self._last_device = self._layer_devices[-1]
+        if config.model.tie_word_embeddings and self._first_device != self._last_device:
+            raise HybridModelError("Tied embedding/output weights cannot span separate GPUs")
 
         self.embed_tokens = nn.Embedding(
             config.model.vocab_size,
@@ -1007,13 +1009,19 @@ class IQHybridForCausalLM(nn.Module):
             )
         ):
             stage_device = self._layer_devices[layer_index]
-            x = x.to(stage_device)
-            local_mask = attention_mask.to(stage_device) if attention_mask is not None else None
-            local_documents = document_ids.to(stage_device) if document_ids is not None else None
-            local_positions = position_ids.to(stage_device) if position_ids is not None else None
-            if attnres_state is not None:
-                attnres_state.block_sources = attnres_state.block_sources.to(stage_device)
-                attnres_state.prefix_sum = attnres_state.prefix_sum.to(stage_device)
+            try:
+                x = x.to(stage_device)
+                local_mask = attention_mask.to(stage_device) if attention_mask is not None else None
+                local_documents = document_ids.to(stage_device) if document_ids is not None else None
+                local_positions = position_ids.to(stage_device) if position_ids is not None else None
+                if attnres_state is not None:
+                    attnres_state.block_sources = attnres_state.block_sources.to(stage_device)
+                    attnres_state.prefix_sum = attnres_state.prefix_sum.to(stage_device)
+            except (RuntimeError, ValueError) as exc:
+                raise HybridModelError(
+                    f"IQ stage transfer failed before physical_layer={layer_index} "
+                    f"operator={layer_type.value} destination={stage_device}: {exc}"
+                ) from exc
             layer_input = (
                 self.attnres.read(attnres_state)
                 if self.attnres is not None and attnres_state is not None
