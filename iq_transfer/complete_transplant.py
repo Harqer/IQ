@@ -1116,4 +1116,6 @@ def load_complete_iq_checkpoint(
             except OSError as exc:
                 raise CompleteTransplantError(f"unable to read mounted shard {path}: {exc}") from exc
     model.eval()
+    # Inference never needs gradients; metadata-only freeze preserves every weight.
+    model.requires_grad_(False)
     return model
