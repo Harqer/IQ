@@ -21,6 +21,8 @@ def parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--max-new-tokens", type=int, default=16)
     p.add_argument("--temperature", type=float, default=0.0)
+    p.add_argument("--numeric-only", action="store_true", help="Run real checkpoint inference using in-vocabulary token IDs; no tokenizer")
+    p.add_argument("--token-ids", default="1,2,3,4", help="Comma-separated numerical IDs for --numeric-only")
     p.add_argument("--device-map", default=os.getenv("IQ_DEVICE_MAP"), help="Metadata-only hybrid stage placement JSON")
     return p
 
@@ -35,21 +37,35 @@ def main() -> int:
         raise SystemExit("complete IQ inference requires CUDA")
 
     root = Path(args.checkpoint)
-    tokenizer_root = Path(os.getenv("IQ_TOKENIZER_DIR") or root)
-    from transformers import AutoTokenizer
-
-    print(f"IQ: loading tokenizer from {tokenizer_root}", flush=True)
-    tokenizer = AutoTokenizer.from_pretrained(
-        str(tokenizer_root),
-        local_files_only=True,
-    )
     config = json.loads((root / "iq_config.json").read_text(encoding="utf-8"))
     expected_vocab = config["model"]["vocab_size"]
-    if len(tokenizer) != expected_vocab:
-        raise RuntimeError(
-            f"Checkpoint vocabulary {expected_vocab} does not match "
-            f"tokenizer size {len(tokenizer)}"
-        )
+    tokenizer = None
+    if args.numeric_only:
+        token_ids = [int(part.strip()) for part in args.token_ids.split(",")]
+        if not token_ids or any(token_id < 0 or token_id >= expected_vocab for token_id in token_ids):
+            raise ValueError(f"Numerical token IDs must be within [0, {expected_vocab})")
+        input_ids = torch.tensor([token_ids], dtype=torch.long)
+        print(f"IQ: real-checkpoint numerical input: shape={tuple(input_ids.shape)}, vocab={expected_vocab}", flush=True)
+    else:
+        tokenizer_root = Path(os.getenv("IQ_TOKENIZER_DIR") or root)
+        from transformers import AutoTokenizer
+        print(f"IQ: loading tokenizer from {tokenizer_root}", flush=True)
+        tokenizer = AutoTokenizer.from_pretrained(str(tokenizer_root), local_files_only=True)
+        if len(tokenizer) != expected_vocab:
+            raise RuntimeError(
+                f"Checkpoint vocabulary {expected_vocab} does not match "
+                f"tokenizer size {len(tokenizer)}"
+            )
+        messages = [{"role": "user", "content": args.prompt}]
+        try:
+            encoded = tokenizer.apply_chat_template(
+                messages, add_generation_prompt=True, return_tensors="pt"
+            )
+            input_ids = (
+                encoded if isinstance(encoded, torch.Tensor) else encoded["input_ids"]
+            )
+        except (ValueError, AttributeError, KeyError):
+            input_ids = tokenizer(args.prompt, return_tensors="pt")["input_ids"]
     print(f"IQ: loading checkpoint from {root}", flush=True)
     model = load_complete_iq_checkpoint(
         root,
@@ -66,25 +82,22 @@ def main() -> int:
         f"inference layers={len(model.layers)}",
         flush=True,
     )
-    print("IQ: checkpoint loaded; generating real tokens", flush=True)
-    messages = [{"role": "user", "content": args.prompt}]
-    try:
-        encoded = tokenizer.apply_chat_template(
-            messages,
-            add_generation_prompt=True,
-            return_tensors="pt",
-        )
-        input_ids = (
-            encoded if isinstance(encoded, torch.Tensor) else encoded["input_ids"]
-        )
-    except (ValueError, AttributeError, KeyError):
-        input_ids = tokenizer(args.prompt, return_tensors="pt")["input_ids"]
-
+    print("IQ: checkpoint loaded; running real forward pass", flush=True)
     input_ids = input_ids.to("cuda:0")
     with torch.inference_mode():
         first = model(input_ids)
+    expected_shape = (input_ids.shape[0], input_ids.shape[1], expected_vocab)
+    if tuple(first.logits.shape) != expected_shape:
+        raise AssertionError(
+            f"IQ logits shape mismatch: expected={expected_shape}, got={tuple(first.logits.shape)}"
+        )
     if not bool(torch.isfinite(first.logits).all()):
         raise AssertionError("complete IQ checkpoint produced non-finite logits")
+    print(
+        f"IQ_FIRST_REAL_FORWARD_PASS: logits_shape={tuple(first.logits.shape)} "
+        f"finite=True device={first.logits.device}",
+        flush=True,
+    )
 
     generated = input_ids
     for _ in range(args.max_new_tokens):
@@ -99,17 +112,15 @@ def main() -> int:
         # The LM head can reside on the final GPU; generated token IDs stay on GPU 0.
         next_token = next_token.to(generated.device)
         generated = torch.cat((generated, next_token), dim=1)
-        if tokenizer.eos_token_id is not None and bool(
+        if tokenizer is not None and tokenizer.eos_token_id is not None and bool(
             (next_token == tokenizer.eos_token_id).all()
         ):
             break
 
-    print(
-        tokenizer.decode(
-            generated[0],
-            skip_special_tokens=False,
-        )
-    )
+    if tokenizer is not None:
+        print(tokenizer.decode(generated[0], skip_special_tokens=False))
+    else:
+        print(f"IQ_NUMERICAL_GENERATION_PASS token_ids={generated[0].tolist()}", flush=True)
     return 0
 
 
