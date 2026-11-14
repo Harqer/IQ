@@ -1108,12 +1108,15 @@ def load_complete_iq_checkpoint(
                                 raise CompleteTransplantError(
                                     f"non-finite weight values: shard={filename} key={key}"
                                 )
-                            if target.dtype != value.dtype:
-                                raise CompleteTransplantError(
-                                    f"dtype mismatch {key}: shard={filename} "
-                                    f"checkpoint={value.dtype} target={target.dtype}"
-                                )
-                            target.copy_(value.to(device=target.device))
+                            # Preserve the checkpoint's mixed BF16/FP32 tensor
+                            # dtypes rather than silently truncating FP32 to BF16.
+                            # Mamba-3 contains legitimately FP32 state parameters.
+                            staged = value.to(device=target.device)
+                            if target.dtype == staged.dtype:
+                                target.copy_(staged)
+                            else:
+                                target.data = staged
+                            del staged
                         except (RuntimeError, ValueError) as exc:
                             raise CompleteTransplantError(
                                 f"IQ load failed shard={filename} key={key} "
