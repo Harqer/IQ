@@ -1019,32 +1019,45 @@ class IQHybridForCausalLM(nn.Module):
                 if self.attnres is not None and attnres_state is not None
                 else x
             )
-            if layer_type is HybridLayerType.MAMBA3:
-                layer_output = layer(
-                    layer_input,
-                    attention_mask=local_mask,
-                    document_ids=local_documents,
-                )
-            elif layer_type is HybridLayerType.MOE:
-                moe_output = layer(layer_input)
-                layer_output = moe_output.hidden_states
-                moe_outputs.append(moe_output)
-            elif layer_type in {
-                HybridLayerType.DENSE_ATTENTION,
-                HybridLayerType.CSA,
-                HybridLayerType.HCA,
-            }:
-                layer_output = layer(
-                    layer_input,
-                    position_ids=local_positions,
-                    attention_mask=local_mask,
-                    document_ids=local_documents,
-                )
-            else:
-                raise HybridModelError(
-                    f"unsupported runtime layer type: {layer_type.value}"
-                )
+            try:
+                if layer_type is HybridLayerType.MAMBA3:
+                    layer_output = layer(
+                        layer_input,
+                        attention_mask=local_mask,
+                        document_ids=local_documents,
+                    )
+                elif layer_type is HybridLayerType.MOE:
+                    moe_output = layer(layer_input)
+                    layer_output = moe_output.hidden_states
+                    moe_outputs.append(moe_output)
+                elif layer_type in {
+                    HybridLayerType.DENSE_ATTENTION,
+                    HybridLayerType.CSA,
+                    HybridLayerType.HCA,
+                }:
+                    layer_output = layer(
+                        layer_input,
+                        position_ids=local_positions,
+                        attention_mask=local_mask,
+                        document_ids=local_documents,
+                    )
+                else:
+                    raise HybridModelError(
+                        f"unsupported runtime layer type: {layer_type.value}"
+                    )
 
+            except (RuntimeError, ValueError) as exc:
+                memory = (
+                    torch.cuda.memory_allocated(stage_device)
+                    if stage_device.type == "cuda" else 0
+                )
+                raise HybridModelError(
+                    f"IQ inference error: physical_layer={layer_index} "
+                    f"operator={layer_type.value} device={stage_device} "
+                    f"activation_shape={tuple(layer_input.shape)} "
+                    f"activation_dtype={layer_input.dtype} "
+                    f"allocated_bytes={memory}: {exc}"
+                ) from exc
             if self.multimodal is not None:
                 layer_output, visual_memory = self.multimodal.fuse(
                     layer_index,
