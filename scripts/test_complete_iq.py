@@ -7,6 +7,8 @@ from pathlib import Path
 
 import torch
 
+from iq_telemetry import configure_telemetry, trace_stage
+
 from iq_transfer import load_complete_iq_checkpoint
 
 
@@ -29,6 +31,7 @@ def parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = parser().parse_args()
+    configure_telemetry()
     if args.max_new_tokens <= 0:
         raise ValueError("--max-new-tokens must be positive")
     if args.temperature < 0:
@@ -67,12 +70,13 @@ def main() -> int:
         except (ValueError, AttributeError, KeyError):
             input_ids = tokenizer(args.prompt, return_tensors="pt")["input_ids"]
     print(f"IQ: loading checkpoint from {root}", flush=True)
-    model = load_complete_iq_checkpoint(
-        root,
-        device=torch.device("cuda:0"),
-        dtype=torch.bfloat16,
-        device_map_path=args.device_map,
-    )
+    with trace_stage("iq.checkpoint.load", vocab_size=int(expected_vocab)):
+        model = load_complete_iq_checkpoint(
+            root,
+            device=torch.device("cuda:0"),
+            dtype=torch.bfloat16,
+            device_map_path=args.device_map,
+        )
 
     # GeeksforGeeks-style parameter accounting; diagnostic only, no training.
     total_params = sum(param.numel() for param in model.parameters())
@@ -84,8 +88,9 @@ def main() -> int:
     )
     print("IQ: checkpoint loaded; running real forward pass", flush=True)
     input_ids = input_ids.to("cuda:0")
-    with torch.inference_mode():
-        first = model(input_ids)
+    with trace_stage("iq.first_forward", batch_size=int(input_ids.shape[0]), sequence_length=int(input_ids.shape[1]), vocab_size=int(expected_vocab)):
+        with torch.inference_mode():
+            first = model(input_ids)
     expected_shape = (input_ids.shape[0], input_ids.shape[1], expected_vocab)
     if tuple(first.logits.shape) != expected_shape:
         raise AssertionError(
@@ -100,9 +105,10 @@ def main() -> int:
     )
 
     generated = input_ids
-    for _ in range(args.max_new_tokens):
-        with torch.inference_mode():
-            output = model(generated)
+    for generation_step in range(args.max_new_tokens):
+        with trace_stage("iq.generate.step", generation_step=generation_step, sequence_length=int(generated.shape[1])):
+            with torch.inference_mode():
+                output = model(generated)
         logits = output.logits[:, -1, :].float()
         if args.temperature == 0.0:
             next_token = logits.argmax(dim=-1, keepdim=True)
