@@ -20,6 +20,7 @@ _EXPERT_FILE = re.compile(r"^model-moe-(\d{3})-expert-(\d{3})\.safetensors$")
 
 class RunIndex:
     def __init__(self, client: BucketClient | None, work_dir: Path) -> None:
+        self._stage_cache: dict[int, int] = {}
         self.client = client
         self.work_dir = Path(work_dir)
         self.work_dir.mkdir(parents=True, exist_ok=True)
@@ -32,7 +33,6 @@ class RunIndex:
         self.weight_map: dict[str, str] = dict(index_payload["weight_map"])
         self.files: list[str] = sorted(set(self.weight_map.values()))
         self._build_experts_by_stage()
-        self._stage_cache: dict[int, int] = {}
 
     def _ensure(self, name: str) -> None:
         dest = self.work_dir / name
@@ -48,8 +48,14 @@ class RunIndex:
         return IQHybridConfig.from_json(str(self.work_dir / "iq_config.json"))
 
     def _build_experts_by_stage(self) -> None:
+        grouped: dict[str, list[str]] = {}
+        for key, filename in self.weight_map.items():
+            grouped.setdefault(filename, []).append(key)
+        self._keys_by_file = {
+            filename: sorted(keys) for filename, keys in grouped.items()
+        }
         experts_by_stage: dict[int, list[str]] = {}
-        for filename in self.files:
+        for filename in sorted(self._keys_by_file):
             match = _EXPERT_FILE.match(filename)
             if match:
                 experts_by_stage.setdefault(int(match.group(1)), []).append(filename)
@@ -75,7 +81,7 @@ class RunIndex:
         raise KeyError(f"layer {layer_idx} has no routed expert keys")
 
     def keys_for_file(self, filename: str) -> list[str]:
-        return sorted(key for key, file in self.weight_map.items() if file == filename)
+        return self._keys_by_file.get(filename, [])
 
     @staticmethod
     def verify_against_local_checkpoint(run_index: RunIndex, local_dir: Path) -> None:

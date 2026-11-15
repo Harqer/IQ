@@ -23,6 +23,18 @@ def test_expert_stage_index_is_complete_from_local_fixture():
         assert all(
             name.startswith(f"model-moe-{stage:03d}-expert-") for name in experts
         )
+    assert isinstance(run_index._keys_by_file, dict)
+    target = run_index.experts_by_stage[0][0]
+    keys = run_index.keys_for_file(target)
+    assert keys
+    expected = sorted(
+        key for key, file in run_index.weight_map.items() if file == target
+    )
+    assert len(keys) == len(expected)
+    assert keys == expected
+    layer = int(expected[0].split(".")[1])
+    prefix = f"layers.{layer}.moe.routed_experts."
+    assert all(key.startswith(prefix) for key in keys)
 
 
 @pytest.mark.net
