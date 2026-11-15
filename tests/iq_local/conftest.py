@@ -7,6 +7,12 @@ def pytest_configure(config):
     config.addinivalue_line(
         "markers", "net: touches the network; requires IQ_NET_TESTS=1"
     )
+    import warnings
+    warnings.filterwarnings(
+        "ignore",
+        message=".*hf_xet.download_files\\(\\) is deprecated.*",
+        category=DeprecationWarning,
+    )
 
 
 def pytest_collection_modifyitems(config, items):

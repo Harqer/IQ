@@ -30,7 +30,7 @@ def test_metadata_and_download_real_file(tmp_path):
     assert meta.size > 0
     dest = tmp_path / "iq_compile_complete_probe.json"
     client.download([("COMPILE_COMPLETE.json", dest)])
-    assert dest.read_bytes()[:2] == b"{"
+    assert dest.read_bytes()[:1] == b"{"
 
 
 @pytest.mark.net
