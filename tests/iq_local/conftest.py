@@ -3,6 +3,12 @@ import os
 import pytest
 
 
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers", "net: touches the network; requires IQ_NET_TESTS=1"
+    )
+
+
 def pytest_collection_modifyitems(config, items):
     net_on = os.environ.get("IQ_NET_TESTS") == "1"
     for item in items:
