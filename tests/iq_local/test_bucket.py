@@ -24,6 +24,7 @@ def test_missing_token_raises_bucket_auth_error(monkeypatch):
 
 
 @pytest.mark.net
+@pytest.mark.filterwarnings("ignore:hf_xet.download_files:DeprecationWarning")
 def test_metadata_and_download_real_file(tmp_path):
     client = BucketClient(BUCKET_ID, RUN_PREFIX)
     meta = client.metadata("COMPILE_COMPLETE.json")
