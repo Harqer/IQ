@@ -9,9 +9,13 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 BUCKET_ID = "kofecheckmate/iq-glm53-all256"
 RUN_PREFIX = "IQ/runs/glm53-full78-local-20261025a"
+
+if TYPE_CHECKING:
+    from huggingface_hub import BucketFileMetadata
 
 
 class BucketError(RuntimeError):
@@ -39,8 +43,13 @@ class BucketClient:
     def _remote(self, path: str) -> str:
         return f"{self.run_prefix}/{path.lstrip('/')}"
 
-    def metadata(self, path: str):
+    def metadata(self, path: str) -> "BucketFileMetadata":
         from huggingface_hub import get_bucket_file_metadata
+        from huggingface_hub.errors import (
+            EntryNotFoundError,
+            HfHubHTTPError,
+            RepositoryNotFoundError,
+        )
 
         token = self._token()
         if token is None:
@@ -50,6 +59,17 @@ class BucketClient:
             return get_bucket_file_metadata(self.bucket_id, remote, token=token)
         except BucketAuthError:
             raise
+        except RepositoryNotFoundError as exc:
+            raise BucketObjectMissing(remote) from exc
+        except EntryNotFoundError as exc:
+            raise BucketObjectMissing(remote) from exc
+        except HfHubHTTPError as exc:
+            status = exc.response.status_code
+            if status in (401, 403):
+                raise BucketAuthError(f"bucket rejected credentials: {exc}") from exc
+            if status == 404:
+                raise BucketObjectMissing(remote) from exc
+            raise BucketError(f"metadata failed for {remote}: {exc}") from exc
         except Exception as exc:  # noqa: BLE001 - normalize hub errors
             message = str(exc).lower()
             if "401" in message or "403" in message or "credential" in message:
@@ -74,12 +94,30 @@ class BucketClient:
         for _, dest in files:
             Path(dest).parent.mkdir(parents=True, exist_ok=True)
         from huggingface_hub import download_bucket_files
+        from huggingface_hub.errors import (
+            EntryNotFoundError,
+            HfHubHTTPError,
+            RepositoryNotFoundError,
+        )
 
         payload = [(self._remote(remote), str(dest)) for remote, dest in files]
         try:
             download_bucket_files(
                 self.bucket_id, payload, raise_on_missing_files=True, token=token
             )
+        except RepositoryNotFoundError as exc:
+            raise BucketObjectMissing(f"batch download missing objects: {exc}") from exc
+        except EntryNotFoundError as exc:
+            raise BucketObjectMissing(f"batch download missing objects: {exc}") from exc
+        except HfHubHTTPError as exc:
+            status = exc.response.status_code
+            if status in (401, 403):
+                raise BucketAuthError(f"bucket rejected credentials: {exc}") from exc
+            if status == 404:
+                raise BucketObjectMissing(
+                    f"batch download missing objects: {exc}"
+                ) from exc
+            raise BucketError(f"batch download failed: {exc}") from exc
         except Exception as exc:  # noqa: BLE001 - normalize hub errors
             message = str(exc).lower()
             if "401" in message or "403" in message or "credential" in message:
