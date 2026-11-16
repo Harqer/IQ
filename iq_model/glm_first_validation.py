@@ -70,8 +70,13 @@ def verify_zero_gate_reference_parity(
             if not bool(torch.isfinite(baseline).all()) or not bool(torch.isfinite(candidate).all()):
                 raise GLMFirstIntegrationError("nonfinite logits in teacher/hybrid comparison")
             diff = (baseline.float() - candidate.float()).abs()
+            if not torch.equal(baseline, candidate):
+                raise GLMFirstIntegrationError(
+                    "zero-gated GLM-first overlay changed teacher logits "
+                    f"(max_abs={float(diff.max()):.6g}); stop integration"
+                )
             return GLMReferenceParity(
-                exact=bool(torch.equal(baseline, candidate)),
+                exact=True,
                 max_abs_error=float(diff.max()),
                 mean_abs_error=float(diff.mean()),
                 tokens=int(input_ids.numel()),
