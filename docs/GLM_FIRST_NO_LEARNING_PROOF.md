@@ -69,3 +69,19 @@ python -m unittest discover -s tests -p 'test_glm_first_no_learning.py' -v
 ```
 
 **No paid inference, GLM-5.3 weight downloads, checkpoint overwrites, or training were run to establish this theorem.** A real-source activation probe remains unavailable until the original GLM teacher and full Mamba donor weights are loaded on a suitable runtime.
+
+## 7. Correction: original Mamba inter-block connectivity is now implemented
+
+The original GLMFirstMambaHybrid class inserted 24 independent Mamba donor branches at different GLM layers. That preserved their individual mixer+MLP operations but not their pretrained inter-block hidden-state flow.
+
+The new iq_model/glm_first_serial_mamba.py provides a distinct GLMFirstSerialMambaHybrid implementation that:
+
+- Runs all 24 complete donor blocks in order, propagating the upstream (hidden_states, residual) pair and applying the official terminal Mamba norm_f.
+- Retains GLM's original tokenizer, embedding/output weights, all 78 original Transformer blocks and residual graph.
+- Inserts one 6144-to-2048 input adapter and one 2048-to-6144 output adapter, with an initially zero residual gate.
+- Freezes original pretrained weights and blocks unsupported fused normalization, cached decoding and unvalidated sequence lengths.
+- Requires official GLM lexical fingerprint verification in its production constructor; synthetic dimensions are rejected from that constructor.
+
+At gate zero, original GLM behavior is unchanged. In an enabled branch, Mamba's internal donor-to-donor connectivity is preserved. **The adapter still has a minimum 4096-dimensional nullspace, does not establish the donor's original embedding distribution and does not turn Mamba into an exact GLM attention replacement.**
+
+The independent-branch implementation remains for controlled comparison. Do not label it pretrained-Mamba inter-block-equivalent. The serial design is a sidecar rather than a replacement for the 78 GLM Transformer layers; no inference acceleration or quality preservation of a nonzero branch is claimed.
