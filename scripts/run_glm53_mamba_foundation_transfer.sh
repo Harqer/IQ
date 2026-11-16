@@ -5,6 +5,15 @@ set -euo pipefail
 # Source checkpoints live only in ephemeral worker storage. Durable artifacts
 # are synchronized incrementally to the Hugging Face bucket; no weights are
 # committed to Git and --delete is never used for bucket syncs.
+# This historical transfer path is explicitly Mamba-lexical-founded.
+# Refuse to silently reinterpret a GLM-first architecture request as permission
+# to install Mamba embeddings, Mamba LM head, and Llama 3.1 tokenization.
+if [[ "${IQ_LEXICAL_FOUNDATION:-}" != "mamba3" ]]; then
+  echo >&2 "Refusing legacy Mamba-founded GLM transfer: IQ_LEXICAL_FOUNDATION must explicitly equal mamba3."
+  echo >&2 "For a GLM-5.3 lexical foundation, use the separate GLM-first architecture plan in docs/IQ_GLM53_FOUNDATION_DECISION.md."
+  exit 2
+fi
+
 GLM_REPO="${GLM53_REPO:-zai-org/GLM-5.3-BF16}"
 GLM_REVISION="${GLM53_REVISION:?Set GLM53_REVISION to the pinned BF16 commit}"
 MAMBA_REPO="${MAMBA3_REPO:-state-spaces/mamba3-mimo-1.5b}"
@@ -72,8 +81,18 @@ mapfile -t BOOTSTRAP_SHARDS < <(
 echo "GLM WARM/bootstrap shard count (on-demand): ${#BOOTSTRAP_SHARDS[@]}"
 
 hf download "$MAMBA_REPO" \
-  config.json pytorch_model.bin tokenizer.json tokenizer_config.json \
+  config.json pytorch_model.bin \
   --revision "$MAMBA_REVISION" \
+  --local-dir "$MAMBA_DIR" \
+  --token "$HF_TOKEN"
+
+# The official Mamba-3 repo contains NO tokenizer files. Its model card uses
+# Llama 3.1 token IDs, downloaded independently (exact revision required).
+TOKENIZER_REPO="meta-llama/Llama-3.1-8B"
+TOKENIZER_REVISION="${IQ_MAMBA_TOKENIZER_REVISION:?Pin the official Llama 3.1 tokenizer commit SHA}"
+hf download "$TOKENIZER_REPO" \
+  tokenizer.json tokenizer_config.json \
+  --revision "$TOKENIZER_REVISION" \
   --local-dir "$MAMBA_DIR" \
   --token "$HF_TOKEN"
 
