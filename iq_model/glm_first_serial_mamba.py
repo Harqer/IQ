@@ -180,6 +180,29 @@ class GLMFirstSerialMambaHybrid(nn.Module):
         if contract == GLMFirstMambaContract():
             # Strict production ownership; custom small contract is for
             # deterministic CPU verification only.
+            semantic_requirements = {
+                "model_type": "glm_moe_dsa",
+                "qk_head_dim": 256,
+                "qk_nope_head_dim": 192,
+                "qk_rope_head_dim": 64,
+                "v_head_dim": 256,
+                "q_lora_rank": 2048,
+                "kv_lora_rank": 512,
+                "rms_norm_eps": 1e-5,
+                "scoring_func": "sigmoid",
+                "norm_topk_prob": True,
+                "routed_scaling_factor": 2.5,
+                "n_shared_experts": 1,
+            }
+            for key, val in semantic_requirements.items():
+                if getattr(config, key, None) != val:
+                    raise GLMFirstIntegrationError(
+                        f"GLM pretrained semantics {key} changed"
+                    )
+            if list(getattr(config, "mlp_layer_types", ()) or ()) != (
+                ["dense"] * 3 + ["sparse"] * 75
+            ):
+                raise GLMFirstIntegrationError("GLM original dense/MoE schedule changed")
             eos = getattr(config, "eos_token_id", None)
             if eos != [154820, 154827, 154829]:
                 raise GLMFirstIntegrationError("GLM special token contract mismatch")
@@ -255,3 +278,34 @@ class GLMFirstSerialMambaHybrid(nn.Module):
             )
         # Nothing is installed when the Mamba branch is disabled.
         return self.glm_model.generate(*args, **kwargs)
+
+
+
+def wrap_preloaded_official_serial_models(
+    glm_model: nn.Module,
+    mamba_model: nn.Module,
+    *,
+    tokenizer: Any,
+    expected_glm_tokenizer_sha256: str,
+    contract: GLMFirstMambaContract = GLMFirstMambaContract(),
+    insertion_layer: int | None = None,
+) -> GLMFirstSerialMambaHybrid:
+    """Production construction requires the pinned GLM lexical fingerprint.
+
+    This verifies model configuration and full tokenizer ID mapping, but
+    does NOT independently verify pretrained tensor bytes or prove that the
+    Mamba adapter is calibrated. Callers must validate source weight hashes
+    before loading the actual pretrained checkpoints on approved hardware.
+    """
+    if contract == GLMFirstMambaContract():
+        from iq_transfer.glm_first_tokenizer import verify_glm_tokenizer
+
+        verify_glm_tokenizer(
+            tokenizer,
+            glm_model,
+            expected_mapping_sha256=expected_glm_tokenizer_sha256,
+        )
+    return GLMFirstSerialMambaHybrid(
+        glm_model, mamba_model,
+        contract=contract, insertion_layer=insertion_layer,
+    )
