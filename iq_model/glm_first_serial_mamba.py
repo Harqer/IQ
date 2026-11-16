@@ -15,7 +15,7 @@ comparisons and training with adequate compute.
 from __future__ import annotations
 
 from contextlib import contextmanager
-from typing import Any, Iterator
+from typing import Any, Iterator, Sequence
 
 import torch
 from torch import nn
@@ -314,6 +314,69 @@ class GLMFirstSerialMambaHybrid(nn.Module):
             )
         # Nothing is installed when the Mamba branch is disabled.
         return self.glm_model.generate(*args, **kwargs)
+
+    @torch.inference_mode()
+    def experimental_generate_uncached(
+        self,
+        input_ids: torch.Tensor,
+        *,
+        max_new_tokens: int = 8,
+        stop_token_ids: Sequence[int] | None = None,
+    ) -> torch.Tensor:
+        """Full-prefix diagnostic greedy decoding with no KV/SSM caches.
+
+        Explicitly opt into unvalidated nonzero evaluation. This routine
+        recomputes the entire original GLM and serial Mamba donor at each
+        token. It does NOT establish full-model capability parity and must
+        not be exposed as a production server inference endpoint.
+        """
+        if not self.path.enabled or not self._allow_unverified_eval:
+            raise GLMFirstIntegrationError(
+                "diagnostic Mamba generation requires enabled branch and "
+                "allow_unverified_eval=True"
+            )
+        if self.training:
+            raise GLMFirstIntegrationError("call eval() before Mamba diagnostics")
+        if (
+            not isinstance(input_ids, torch.Tensor)
+            or input_ids.ndim != 2
+            or input_ids.shape[0] != 1
+            or input_ids.shape[1] < 1
+            or input_ids.dtype not in (torch.int64, torch.int32)
+            or bool((input_ids < 0).any())
+            or bool((input_ids >= self.contract.glm_vocab).any())
+        ):
+            raise GLMFirstIntegrationError("diagnostic generation requires valid GLM input_ids")
+        if not isinstance(max_new_tokens, int) or not 1 <= max_new_tokens <= 16:
+            raise GLMFirstIntegrationError("diagnostic new-token count must be 1..16")
+        if input_ids.shape[1] + max_new_tokens > 2048:
+            raise GLMFirstIntegrationError("diagnostic generation exceeds Mamba context")
+        eos_values = stop_token_ids
+        if eos_values is None:
+            eos_values = getattr(self.glm_model.config, "eos_token_id", ())
+        if isinstance(eos_values, int):
+            eos_values = (eos_values,)
+        stop_ids = set(eos_values or ())
+        if any(not isinstance(t, int) or t < 0 or t >= self.contract.glm_vocab
+               for t in stop_ids):
+            raise GLMFirstIntegrationError("invalid GLM stop token ID")
+        result = input_ids
+        for _ in range(max_new_tokens):
+            output = self(input_ids=result, use_cache=False, logits_to_keep=1)
+            logits = getattr(output, "logits", None)
+            if (
+                not isinstance(logits, torch.Tensor)
+                or logits.ndim != 3
+                or logits.shape[0] != 1
+                or logits.shape[-1] != self.contract.glm_vocab
+                or not bool(torch.isfinite(logits).all())
+            ):
+                raise GLMFirstIntegrationError("invalid nonfinite diagnostic logits")
+            token = logits[:, -1, :].argmax(-1, keepdim=True).to(result.dtype)
+            result = torch.cat((result, token), dim=1)
+            if int(token.item()) in stop_ids:
+                break
+        return result
 
 
 
