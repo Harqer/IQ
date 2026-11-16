@@ -148,6 +148,21 @@ class GLMFirstHybridTests(unittest.TestCase):
         self.assertEqual(len(self.hybrid.branches), CONTRACT.mamba_layers)
         self.assertIs(self.hybrid.branches[1].donor_block, self.donor.backbone.layers[1])
 
+    def test_adapter_training_keeps_glm_and_mamba_donor_frozen(self):
+        self.hybrid.train()
+        self.assertFalse(self.hybrid.glm_model.training)
+        self.assertFalse(any(p.requires_grad for p in self.hybrid.glm_model.parameters()))
+        self.assertFalse(
+            any(p.requires_grad for branch in self.hybrid.branches
+                for p in branch.donor_block.parameters())
+        )
+        self.assertTrue(
+            all(branch.in_adapter.training for branch in self.hybrid.branches)
+        )
+        self.assertTrue(
+            all(not branch.donor_block.training for branch in self.hybrid.branches)
+        )
+
     def test_zero_gate_with_enabled_branch_is_exact_baseline_and_trainable(self):
         native = self.glm(self.ids).logits.detach()
         self.hybrid.enable_branches()
