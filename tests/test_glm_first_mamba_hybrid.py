@@ -199,6 +199,31 @@ class GLMFirstHybridTests(unittest.TestCase):
         with self.assertRaisesRegex(GLMFirstIntegrationError, "hybrid generation is blocked"):
             self.hybrid.generate(self.ids)
 
+    def test_uncached_hybrid_greedy_matches_teacher_when_gates_are_zero(self):
+        self.hybrid.enable_branches()
+        prompt = self.ids[:1]
+        reference = prompt
+        with torch.inference_mode():
+            for _ in range(3):
+                logits = self.glm(reference, use_cache=False).logits
+                chosen = logits[:, -1, :].argmax(-1, keepdim=True)
+                reference = torch.cat((reference, chosen), dim=1)
+            result = self.hybrid.experimental_generate_uncached(
+                prompt, max_new_tokens=3, stop_token_ids=()
+            )
+        self.assertTrue(torch.equal(result, reference))
+
+    def test_uncached_generation_rejects_invalid_input(self):
+        self.hybrid.enable_branches()
+        with self.assertRaisesRegex(GLMFirstIntegrationError, "outside GLM vocab"):
+            self.hybrid.experimental_generate_uncached(
+                torch.tensor([[CONTRACT.glm_vocab]])
+            )
+        with self.assertRaisesRegex(GLMFirstIntegrationError, "1..32"):
+            self.hybrid.experimental_generate_uncached(self.ids[:1], max_new_tokens=64)
+        with self.assertRaisesRegex(GLMFirstIntegrationError, "one unpadded"):
+            self.hybrid.experimental_generate_uncached(self.ids)
+
     def test_original_glm_generate_stays_available_before_enabling(self):
         self.assertTrue(torch.equal(self.glm.generate(self.ids), self.hybrid.generate(self.ids)))
         self.assertEqual(
