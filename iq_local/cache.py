@@ -27,6 +27,7 @@ class LocalCache:
         self._entries: OrderedDict[str, int] = OrderedDict()  # key -> size, LRU order
         self._pinned: set[str] = set()
         self._bytes = 0
+        self._rehydrate()
 
     def path_for(self, key: str) -> Path:
         return self.root / key.replace("/", "_")
@@ -41,10 +42,13 @@ class LocalCache:
             raise CacheDiskFullError(
                 f"free disk {free} bytes < guard {self.min_free_bytes}; refusing write"
             )
-        self._evict_until(self.budget_bytes - size)
         dest = self.path_for(key)
-        if dest.exists():
-            dest.unlink()
+        for existing in self._entries:
+            if existing != key and self.path_for(existing) == dest:
+                raise ValueError(f"cache key aliases existing key: {key}")
+        prior = self._entries.pop(key, 0)
+        self._bytes -= prior
+        self._evict_until(self.budget_bytes - size)
         os.replace(tmp_path, dest)
         self._entries[key] = size
         self._entries.move_to_end(key)
@@ -74,3 +78,13 @@ class LocalCache:
             path = self.path_for(victim)
             if path.exists():
                 path.unlink()
+
+    def _rehydrate(self) -> None:
+        found = [(path, path.stat()) for path in self.root.iterdir() if path.is_file()]
+        found.sort(key=lambda item: item[1].st_mtime)
+        for path, info in found:
+            key = path.name.replace("_", "/", 1)
+            if key in self._entries:
+                raise ValueError(f"cache key collision during rehydration: {key}")
+            self._entries[key] = info.st_size
+            self._bytes += info.st_size
