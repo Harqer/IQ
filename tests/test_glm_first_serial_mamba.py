@@ -103,6 +103,11 @@ class SerialDonorTests(unittest.TestCase):
         self.hybrid.enable_branch(True)
         with torch.no_grad():
             self.hybrid.path.gate.fill_(0.4)
+        # An unaligned nonzero donor must not silently change eval outputs.
+        with self.assertRaisesRegex(GLMFirstIntegrationError, "blocked in eval"):
+            self.hybrid(self.ids, use_cache=False)
+        # This explicitly diagnostic route does not imply inference readiness.
+        self.hybrid.enable_branch(True, allow_unverified_eval=True)
         result = self.hybrid(self.ids, use_cache=False).logits
         self.assertFalse(torch.equal(result, expected))
         torch.testing.assert_close(self.glm(self.ids).logits, expected, rtol=0, atol=0)
