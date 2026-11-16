@@ -265,7 +265,7 @@ class GLMFirstSerialMambaHybrid(nn.Module):
             if len(args) > 1:
                 raise GLMFirstIntegrationError("enabled hybrid accepts only positional input_ids")
             if kwargs.get("inputs_embeds") is not None:
-                raise GLMFirstIntegrationError("enabled hybrid requires GLM token IDs")
+                raise GLMFirstIntegrationError("enabled hybrid requires GLM input_ids token IDs")
             if not args and kwargs.get("input_ids") is None:
                 raise GLMFirstIntegrationError("enabled hybrid requires GLM input_ids")
             ids = args[0] if args else kwargs.get("input_ids")
