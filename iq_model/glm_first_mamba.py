@@ -116,11 +116,15 @@ class FullMamba3DonorBranch(nn.Module):
         super().__init__()
         validate_complete_mamba_block(donor_block, contract)
         self.donor_block = donor_block
+        # Match the actual pretrained donor block's parameter placement and
+        # precision; avoid accidental CPU FP32 adapters on a CUDA BF16 donor.
+        donor_norm_weight = donor_block.norm.weight
+        factory = {"device": donor_norm_weight.device, "dtype": donor_norm_weight.dtype}
         self.in_adapter = nn.Linear(
-            contract.glm_hidden, contract.mamba_hidden, bias=False
+            contract.glm_hidden, contract.mamba_hidden, bias=False, **factory
         )
         self.out_adapter = nn.Linear(
-            contract.mamba_hidden, contract.glm_hidden, bias=False
+            contract.mamba_hidden, contract.glm_hidden, bias=False, **factory
         )
         self.gate = nn.Parameter(torch.zeros((), dtype=torch.float32))
         self.enabled = False
@@ -132,6 +136,11 @@ class FullMamba3DonorBranch(nn.Module):
             if bool(torch.count_nonzero(self.gate.detach())):
                 raise GLMFirstIntegrationError("nonzero gate on a disabled branch")
             return hidden  # Exact GLM baseline: do not even invoke Mamba.
+        if hidden.device != self.in_adapter.weight.device:
+            raise GLMFirstIntegrationError(
+                "Mamba donor and adapters must be colocated with the selected GLM layer; "
+                "distribute/place all blocks before enabling the hybrid"
+            )
         if hidden.device.type != "cuda" and type(self.donor_block).__module__.startswith("mamba_ssm"):
             raise GLMFirstIntegrationError("official Mamba-3 kernel needs validated CUDA")
         # Match adapter parameter dtype without changing GLM's residual dtype.
