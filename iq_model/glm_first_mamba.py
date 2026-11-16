@@ -347,8 +347,8 @@ class GLMFirstMambaHybrid(nn.Module):
         generate = getattr(self.glm_model, "generate", None)
         if not callable(generate):
             raise GLMFirstIntegrationError("GLM model lacks native generate()")
-        with self._installed_hooks():
-            return generate(*args, **kwargs)
+        # Inactive sidecar does not modify the original GLM generate graph.
+        return generate(*args, **kwargs)
 
 
 
