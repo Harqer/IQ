@@ -251,10 +251,21 @@ class GLMFirstMambaHybrid(nn.Module):
         self.branches = nn.ModuleList(
             [FullMamba3DonorBranch(block, contract) for block in donor_blocks]
         )
+        self._freeze_glm = freeze_glm
         if freeze_glm:
             self.glm_model.requires_grad_(False)
+            self.glm_model.eval()
         # Never auto-enable branches or declare the resulting model trained.
         self._in_forward = False
+
+    def train(self, mode: bool = True):
+        """Keep frozen GLM/donor blocks in reference eval mode during adapter training."""
+        super().train(mode)
+        if self._freeze_glm:
+            self.glm_model.eval()
+        for branch in self.branches:
+            branch.donor_block.eval()
+        return self
 
     def enable_branches(self, enabled: bool = True) -> None:
         for branch in self.branches:
