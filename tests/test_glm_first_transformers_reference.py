@@ -15,6 +15,8 @@ from iq_model.glm_first_mamba import (
     GLMFirstMambaContract,
 )
 from test_glm_first_mamba_hybrid import ToyMambaBlock
+from test_glm_first_serial_mamba import ToyCompleteDonor
+from iq_model.glm_first_serial_mamba import GLMFirstSerialMambaHybrid
 
 
 class RealGlmDecoderOverlayTests(unittest.TestCase):
@@ -84,6 +86,20 @@ class RealGlmDecoderOverlayTests(unittest.TestCase):
                 input_ids, max_new_tokens=2, stop_token_ids=()
             )
         self.assertTrue(torch.equal(actual, expected))
+
+        # Verify the serial 24-block topology's equivalent tiny stand-in
+        # against the REAL Hugging Face GLM decoder, including the shared
+        # indexer's tuple output and the true GLM output projection.
+        serial = GLMFirstSerialMambaHybrid(
+            reference, ToyCompleteDonor(), contract=contract
+        ).eval()
+        with torch.inference_mode():
+            baseline = reference(input_ids, use_cache=False).logits
+            untouched = serial(input_ids, use_cache=False).logits
+            torch.testing.assert_close(untouched, baseline, rtol=0, atol=0)
+            serial.enable_branch(True)
+            neutral = serial(input_ids, use_cache=False).logits
+            torch.testing.assert_close(neutral, baseline, rtol=0, atol=0)
         self.assertEqual(
             sum(len(block._forward_hooks) for block in reference.model.layers), 0
         )
