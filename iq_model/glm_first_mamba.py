@@ -116,6 +116,9 @@ class FullMamba3DonorBranch(nn.Module):
         super().__init__()
         validate_complete_mamba_block(donor_block, contract)
         self.donor_block = donor_block
+        # Preserve donor parameters during the initial adapter/gate training
+        # phase. Explicit unfreezing is a separate, measured experiment.
+        self.donor_block.requires_grad_(False)
         # Match the actual pretrained donor block's parameter placement and
         # precision; avoid accidental CPU FP32 adapters on a CUDA BF16 donor.
         donor_norm_weight = donor_block.norm.weight
