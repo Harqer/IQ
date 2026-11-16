@@ -353,14 +353,30 @@ def wrap_preloaded_official_models(
     *,
     contract: GLMFirstMambaContract = GLMFirstMambaContract(),
     placements: Sequence[int] | None = None,
+    tokenizer: Any | None = None,
+    expected_glm_tokenizer_sha256: str | None = None,
 ) -> GLMFirstMambaHybrid:
     """Reuse the EXACT pretrained Mamba block objects, not just mixer kernels.
 
-    Callers are responsible for loading/checksumming the immutable official
-    source revisions, and for placing weights on a supported device. This
-    function does not allocate a teacher, download 753B weights, or run a job.
+    The production factory also requires a verified full GLM token-ID mapping,
+    bound to the original lexical tensors. Callers remain responsible for
+    checking source-weight hashes/revisions and supported GPU placement.
+    This function does not download model weights or start compute.
     """
     if contract == GLMFirstMambaContract():
+        if tokenizer is None or not expected_glm_tokenizer_sha256:
+            raise GLMFirstIntegrationError(
+                "official GLM-first construction requires tokenizer and pinned "
+                "full GLM token-ID map SHA-256; never silently use Llama tokenization"
+            )
+        # Lazy import: the model architecture remains independent of transfer
+        # utilities; only this production construction function needs them.
+        from iq_transfer.glm_first_tokenizer import verify_glm_tokenizer
+
+        verify_glm_tokenizer(
+            tokenizer, glm_model,
+            expected_mapping_sha256=expected_glm_tokenizer_sha256,
+        )
         donor_config = getattr(mamba_model, "config", None)
         if donor_config is None:
             raise GLMFirstIntegrationError("official Mamba donor config unavailable")
