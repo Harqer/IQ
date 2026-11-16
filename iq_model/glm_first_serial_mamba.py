@@ -223,6 +223,7 @@ class GLMFirstSerialMambaHybrid(nn.Module):
         self.insertion_layer = placement
         self.contract = contract
         self._in_forward = False
+        self._allow_unverified_eval = False
 
     def train(self, mode: bool = True):
         super().train(mode)
@@ -230,8 +231,16 @@ class GLMFirstSerialMambaHybrid(nn.Module):
         self.path.backbone.eval()
         return self
 
-    def enable_branch(self, enabled: bool = True) -> None:
+    def enable_branch(
+        self, enabled: bool = True, *, allow_unverified_eval: bool = False
+    ) -> None:
+        """Allow nonzero evaluation only for explicitly requested diagnostics.
+
+        Active training is permitted; production inference with an unaligned
+        nonzero donor must not silently replace original GLM behavior.
+        """
         self.path.enabled = bool(enabled)
+        self._allow_unverified_eval = bool(enabled and allow_unverified_eval)
 
     @contextmanager
     def _hook(self) -> Iterator[None]:
@@ -259,6 +268,15 @@ class GLMFirstSerialMambaHybrid(nn.Module):
         if not self.path.enabled:
             return self.glm_model(*args, **kwargs)
         if self.path.enabled:
+            if (
+                not self.training
+                and not self._allow_unverified_eval
+                and bool(torch.count_nonzero(self.path.gate.detach()))
+            ):
+                raise GLMFirstIntegrationError(
+                    "nonzero unverified Mamba contribution is blocked in eval; "
+                    "enable explicitly with allow_unverified_eval=True for diagnostics"
+                )
             # Fail closed on opaque positional params; the official GLM
             # CausalLM accepts input_ids positionally but other args may
             # encode caches, positions and attention masks.
