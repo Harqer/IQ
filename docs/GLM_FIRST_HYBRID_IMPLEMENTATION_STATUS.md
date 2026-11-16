@@ -52,6 +52,11 @@ hybrid.train()
 - Strict production factory checks official GLM norm, activation, routing and EOS config, official Mamba donor config, full block tensor layouts, and tokenizer fingerprint.
 - Adapters are initialized on the Mamba donor block's device/dtype. Enabling requires colocation with target GLM hidden states; independent distributed placement is not implemented by this factory.
 
+## Controlled no-cache inference path
+
+`GLMFirstMambaHybrid.experimental_generate_uncached(input_ids, max_new_tokens=..., stop_token_ids=...)` is an explicitly **experimental**, greedy, batch-one reference decoder. It recomputes the entire GLM Transformer and full Mamba recurrent prefix for **every** generated token with `use_cache=False`. It enforces GLM ID bounds, finite logits, a small token cap, eval mode, and explicitly enabled branches. It is designed for small numerical comparisons and after-training quality checks; **it does not prove the pretrained full model generates coherently** and would be exceptionally expensive with the original 753B-class GLM backbone.
+
+Active cached `hybrid.generate()` remains **blocked** until separate KV/SSM cache correctness and memory planning. When branches are disabled, `hybrid.generate()` delegates to original GLM generation unchanged.
 ## Validation completed and outstanding
 
 1. Python unit tests verify original lexical arrays and DSA indices survive zero-gated insertion; complete block structure; zero-gate trainability; frozen pretrained weights; fail-closed cache/padding/errors; exact baseline logits; and token-ID corruption rejection.
