@@ -11,6 +11,7 @@ from iq_training.glm_first_distillation import (
     GLMTeacherLastTokenLogits,
     _adapter_parameters,
     glm_first_distillation_step,
+    input_ids_sha256,
 )
 from test_glm_first_mamba_hybrid import (
     CONTRACT,
@@ -40,6 +41,7 @@ class GLMFirstDistillationTests(unittest.TestCase):
             logits=logits,
             teacher_revision=REVISION,
             tokenizer_mapping_sha256=TOKENIZER_SHA,
+            input_ids_sha256=input_ids_sha256(self.input_ids),
         )
         self.config = GLMFirstDistillationConfig(
             teacher_revision=REVISION,
@@ -81,7 +83,8 @@ class GLMFirstDistillationTests(unittest.TestCase):
 
     def test_mismatched_tokenizer_provenance_fails(self):
         invalid = GLMTeacherLastTokenLogits(
-            self.targets.logits, REVISION, "f" * 64
+            self.targets.logits, REVISION, "f" * 64,
+            input_ids_sha256(self.input_ids)
         )
         with self.assertRaisesRegex(GLMFirstDistillationError, "pinned"):
             glm_first_distillation_step(
@@ -91,9 +94,20 @@ class GLMFirstDistillationTests(unittest.TestCase):
                 config=self.config,
             )
 
+    def test_shuffled_prompt_rows_reject_wrong_teacher_logits(self):
+        reverse = self.input_ids.flip(0)
+        with self.assertRaisesRegex(GLMFirstDistillationError, "input token IDs"):
+            glm_first_distillation_step(
+                self.hybrid, input_ids=reverse,
+                next_token_ids=self.next_token_ids.flip(0),
+                teacher=self.targets, optimizer=self.optimizer,
+                config=self.config,
+            )
+
     def test_wrong_teacher_shape_and_token_ids_fail(self):
         bad = GLMTeacherLastTokenLogits(
-            self.targets.logits[:, :-1], REVISION, TOKENIZER_SHA
+            self.targets.logits[:, :-1], REVISION, TOKENIZER_SHA,
+            input_ids_sha256(self.input_ids)
         )
         with self.assertRaisesRegex(GLMFirstDistillationError, "teacher logits"):
             glm_first_distillation_step(
