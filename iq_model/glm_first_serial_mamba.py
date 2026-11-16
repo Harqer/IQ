@@ -297,14 +297,19 @@ def wrap_preloaded_official_serial_models(
     Mamba adapter is calibrated. Callers must validate source weight hashes
     before loading the actual pretrained checkpoints on approved hardware.
     """
-    if contract == GLMFirstMambaContract():
-        from iq_transfer.glm_first_tokenizer import verify_glm_tokenizer
-
-        verify_glm_tokenizer(
-            tokenizer,
-            glm_model,
-            expected_mapping_sha256=expected_glm_tokenizer_sha256,
+    if contract != GLMFirstMambaContract():
+        raise GLMFirstIntegrationError(
+            "production serial Mamba factory requires the official full-scale donor contract"
         )
+    if not expected_glm_tokenizer_sha256:
+        raise GLMFirstIntegrationError("pin GLM tokenizer mapping SHA-256 before construction")
+    from iq_transfer.glm_first_tokenizer import verify_glm_tokenizer
+
+    verify_glm_tokenizer(
+        tokenizer,
+        glm_model,
+        expected_mapping_sha256=expected_glm_tokenizer_sha256,
+    )
     return GLMFirstSerialMambaHybrid(
         glm_model, mamba_model,
         contract=contract, insertion_layer=insertion_layer,
