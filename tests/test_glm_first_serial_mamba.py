@@ -15,6 +15,7 @@ from torch import nn
 from iq_model.glm_first_mamba import GLMFirstIntegrationError
 from iq_model.glm_first_serial_mamba import (
     GLMFirstSerialMambaHybrid, SerialMamba3DonorPath, validate_serial_donor,
+    wrap_preloaded_official_serial_models,
 )
 from test_glm_first_mamba_hybrid import CONTRACT, ToyGLM, ToyMambaBlock
 
@@ -132,6 +133,40 @@ class SerialDonorTests(unittest.TestCase):
         with self.assertRaisesRegex(GLMFirstIntegrationError, "NaN/Inf"):
             self.hybrid(self.ids, use_cache=False)
         self.assertEqual(sum(len(x._forward_hooks) for x in self.glm.model.layers), 0)
+
+    def test_disabled_serial_donor_avoids_shared_decoder_hooks(self):
+        # When disabled the original GLM forward is called directly, even
+        # if a gate contains a trained nonzero value.
+        with torch.no_grad():
+            self.hybrid.path.gate.fill_(0.6)
+        expected = self.glm(self.ids).logits
+        output = self.hybrid(self.ids, use_cache=False).logits
+        torch.testing.assert_close(output, expected, rtol=0, atol=0)
+        self.assertEqual(
+            sum(len(layer._forward_hooks) for layer in self.glm.model.layers), 0
+        )
+
+    def test_active_serial_rejects_invalid_glm_ids_and_context(self):
+        self.hybrid.enable_branch(True)
+        with self.assertRaisesRegex(GLMFirstIntegrationError, "GLM token IDs"):
+            self.hybrid(
+                torch.tensor([[CONTRACT.glm_vocab]], dtype=torch.long),
+                use_cache=False,
+            )
+        with self.assertRaisesRegex(GLMFirstIntegrationError, "context"):
+            self.hybrid(
+                torch.ones((1, 2049), dtype=torch.long),
+                use_cache=False,
+            )
+
+    def test_production_factory_rejects_synthetic_configuration(self):
+        with self.assertRaisesRegex(GLMFirstIntegrationError, "official full-scale"):
+            wrap_preloaded_official_serial_models(
+                self.glm, self.donor,
+                contract=CONTRACT,
+                tokenizer=object(),
+                expected_glm_tokenizer_sha256="a" * 64,
+            )
 
     def test_eval_mode_and_frozen_pretrained_weights(self):
         self.hybrid.train()
