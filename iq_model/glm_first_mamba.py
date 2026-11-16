@@ -347,6 +347,70 @@ class GLMFirstMambaHybrid(nn.Module):
             return generate(*args, **kwargs)
 
 
+
+    @torch.inference_mode()
+    def experimental_generate_uncached(
+        self,
+        input_ids: torch.Tensor,
+        *,
+        max_new_tokens: int = 8,
+        stop_token_ids: Sequence[int] | None = None,
+    ) -> torch.Tensor:
+        """Greedy full-prefix reference decoding with NO GLM KV/Mamba state cache.
+
+        Deliberately expensive: it recomputes all Transformer and recurrent
+        states for every generated token. Only for short controlled parity
+        checks AFTER pretrained weights have been loaded and validated. This
+        is NOT a production inference pathway or evidence of language quality.
+        """
+        if not self._active():
+            raise GLMFirstIntegrationError(
+                "uncached hybrid generation requires explicitly enabled branches; "
+                "use native GLM generate() for the unchanged baseline"
+            )
+        if self.training:
+            raise GLMFirstIntegrationError(
+                "call eval() before experimental hybrid generation"
+            )
+        if (
+            input_ids.ndim != 2 or input_ids.shape[0] != 1 or input_ids.shape[1] == 0
+            or input_ids.dtype not in (torch.int32, torch.int64)
+        ):
+            raise GLMFirstIntegrationError(
+                "experimental generation requires one unpadded integer token sequence"
+            )
+        if not 1 <= max_new_tokens <= 32:
+            raise GLMFirstIntegrationError("experimental max_new_tokens must be 1..32")
+        if bool((input_ids < 0).any()) or bool(
+            (input_ids >= self.contract.glm_vocab).any()
+        ):
+            raise GLMFirstIntegrationError("input contains token IDs outside GLM vocab")
+        stop = stop_token_ids
+        if stop is None:
+            stop = getattr(self.glm_model.config, "eos_token_id", ())
+        if isinstance(stop, int):
+            stop = (stop,)
+        eos = set(stop or ())
+        seq = input_ids
+        for _ in range(max_new_tokens):
+            output = self(
+                input_ids=seq, use_cache=False, logits_to_keep=1
+            )
+            logits = getattr(output, "logits", None)
+            if not isinstance(logits, torch.Tensor) or logits.ndim != 3:
+                raise GLMFirstIntegrationError("hybrid must return [batch, seq, vocab] logits")
+            if logits.shape[0] != 1 or logits.shape[-1] != self.contract.glm_vocab:
+                raise GLMFirstIntegrationError("hybrid logits do not match GLM vocabulary")
+            scores = logits[:, -1, :]
+            if not bool(torch.isfinite(scores).all()):
+                raise GLMFirstIntegrationError("nonfinite hybrid logits; generation rejected")
+            next_id = scores.argmax(-1, keepdim=True).to(seq.dtype)
+            seq = torch.cat((seq, next_id), dim=1)
+            if int(next_id.item()) in eos:
+                break
+        return seq
+
+
 def wrap_preloaded_official_models(
     glm_model: nn.Module,
     mamba_model: nn.Module,
