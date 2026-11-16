@@ -116,3 +116,83 @@ claim GLM provenance, launch Baseten, or overwrite the existing bucket.
 Any new GLM-first compiler must output to a new immutable location with
 explicit tokenizer/lexical source revision, tensor manifest, training
 provenance, and validated generation-quality status.
+
+## Acceptance contract: four requirements for weight-transfer success
+
+A valid **direct reuse** must preserve the donor's tensor shapes, computational
+semantics, parameter correspondence, and residual connectivity. A changed
+architecture may instead use an explicitly tested reparameterization, but
+matching parameter names and shapes alone cannot prove functional equivalence.
+
+### 1. Tensor dimensions
+
+The original GLM donor uses width **6144**, Q/K head width **256** (192
+non-RoPE + 64 RoPE), **64** attention heads, vocab **154880**, **78**
+Transformer blocks, and **256** routed experts with top-8 selection.
+Its sparse-expert intermediate size is **2048**.
+
+The current recipient uses hidden width **4096**, compressed attention
+head width **128**, vocab **128256**, and **235** physical blocks.
+The 256 routed-expert count, top-8 selection, 2048 intermediate width
+and 64 attention heads match numerically, but that is insufficient.
+
+**There is no invertible linear map from an unrestricted 6144-dimensional
+residual space into 4096 dimensions.** Projected weight reuse is
+necessarily lossy in general. Do not classify this as exact preservation.
+
+### 2. Computational semantics
+
+Check both code and numerical reference fixtures for RMSNorm epsilon,
+pretrained norm *weights*, SiLU/SwiGLU versus SiTU, attention score
+scaling, RoPE layout, MLA/DSA indexing, token compression, and MoE
+sigmoid+correction-bias/top-k routing.
+
+Known deviations: the current compiler sets some GLM-derived outer
+layer norms to unit weights, uses CSA/HCA rather than the original GLM
+attention computation, and uses SiTU-based StableLatentMoE instead of
+the donor's SiLU/SwiGLU. Large SiTU beta can approximate SiLU, but
+approximation is not equality. Router score and bias logic must be
+checked for parity, not inferred from top-k sizes.
+
+### 3. Weight mapping and tensor layout
+
+Prove both the source tensor name and its destination layout for every
+copied or transformed weight. For attention and DSA specifically, test
+Q/K/V head ordering, permutations, interleaved RoPE positions,
+projection transpose, normalization scale, and bias conventions with
+small deterministic inputs. Check all 78 GLM layers have explicit
+provenance. Index completeness is a necessary but **not sufficient**
+condition for correct mapping.
+
+### 4. Layer connectivity and representations
+
+The GLM teacher's 78 Transformer blocks are not equivalent to IQ's
+interleaved 235-block schedule or its Block Attention Residual controller.
+Mamba layers cannot be inserted into the original forward graph as
+non-zero outputs while claiming initial GLM equivalence.
+
+For a **GLM-founded** variant, first keep pretrained GLM blocks, residual
+streams, embeddings and output head unchanged. Add Mamba-3 MIMO as a
+**zero-gated residual branch**, optionally with separate input/output
+width adapters. At initial gate zero, the new branch must not affect the
+GLM output. Train/distill its contribution and only then consider
+removing GLM attention; validate function/quality loss after each change.
+Mamba's recurrent-state computation remains Mamba's own.
+
+### Offline gate
+
+With a locally available official GLM config and read-only checkpoint
+metadata, run:
+
+~~~bash
+python scripts/audit_iq_weight_transfer_contract.py \
+  --glm-config /path/to/GLM-5.3/config.json \
+  --checkpoint /path/to/read-only/iq-glm53-all256-run
+python -m unittest discover -s tests -p 'test_iq_weight_transfer_contract.py' -v
+~~~
+
+This is a **metadata-only blocker detector**, not a proof of parity. After
+addressing blockers, real proof requires matched donor/student numerical
+fixtures for all four categories (layer outputs, attention scores,
+expert assignments, residual states and final logits). Never elevate
+the status to inference-ready on JSON flags alone.
