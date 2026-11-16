@@ -182,6 +182,31 @@ class GLMFirstMambaHybrid(nn.Module):
         config = getattr(glm_model, "config", None)
         if config is None:
             raise GLMFirstIntegrationError("original GLM model must expose config")
+        if contract == GLMFirstMambaContract():
+            # Production: preserve GLM's forward semantics, not just matrix sizes.
+            official_semantics = {
+                "model_type": "glm_moe_dsa",
+                "num_attention_heads": 64,
+                "qk_head_dim": 256,
+                "hidden_act": "silu",
+                "scoring_func": "sigmoid",
+                "norm_topk_prob": True,
+                "num_experts_per_tok": 8,
+                "n_routed_experts": 256,
+                "n_shared_experts": 1,
+                "rms_norm_eps": 1e-5,
+                "routed_scaling_factor": 2.5,
+            }
+            for attr, value in official_semantics.items():
+                if getattr(config, attr, None) != value:
+                    raise GLMFirstIntegrationError(
+                        f"source GLM semantics {attr} differ from official contract"
+                    )
+            if list(getattr(config, "eos_token_id", [])) != [154820, 154827, 154829]:
+                raise GLMFirstIntegrationError("GLM EOS IDs have changed")
+            kinds = getattr(config, "mlp_layer_types", None)
+            if list(kinds or []) != ["dense"] * 3 + ["sparse"] * 75:
+                raise GLMFirstIntegrationError("GLM dense/MoE layer pattern changed")
         for key, expected in (
             ("vocab_size", contract.glm_vocab),
             ("hidden_size", contract.glm_hidden),
@@ -321,6 +346,28 @@ def wrap_preloaded_official_models(
     source revisions, and for placing weights on a supported device. This
     function does not allocate a teacher, download 753B weights, or run a job.
     """
+    if contract == GLMFirstMambaContract():
+        donor_config = getattr(mamba_model, "config", None)
+        if donor_config is None:
+            raise GLMFirstIntegrationError("official Mamba donor config unavailable")
+        for attr, expected in (
+            ("n_layer", 24), ("d_model", 2048),
+            ("d_intermediate", 3824), ("tie_embeddings", True),
+        ):
+            if getattr(donor_config, attr, None) != expected:
+                raise GLMFirstIntegrationError(
+                    f"official Mamba donor config {attr} mismatch"
+                )
+        ssm = getattr(donor_config, "ssm_cfg", None)
+        if not isinstance(ssm, dict) or (
+            ssm.get("is_mimo") is not True
+            or ssm.get("mimo_rank") != 4
+            or ssm.get("d_state") != 128
+            or ssm.get("layer") != "Mamba3"
+        ):
+            raise GLMFirstIntegrationError(
+                "official Mamba donor configuration is not rank-4 MIMO"
+            )
     backbone = getattr(mamba_model, "backbone", None)
     layers = getattr(backbone, "layers", None)
     if not isinstance(layers, nn.ModuleList):
