@@ -177,6 +177,38 @@ class SerialDonorTests(unittest.TestCase):
                 expected_glm_tokenizer_sha256="a" * 64,
             )
 
+    def test_opt_in_uncached_serial_generation_matches_zero_gate_teacher(self):
+        self.hybrid.eval()
+        self.hybrid.enable_branch(True, allow_unverified_eval=True)
+        expected = self.ids[:1].clone()
+        for _ in range(2):
+            logits = self.glm(expected, use_cache=False).logits
+            expected = torch.cat(
+                (expected, logits[:, -1, :].argmax(-1, keepdim=True)), dim=1
+            )
+        actual = self.hybrid.experimental_generate_uncached(
+            self.ids[:1], max_new_tokens=2, stop_token_ids=()
+        )
+        self.assertTrue(torch.equal(actual, expected))
+
+    def test_uncached_serial_generation_requires_explicit_diagnostic_mode(self):
+        self.hybrid.eval()
+        self.hybrid.enable_branch(True)
+        with self.assertRaisesRegex(GLMFirstIntegrationError, "allow_unverified_eval"):
+            self.hybrid.experimental_generate_uncached(
+                self.ids[:1], max_new_tokens=1, stop_token_ids=()
+            )
+        self.hybrid.enable_branch(True, allow_unverified_eval=True)
+        with self.assertRaisesRegex(GLMFirstIntegrationError, "1..16"):
+            self.hybrid.experimental_generate_uncached(
+                self.ids[:1], max_new_tokens=33, stop_token_ids=()
+            )
+        with self.assertRaisesRegex(GLMFirstIntegrationError, "context"):
+            self.hybrid.experimental_generate_uncached(
+                torch.ones((1, 2048), dtype=torch.long),
+                max_new_tokens=1,
+            )
+
     def test_eval_mode_and_frozen_pretrained_weights(self):
         self.hybrid.train()
         self.assertFalse(self.hybrid.glm_model.training)
