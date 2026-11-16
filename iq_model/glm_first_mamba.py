@@ -328,8 +328,12 @@ class GLMFirstMambaHybrid(nn.Module):
             self._in_forward = False
 
     def forward(self, *args: Any, **kwargs: Any):
-        if self._active():
-            self._noncached_input_check(args, kwargs)
+        if not self._active():
+            # Do not install shared mutable decoder hooks when the original
+            # GLM computation is intended. This also avoids concurrency
+            # races or needless Mamba execution on baseline requests.
+            return self.glm_model(*args, **kwargs)
+        self._noncached_input_check(args, kwargs)
         with self._installed_hooks():
             return self.glm_model(*args, **kwargs)
 
