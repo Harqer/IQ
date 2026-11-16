@@ -74,16 +74,20 @@ class SerialDonorTests(unittest.TestCase):
         actual = path._serial_donor_forward(projected)
         torch.testing.assert_close(actual, expected, rtol=0, atol=0)
 
-    def test_serial_donor_is_distinct_from_independent_layer_calls(self):
+    def test_serial_donor_is_distinct_from_parallel_independent_layer_calls(self):
         path = self.hybrid.path
         projected = torch.randn(2, 3, CONTRACT.mamba_hidden)
         serial = path._serial_donor_forward(projected)
-        independent = projected
+        # Each independent branch sees the SAME GLM-projected input rather
+        # than its predecessor's Mamba hidden state.
+        parallel_results = []
         for block in self.donor.backbone.layers:
-            out, residue = block(independent, residual=None)
-            independent = out + residue
-        independent = self.donor.backbone.norm_f(independent)
-        self.assertFalse(torch.equal(serial, independent))
+            out, residue = block(projected, residual=None)
+            parallel_results.append(out + residue)
+        parallel = self.donor.backbone.norm_f(
+            torch.stack(parallel_results).mean(dim=0)
+        )
+        self.assertFalse(torch.equal(serial, parallel))
 
     def test_enabled_zero_gate_trains_scalar_and_preserves_logits(self):
         self.hybrid.enable_branch(True)
