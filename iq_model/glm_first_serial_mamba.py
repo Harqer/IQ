@@ -256,6 +256,8 @@ class GLMFirstSerialMambaHybrid(nn.Module):
             self._in_forward = False
 
     def forward(self, *args: Any, **kwargs: Any):
+        if not self.path.enabled:
+            return self.glm_model(*args, **kwargs)
         if self.path.enabled:
             # Fail closed on opaque positional params; the official GLM
             # CausalLM accepts input_ids positionally but other args may
