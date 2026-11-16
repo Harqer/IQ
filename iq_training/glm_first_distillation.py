@@ -13,6 +13,8 @@ must be bound to an independently pinned checkpoint and tokenizer revision.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from hashlib import sha256
+import json
 import math
 
 import torch
@@ -26,12 +28,21 @@ class GLMFirstDistillationError(RuntimeError):
     pass
 
 
+def input_ids_sha256(input_ids: Tensor) -> str:
+    """Bind teacher logits to the exact GLM token-ID matrix and row ordering."""
+    if input_ids.ndim != 2 or input_ids.dtype not in (torch.int64, torch.int32):
+        raise GLMFirstDistillationError("source token IDs must be integer [batch, seq]")
+    data = json.dumps(input_ids.detach().cpu().tolist(), separators=(",", ":"))
+    return sha256(data.encode("utf-8")).hexdigest()
+
+
 @dataclass(frozen=True)
 class GLMTeacherLastTokenLogits:
     """Precomputed GLM teacher logits for the final prompt position of each row."""
     logits: Tensor  # [batch, GLM vocab]
     teacher_revision: str  # official immutable commit, not a nickname
     tokenizer_mapping_sha256: str
+    input_ids_sha256: str  # exact prompt IDs and batch row order
 
 
 @dataclass(frozen=True)
@@ -132,6 +143,10 @@ def glm_first_distillation_step(
         raise GLMFirstDistillationError("input_ids must be nonempty [batch,seq]")
     if input_ids.dtype not in (torch.int64, torch.int32):
         raise GLMFirstDistillationError("GLM input IDs must be integers")
+    if teacher.input_ids_sha256 != input_ids_sha256(input_ids):
+        raise GLMFirstDistillationError(
+            "GLM teacher targets do not match the input token IDs and row order"
+        )
     if next_token_ids.ndim != 1 or next_token_ids.shape[0] != input_ids.shape[0]:
         raise GLMFirstDistillationError("next_token_ids must be [batch]")
     if next_token_ids.dtype not in (torch.int64, torch.int32):
