@@ -71,6 +71,22 @@ class RealGlmDecoderOverlayTests(unittest.TestCase):
         self.assertEqual(
             sum(len(block._forward_hooks) for block in reference.model.layers), 0
         )
+        # Controlled full-prefix hybrid decoding, still with zero gates,
+        # must match recomputation using the native Transformers GLM model.
+        hybrid.enable_branches()
+        with torch.inference_mode():
+            expected = input_ids
+            for _ in range(2):
+                next_logits = reference(expected, use_cache=False).logits
+                next_token = next_logits[:, -1, :].argmax(-1, keepdim=True)
+                expected = torch.cat((expected, next_token), dim=1)
+            actual = hybrid.experimental_generate_uncached(
+                input_ids, max_new_tokens=2, stop_token_ids=()
+            )
+        self.assertTrue(torch.equal(actual, expected))
+        self.assertEqual(
+            sum(len(block._forward_hooks) for block in reference.model.layers), 0
+        )
 
 
 if __name__ == "__main__":
