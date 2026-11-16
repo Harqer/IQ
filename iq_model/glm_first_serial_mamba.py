@@ -268,6 +268,22 @@ class GLMFirstSerialMambaHybrid(nn.Module):
                 raise GLMFirstIntegrationError("enabled hybrid requires GLM token IDs")
             if not args and kwargs.get("input_ids") is None:
                 raise GLMFirstIntegrationError("enabled hybrid requires GLM input_ids")
+            ids = args[0] if args else kwargs.get("input_ids")
+            if (
+                not isinstance(ids, torch.Tensor)
+                or ids.ndim != 2
+                or ids.numel() == 0
+                or ids.dtype not in (torch.int64, torch.int32)
+                or bool((ids < 0).any())
+                or bool((ids >= self.contract.glm_vocab).any())
+            ):
+                raise GLMFirstIntegrationError(
+                    "serial donor requires valid GLM token IDs in [batch, seq]"
+                )
+            if ids.shape[1] > 2048:
+                raise GLMFirstIntegrationError(
+                    "serial donor exceeds validated Mamba-3 pretraining context of 2048"
+                )
             GLMFirstMambaHybrid._noncached_input_check(args, kwargs)
         with self._hook():
             return self.glm_model(*args, **kwargs)
