@@ -102,6 +102,12 @@ See:
 - `IQ_WEIGHT_TRANSFER_IMPLEMENTATION_PLAN.md`
 - `IQ_V2_IMPLEMENTATION_PLAN.md`
 
+## GLM-5.3 tokenizer-only IQ variant
+
+An independent GLM-tokenizer configuration is available for the **existing IQ v2 hybrid**. It keeps Mamba-3 MIMO, Stable LatentMoE, CSA/HCA, Block AttnRes and reasoning controls unchanged; only the tokenizer vocabulary and IQ lexical tensor *dimensions* change to 154,880 rows. This path reads no GLM neural weights and does not transfer GLM capabilities merely by reassigning token IDs. The Mamba-vocabulary donor-weight path described above is separate and must not be mixed with the GLM token-ID space without additional alignment.
+
+See [GLM-5.3 tokenizer-only IQ integration](docs/GLM53_TOKENIZER_ONLY_IQ.md).
+
 ## Training runtime
 
 Production training target:
