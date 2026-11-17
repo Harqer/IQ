@@ -25,14 +25,18 @@ coherent pretrained hybrid remains unproven.
 ## Run when a BF16-capable CUDA GPU is already available
 
 ```bash
-# Install CUDA-enabled torch and the IQ pinned native Mamba runtime
-bash scripts/install_model_runtime.sh
+# First: install a CUDA-enabled PyTorch distribution appropriate for your GPU.
+# IQ's existing production installer requires an activated HF-style venv
+# and its audited CUDA/Triton dependencies (not just any Python environment).
+# On the repository's supported HF CUDA container:
+export IQ_VENV_DIR="${PWD}/.venv"
+bash scripts/hf_container_venv.sh python -m scripts.iq_mamba3_native_inference --preflight
 
-# Hugging Face login is needed if you lack access to Meta's gated tokenizer
+# Authenticate for the gated official Meta tokenizer if needed:
 hf auth login
 
-python scripts/iq_mamba3_native_inference.py --preflight
-python scripts/iq_mamba3_native_inference.py \
+# On a BF16 CUDA host with IQ's pinned runtime already installed:
+python -m scripts.iq_mamba3_native_inference \
   --prompt "The next number after 1, 2, 3 is" \
   --max-new-tokens 16 --parity --eval
 ```
