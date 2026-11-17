@@ -43,4 +43,6 @@ The run must produce non-empty generated text, finite logits, 24 MoE layer outpu
 
 **OTLP verification:** `python -m unittest tests.test_iq_otlp_export` sends a real protobuf span and event to a local loopback receiver without Baseten or a GPU. Configure `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=https://YOUR-COLLECTOR/v1/traces` for actual backend exports; without it, durable local JSONL remains available. The test does not prove a production collector is connected.
 
+**Independent CPU-only full integrity preflight (before paid GPU):** run `python scripts/verify_full_iq_integrity_cpu.py /path/to/full/mocha` after mounting all 82 shards, index, COMPLETE.json, and SHA256SUMS. This hashes every shard and validates every tensor header without importing Torch. It pins the original index SHA-256 (`0154a99903ea86daea357f855ee24ae10e430e2adda022f2a6843476eaaa6128`) and the original SHA256SUMS SHA-256 (`705b9127a8575acc5aba9e48dafa58ddfbb6d7616917711bffcd4f52478e25e2`) in source; changed buckets fail closed until deliberately reviewed.
+
 **Billing guard:** obtain a live Baseten credit/balance estimate and confirm GPU availability before pushing/deploying; do not auto-create billed resources without approval.
