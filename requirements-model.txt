@@ -1,3 +1,9 @@
 -r requirements-transfer.txt
 torch>=2.10
 transformers==5.17.0
+
+# Optional OTLP endpoint exports are enabled via OTEL_EXPORTER_OTLP_TRACES_ENDPOINT.
+# Keep instrumentation compatible with the OpenTelemetry 1.x API.
+opentelemetry-api>=1.35,<2
+opentelemetry-sdk>=1.35,<2
+opentelemetry-exporter-otlp-proto-http>=1.35,<2
