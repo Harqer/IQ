@@ -4,12 +4,10 @@ model_name: iq235-glm53-architecture-only
 model_class_name: Model
 base_image:
   image: pytorch/pytorch:2.10.0-cuda12.8-cudnn9-devel
+# One staged parent preserves package names under packages/.
+# The stage contains only the required, reviewed source files.
 external_package_dirs:
-  - ../../iq_cloud
-  - ../../iq_model
-  - ../../iq_transfer
-  - ../../scripts
-  - ../../configs
+  - ../_iq235_baseten_packages
 system_packages:
   - git
 requirements:
