@@ -19,14 +19,25 @@ def main() -> int:
     root = args.checkpoint.resolve()
     config = root / "iq_config.json"
     index_path = root / "model.safetensors.index.json"
-    for path in (config, index_path):
+    manifest_path = root / "transplant_manifest.json"
+    for path in (config, index_path, manifest_path):
         if not path.is_file() or path.stat().st_size == 0:
             p.error(f"Compiled IQ checkpoint is missing {path.name}: {root}")
     try:
-        json.loads(config.read_text(encoding="utf-8"))
+        config_data = json.loads(config.read_text(encoding="utf-8"))
         index = json.loads(index_path.read_text(encoding="utf-8"))
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (ValueError, OSError) as exc:
         p.error(f"Unreadable compiled IQ metadata: {exc}")
+    if not isinstance(config_data, dict) or not isinstance(manifest, dict):
+        p.error("IQ config and transplant manifest must be JSON objects")
+    if manifest.get("method") not in {
+        "mamba3_foundation_plus_glm53_capability_weight_transfer",
+        "direct_cross_architecture_weight_transplant",
+    }:
+        p.error("Unknown lexical foundation; do not start paid inference")
+    if not isinstance(index, dict):
+        p.error("Checkpoint index must be a JSON object")
     weight_map = index.get("weight_map")
     if not isinstance(weight_map, dict) or not weight_map:
         p.error("Checkpoint index must declare a nonempty weight_map")
@@ -36,13 +47,31 @@ def main() -> int:
     if not all(isinstance(name, str) and name for name in names):
         p.error("Malformed checkpoint shard names")
     shards = set(names)
+    shard_bytes = 0
     for name in sorted(shards):
         relative = Path(name)
-        if relative.is_absolute() or ".." in relative.parts or len(relative.parts) != 1:
+        if (
+            relative.name != name
+            or relative.is_absolute()
+            or relative.suffix != ".safetensors"
+            or ".." in relative.parts
+            or len(relative.parts) != 1
+            or "\\" in name
+        ):
             p.error(f"Invalid checkpoint shard path: {name}")
         shard = root / name
-        if not shard.is_file() or shard.stat().st_size == 0:
-            p.error(f"Missing or empty safetensors shard: {shard}")
+        if shard.is_symlink() or not shard.is_file() or shard.stat().st_size == 0:
+            p.error(f"Missing, empty or symlink safetensors shard: {shard}")
+        shard_bytes += shard.stat().st_size
+    metadata = index.get("metadata", {})
+    if not isinstance(metadata, dict) or (
+        "total_size" in metadata
+        and (
+            type(metadata["total_size"]) is not int
+            or metadata["total_size"] != shard_bytes
+        )
+    ):
+        p.error("Checkpoint index total_size does not match physical shard bytes")
 
     # The Mamba-3 foundation supplies the Llama 3.1 vocabulary. The original
     # HF inference job mounted tokenizer assets separately from IQ shards.

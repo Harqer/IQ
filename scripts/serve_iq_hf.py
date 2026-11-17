@@ -29,26 +29,22 @@ def build_model():
     tokenizer = AutoTokenizer.from_pretrained(
         str(tokenizer_root), local_files_only=True
     )
-    # Official Mamba3 donor uses Llama 3.1 token IDs, not GLM token IDs.
-    expected_special_ids = {
-        "<|begin_of_text|>": 128000,
-        "<|end_of_text|>": 128001,
-        "<|start_header_id|>": 128006,
-        "<|end_header_id|>": 128007,
-        "<|eot_id|>": 128009,
-    }
-    for token, expected_id in expected_special_ids.items():
-        actual = tokenizer.convert_tokens_to_ids(token)
-        if actual != expected_id:
-            raise RuntimeError(
-                f"Tokenizer special ID mismatch: {token}={actual}, expected {expected_id}"
-            )
-    config = json.loads((root / "iq_config.json").read_text(encoding="utf-8"))
-    if len(tokenizer) != config["model"]["vocab_size"]:
-        raise RuntimeError(
-            f"IQ checkpoint vocab={config['model']['vocab_size']}, "
-            f"tokenizer length={len(tokenizer)}"
-        )
+    from iq_transfer.checkpoint_preflight import (
+        preflight_iq_checkpoint,
+        verify_iq_tokenizer,
+    )
+    # Confirm source identity and index paths *before* allocating the
+    # heavy hybrid model. Llama and GPT-OSS donor checkpoints use different
+    # token IDs: do not hardcode a universal Llama lexical boundary.
+    evidence = preflight_iq_checkpoint(root, tokenizer_dir=tokenizer_root)
+    lexical_source = verify_iq_tokenizer(
+        tokenizer, evidence.config, evidence.manifest
+    )
+    print(
+        f"IQ: lexical foundation={lexical_source} "
+        f"shards={evidence.shard_count} weights={evidence.weight_count}",
+        flush=True,
+    )
     model = load_complete_iq_checkpoint(
         root, device=torch.device("cuda:0"), dtype=torch.bfloat16
     ).eval()
@@ -75,17 +71,12 @@ def generate(
                 encoded if isinstance(encoded, torch.Tensor)
                 else encoded["input_ids"]
             )
-        except (ValueError, AttributeError, KeyError, TypeError):
-            transcript = (
-                "\n".join(
-                    f"{message['role']}: {message['content']}"
-                    for message in messages
-                )
-                + "\nassistant:"
-            )
-            input_ids = tokenizer(
-                transcript, return_tensors="pt"
-            )["input_ids"]
+        except (ValueError, AttributeError, KeyError, TypeError) as exc:
+            raise ValueError(
+                "checkpoint tokenizer lacks a usable chat template; "
+                "use prompt_format='completion' for raw text rather than "
+                "silently changing the pretrained conversational format"
+            ) from exc
     else:
         raise ValueError("prompt_format must be chat or completion")
     if (
@@ -96,12 +87,28 @@ def generate(
         raise ValueError(f"prompt must contain 1..{MAX_PROMPT_TOKENS} tokens")
 
     prompt_tokens = int(input_ids.shape[1])
-    input_ids = input_ids.to("cuda:0")
+    if type(max_new_tokens) is not int or not 1 <= max_new_tokens <= MAX_NEW_TOKENS:
+        raise ValueError(f"max_new_tokens must be 1..{MAX_NEW_TOKENS}")
+    # The official pretrained Mamba donor advertises a 2,048-token
+    # context. IQ's larger configured positional range is not proof
+    # of coherent extrapolation without recurrent state evaluation.
+    if prompt_tokens + max_new_tokens > MAX_PROMPT_TOKENS:
+        raise ValueError(
+            f"requested prompt+generation exceeds validated {MAX_PROMPT_TOKENS}-token context"
+        )
+    input_ids = input_ids.to(model.embed_tokens.weight.device)
     generated: list[int] = []
     finish_reason = "length"
     diagnostics = os.getenv("IQ_DIAGNOSTICS", "0") == "1"
-    stop_ids = {tokenizer.eos_token_id}
-    eot_id = tokenizer.convert_tokens_to_ids("<|eot_id|>")
+    eos_ids = getattr(tokenizer, "eos_token_id", None)
+    if isinstance(eos_ids, int):
+        stop_ids = {eos_ids}
+    elif isinstance(eos_ids, (list, tuple, set)):
+        stop_ids = {value for value in eos_ids if isinstance(value, int)}
+    else:
+        stop_ids = set()
+    vocab = tokenizer.get_vocab()
+    eot_id = vocab.get("<|eot_id|>")
     if isinstance(eot_id, int) and 0 <= eot_id < len(tokenizer):
         stop_ids.add(eot_id)
     with torch.inference_mode():
@@ -130,8 +137,17 @@ def generate(
             else:
                 result = model(input_ids)
             logits = result.logits[:, -1, :].float()
+            if logits.ndim != 2 or logits.shape[0] != 1:
+                raise RuntimeError("unexpected IQ causal LM logit shape")
+            if logits.shape[-1] < len(tokenizer):
+                raise RuntimeError("IQ model head is smaller than tokenizer vocabulary")
             if not bool(torch.isfinite(logits).all()):
                 raise RuntimeError("non-finite IQ logits")
+            # Some foundation heads (GPT-OSS) have padded embedding/output
+            # rows beyond the tokenizer's last defined token ID. Mask them
+            # before sampling and diagnostics; never decode untrained IDs.
+            if logits.shape[-1] > len(tokenizer):
+                logits[:, len(tokenizer):] = torch.finfo(logits.dtype).min
             if diagnostics and not generated:
                 probabilities = torch.softmax(logits[0], dim=-1)
                 values, indices = probabilities.topk(5)
