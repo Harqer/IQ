@@ -13,28 +13,27 @@ Only the lexical vocabulary boundary changes:
 
 The existing IQ code already sizes its input embedding and LM head from `IQHybridConfig.model.vocab_size`. The new `with_glm_tokenizer_config(...)` helper retains all other IQ configuration values and scheduling.
 
-## Generate an IQ hybrid configuration and verify the tokenizer
+## Run without an IQ config path
 
-For an existing IQ **hybrid config JSON**:
-
-~~~bash
-python -m scripts.check_iq_glm_tokenizer \
-  --iq-config path/to/iq-hybrid.json \
-  --write-config path/to/iq-glm53-tokenizer.json \
-  --prompt "def square(x): return x * x"
-~~~
-
-The command downloads the **tokenizer and official config JSON**, not model neural weights. It prints GLM token IDs, special-token validation, full token-to-ID mapping SHA-256, and the new IQ config fingerprint. The new config output must not already exist.
-
-To recheck an already prepared configuration without rewriting it:
+From the IQ repository root:
 
 ~~~bash
-python -m scripts.check_iq_glm_tokenizer \
-  --iq-config path/to/iq-glm53-tokenizer.json \
-  --prompt "Hello, world"
+python -m scripts.check_iq_glm_tokenizer --prompt "def square(x): return x*x"
 ~~~
 
-If you have an **independently recorded** GLM tokenizer mapping fingerprint, pass `--expected-mapping-sha256` to refuse any changed token-ID mapping.
+The command loads only the pinned GLM-5.3 tokenizer artifacts and model **config.json** metadata (not neural weights) and prints the actual token IDs, mapping fingerprint and official special IDs. It does not initialize or modify any model. No checkpoint, hybrid config path or inference engine is required.
+
+To prohibit all network requests and use the previously cached tokenizer:
+
+~~~bash
+python -m scripts.check_iq_glm_tokenizer --offline --prompt "Hello, world"
+~~~
+
+Offline mode fails with a clear error if the pinned tokenizer is not present in the Hugging Face cache. If the files already exist in a local directory, `--tokenizer-dir` loads that directory directly without accessing the Hub.
+
+The optional `--iq-config` parameter is used **only** when validating an existing IQ hybrid JSON. For an actual configuration that already exists on disk, pass `--iq-config` and `--write-config` to write a second copy with the GLM vocabulary. The tool refuses `--write-config` without a verified source config path; it does not invent a backbone schedule.
+
+An independently recorded tokenizer mapping fingerprint can be supplied using `--expected-mapping-sha256`. Without it, the tool checks full token ID geometry and outputs the observed hash, but does not claim independent fingerprint authentication.
 
 ## Exact boundary of the change
 
