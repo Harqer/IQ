@@ -27,16 +27,7 @@ requirements:
 build_commands:
   - git clone https://github.com/state-spaces/mamba.git /tmp/iq-mamba3-src
   - git -C /tmp/iq-mamba3-src checkout e9594ce1c732d97440f0332fdc43170a2294dbfa
-  - |
-    python - <<'PY'
-    from pathlib import Path
-    p = Path('/tmp/iq-mamba3-src/mamba_ssm/ops/tilelang/mamba3/mamba3_mimo_fwd.py')
-    s = p.read_text(encoding='utf-8')
-    old = '                for cs, p in T.Parallel(chunk_size, P):\n                    v_shared[cs, p] = V[i_b, chunk_start+cs, i_h, p]'
-    new = '                for cs, p in T.Parallel(chunk_size, P):\n                    if chunk_start + cs < S:\n                        v_shared[cs, p] = V[i_b, chunk_start+cs, i_h, p]\n                    else:\n                        v_shared[cs, p] = 0.0'
-    assert s.count(old) == 1, 'unrecognized pinned MIMO source; fail closed'
-    p.write_text(s.replace(old, new), encoding='utf-8')
-    PY
+  - python3 -c 'from pathlib import Path; import sys; p=Path("/tmp/iq-mamba3-src/mamba_ssm/ops/tilelang/mamba3/mamba3_mimo_fwd.py"); s=p.read_text(encoding="utf-8"); old="                for cs, p in T.Parallel(chunk_size, P):\n                    v_shared[cs, p] = V[i_b, chunk_start+cs, i_h, p]"; new="                for cs, p in T.Parallel(chunk_size, P):\n                    if chunk_start + cs < S:\n                        v_shared[cs, p] = V[i_b, chunk_start+cs, i_h, p]\n                    else:\n                        v_shared[cs, p] = 0.0"; s.count(old)==1 or sys.exit("unrecognized pinned MIMO source; fail closed"); p.write_text(s.replace(old, new), encoding="utf-8")'
   - TORCH_CUDA_ARCH_LIST=9.0 MAMBA_FORCE_BUILD=TRUE python -m pip install --no-build-isolation --no-deps /tmp/iq-mamba3-src
 resources:
   accelerator: H200:8
