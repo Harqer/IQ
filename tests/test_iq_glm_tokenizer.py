@@ -141,6 +141,9 @@ class GLMIQTokenizerContractTests(unittest.TestCase):
         corrupted["eos_token_id"] = [154820]
         with self.assertRaisesRegex(GLMTokenizerError, "source config"):
             verify_glm_tokenizer_for_iq(self.tokenizer, corrupted, self.config.model)
+        corrupted["eos_token_id"] = 154820
+        with self.assertRaisesRegex(GLMTokenizerError, "source config"):
+            verify_glm_tokenizer_for_iq(self.tokenizer, corrupted, self.config.model)
 
     def test_duplicate_out_of_range_and_missing_control_ids(self):
         for bad_vocab, message in (
