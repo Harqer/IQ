@@ -241,3 +241,6 @@ beta/
 
 # Mojo environment (exclude large files)
 mojo-env/
+
+# Auto-staged Baseten runtime packages; never commit generated copies
+/deploy/_iq235_baseten_packages/
