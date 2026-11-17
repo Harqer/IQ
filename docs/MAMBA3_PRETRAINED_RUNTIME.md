@@ -24,35 +24,53 @@ coherent pretrained hybrid remains unproven.
 
 ## Run when a BF16-capable CUDA GPU is already available
 
-```bash
-# First: install a CUDA-enabled PyTorch distribution appropriate for your GPU.
-# IQ's existing production installer requires an activated HF-style venv
-# and its audited CUDA/Triton dependencies (not just any Python environment).
-# On the repository's supported HF CUDA container:
-export IQ_VENV_DIR="${PWD}/.venv"
-bash scripts/hf_container_venv.sh python -m scripts.iq_mamba3_native_inference --preflight
+The official pinned upstream TileLang source at
+`e9594ce1c732d97440f0332fdc43170a2294dbfa` contains an
+unguarded V tile load for short or non-multiple-of-16 prefills.
+Earlier IQ H200 diagnostics found related illegal CUDA addresses.
+Therefore **the runner refuses any pretrained GPU inference unless
+the installed source contains the explicitly bounded, zero-filled tail
+guard**. This source patch does not alter the donor's neural weights;
+it is a kernel memory-safety fix, not proof of numerical correctness.
 
-# Authenticate for the gated official Meta tokenizer if needed:
+A source-based install into a disposable, **already CUDA-enabled**
+Python environment with compatible TileLang/TVM dependencies:
+
+```bash
+# Use a CUDA torch+toolkit venv and IQ dependencies first.
+# Repo root must be the current working directory.
+python -m scripts.iq_mamba3_native_inference --preflight
+
+# Prepare the exact source in a temporary checkout; DO NOT use latest.
+git clone https://github.com/state-spaces/mamba.git /tmp/iq-mamba3-native
+git -C /tmp/iq-mamba3-native checkout e9594ce1c732d97440f0332fdc43170a2294dbfa
+python -m scripts.patch_iq_native_mimo_tail \
+    --patch-checkout /tmp/iq-mamba3-native
+
+# Ensure only the intended kernel source has changed.
+git -C /tmp/iq-mamba3-native diff --name-only
+
+# Build from the source checkout with existing pinned dependencies.
+MAMBA_FORCE_BUILD=TRUE python -m pip install --no-build-isolation \
+    /tmp/iq-mamba3-native
+python -m scripts.patch_iq_native_mimo_tail --check-installed
+
+# Authenticate for the model and Meta's gated official tokenizer if required.
 hf auth login
 
-# On a BF16 CUDA host with IQ's pinned runtime already installed:
 python -m scripts.iq_mamba3_native_inference \
-  --prompt "The next number after 1, 2, 3 is" \
-  --max-new-tokens 16 --parity --eval
+    --prompt "The next number after 1, 2, 3 is" \
+    --max-new-tokens 16 --parity --eval
 ```
 
-The runner does not provision paid GPU compute. It intentionally rejects
-CPU, SM75/T4/RTX2060S (no native BF16), SISO substitutions, out-of-vocab
-tokens, a broken tied head, missing blocks, and requests exceeding the
-official 2048-token context. It reports generated text, timing, and
-cached-versus-full-prefix logit errors at the first two decode positions.
-
-The `--skip-sha256` flag is an **explicit diagnostic opt-out**, not the
-default. Source checkpoint: ~3GB on disk plus runtime memory. The
-official checkpoint is a base causal LM, not an instruction-tuned or
-coding-benchmarked assistant; the `--eval` probes produce raw
-arithmetic/reasoning/code continuations for manual quality review and
-are not reported as passed benchmarks.
+This procedure requires a working compatible CUDA toolchain and may
+fail if the dependency solver uses incompatible TileLang/TVM versions.
+Do not treat the source patch, a successful import, or unit tests as proof
+of safe native CUDA prefill. End-to-end native GPU testing remains required.
+The official pretrained checkpoint is ~3GB on disk and the 1.5B model
+requires additional runtime and kernel memory. The released model is a
+base causal LM, not an instruction-tuned coding assistant. The `--eval`
+probes are raw continuations, not scored capability benchmarks.
 
 ## Validation gates
 
