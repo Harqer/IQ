@@ -245,7 +245,7 @@ class GLM53Inspector:
             return ValidationReport(errors=(str(exc),))
         warnings: list[str] = []
         quantized = any(
-            key.endswith((".weight_scale", ".weight_scale_inv")) for key in source
+            key.endswith((".weight_scale", ".weight_scale_inv")) for key in source.keys()
         )
         if quantized:
             warnings.append(
