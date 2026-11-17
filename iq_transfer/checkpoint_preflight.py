@@ -64,7 +64,10 @@ def preflight_iq_checkpoint(
     tokenizer_dir: str | Path | None = None,
 ) -> IQCheckpointPreflight:
     """Reject partial/unsafe checkpoint manifests before CUDA allocations."""
-    path = Path(root).resolve(strict=True)
+    try:
+        path = Path(root).resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise CheckpointPreflightError("checkpoint root unavailable") from exc
     if not path.is_dir():
         raise CheckpointPreflightError("checkpoint root must be a directory")
     config = _object(path / "iq_config.json")
@@ -85,6 +88,8 @@ def preflight_iq_checkpoint(
     if any(not isinstance(key, str) or not key for key in weight_map):
         raise CheckpointPreflightError("checkpoint index has malformed tensor keys")
 
+    if any(not isinstance(name, str) or not name for name in weight_map.values()):
+        raise CheckpointPreflightError("checkpoint index contains invalid shard names")
     names = set(weight_map.values())
     sizes = [_shard_path(path, name).stat().st_size for name in names]
     total = sum(sizes)
