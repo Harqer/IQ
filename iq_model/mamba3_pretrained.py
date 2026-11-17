@@ -7,7 +7,6 @@ recurrent state equations, and tied output head. No learned adapters are used.
 from __future__ import annotations
 
 import hashlib
-import math
 from pathlib import Path
 from typing import Any
 
@@ -63,6 +62,8 @@ def validate_native_contract(model: nn.Module, tokenizer: Any) -> None:
         mlp = getattr(block, "mlp", None)
         if (
             mixer is None or mlp is None
+            or mixer.__class__.__name__ != "Mamba3"
+            or mlp.__class__.__name__ != "GatedMLP"
             or getattr(mixer, "is_mimo", None) is not True
             or getattr(mixer, "mimo_rank", None) != 4
         ):
@@ -75,7 +76,7 @@ def validate_native_contract(model: nn.Module, tokenizer: Any) -> None:
         or tuple(embedding.shape) != (128256, 2048)
         or tuple(head.shape) != (128256, 2048)
         or tuple(norm.shape) != (2048,)
-        or embedding.data_ptr() != head.data_ptr()
+        or embedding is not head
     ):
         raise FoundationInferenceError("pretrained embedding/head tying or global tensor geometry differs")
     if len(tokenizer) > 128256 or len(tokenizer) < 128000:
