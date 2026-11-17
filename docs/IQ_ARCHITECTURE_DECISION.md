@@ -77,13 +77,17 @@ Preserved for reproducibility, **not merged into the active student**:
   checkpoint, and the in-progress local `IQ-baseten-full` worktree.
 - `iq_transfer/phi4.py`, `iq_transfer/phi_pipeline.py`,
   `iq_transfer/gpt_oss20b.py` and old transfer launchers.
-- `nif_sovereign/` Mojo research (82 files) is retained on `main` and in Git\n  history but intentionally omitted from this student-only branch; alternative\n  attention/halting experiments remain separate.
+- `nif_sovereign/` Mojo research (82 files) is retained on `main` and in Git
+  history but intentionally omitted from this student-only branch; alternative
+  attention/halting experiments remain separate.
 - The earlier 80-layer `mocha` checkpoint and Baseten experiment branch.
 
-**No history was deleted.** Only the active runtime import boundary was
-refactored; more aggressive deletion requires import/CI coverage. The source
-repository is about 1.9 MB tracked; it is the 502 GiB remote weight artifact
-that dominates model storage.
+**No Git history or remote model weights were deleted.** This branch drops
+82 inactive Mojo/NIF research files (approximately 548 KiB); retrieve them
+from `main` if needed. Additional deletion of Python donor pipelines is
+blocked until import/CI coverage verifies no hidden consumers. The original
+`main` source tree is about 1.9 MB tracked; the 502 GiB remote checkpoint
+remains a separate legacy artifact.
 
 ## No-cost verification gates
 
