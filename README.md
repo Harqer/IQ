@@ -15,7 +15,7 @@
 > 154,880-ID GLM student.
 >
 > **CPU-only status:** `python -m scripts.iq_glm53_mamba3 --preflight`
-> **CPU-only import regression:** `python -m unittest -v tests.test_lazy_public_api`
+> **CPU-only import regression:** `python -m unittest discover -s tests -p 'test_lazy_public_api.py' -v`
 
 
 IQ is an experimental language-model architecture for complex coding, long-context retrieval, and adaptive multi-step reasoning.
