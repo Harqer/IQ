@@ -90,14 +90,14 @@ that dominates model storage.
 From a clean worktree based on this branch:
 
 ```bash
-python -m unittest -v tests.test_lazy_public_api
+python -m unittest discover -s tests -p 'test_lazy_public_api.py' -v
 python -m scripts.iq_glm53_mamba3 --preflight
 ```
 
 When PyTorch and project test dependencies are available, also run:
 
 ```bash
-python -m unittest -v tests.test_glm_mamba3_student
+python -m unittest discover -s tests -p 'test_glm_mamba3_student.py' -v
 ```
 
 The preflight uses no model weights or paid GPU. Do **not** use these CPU
