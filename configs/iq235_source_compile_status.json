@@ -1,0 +1,14 @@
+{
+  "end_to_end_knowledge_retention_proven": false,
+  "inference_ready": false,
+  "mapped_layers": 78,
+  "mapped_routed_expert_slots": 19200,
+  "metadata_sampled_shards": 13,
+  "metadata_validation": "remote_inventory_deterministic_map_and_13_sampled_headers_no_full_tensor_validation",
+  "not_exact_bitwise_weight_reuse": true,
+  "routed_experts_per_layer": 256,
+  "routed_source_layers": 75,
+  "source_layers": 78,
+  "status": "FULL78_COMPILED_NOT_YET_INFERENCE_VALIDATED",
+  "tokenizer_packaged": false
+}
