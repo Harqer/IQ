@@ -173,3 +173,91 @@ def test_cpu_mamba_layer_rejects_varlen_contract():
         layer(x, attention_mask=torch.ones(2, 4, dtype=torch.bool))
     with pytest.raises(HybridModelError):
         layer(x, document_ids=torch.zeros(2, 4, dtype=torch.int64))
+
+
+def test_model_forward_rejects_padded_attention_mask():
+    from iq_local.cpu_hybrid import CPUHybridForCausalLM
+
+    from iq_model.architecture import HybridLayerType, HybridSchedule
+    from iq_model.config import IQModelConfig
+    from iq_model.hybrid import IQHybridConfig
+    from iq_model.mlp import StableLatentMoEConfig
+    from iq_model.mlp.moe import RoutedMoEConfig
+    from iq_model.residual.attnres import BlockAttnResConfig
+    from iq_model.state.mamba3 import Mamba3MIMOConfig
+
+    config = IQHybridConfig(
+        model=IQModelConfig(
+            vocab_size=16,
+            hidden_size=32,
+            num_attention_heads=4,
+            num_key_value_heads=2,
+            intermediate_size=32,
+            rms_norm_eps=1e-5,
+            residual_dropout=0.0,
+            initializer_range=0.02,
+        ),
+        schedule=HybridSchedule(
+            layers=(
+                HybridLayerType.MAMBA3,
+                HybridLayerType.DENSE_ATTENTION,
+                HybridLayerType.MAMBA3,
+                HybridLayerType.MOE,
+            )
+        ),
+        mamba3=Mamba3MIMOConfig(
+            d_model=32,
+            num_layers=2,
+            d_state=8,
+            headdim=16,
+            mimo_rank=2,
+            expand=2.0,
+            chunk_size=16,
+            rope_fraction=0.5,
+            outproj_norm=False,
+        ),
+        moe=RoutedMoEConfig(
+            hidden_size=32,
+            expert_intermediate_size=16,
+            num_experts=8,
+            top_k=4,
+        ),
+        moe_variant="stable_latent",
+        stable_moe=StableLatentMoEConfig(
+            hidden_size=32,
+            latent_size=16,
+            expert_intermediate_size=16,
+            num_experts=8,
+            top_k=4,
+            num_shared_experts=1,
+            situ_beta=4.0,
+            situ_linear_beta=25.0,
+            routed_scaling_factor=2.5,
+            rms_norm_eps=1e-5,
+            expert_bias=False,
+            router_bias=False,
+        ),
+        attnres=BlockAttnResConfig(hidden_size=32, num_layers=4, block_size=2),
+    )
+    torch.manual_seed(0)
+    model = CPUHybridForCausalLM(config)
+    model.eval()
+    input_ids = torch.tensor([[1, 2, 3, 4], [5, 6, 7, 8]], dtype=torch.long)
+
+    def expert_fn(stage: int, expert_idx: int):
+        weight = torch.full((16, 16), 0.01, dtype=torch.bfloat16)
+        return weight, weight.clone(), weight.clone()
+
+    padded = torch.ones(2, 4, dtype=torch.long)
+    padded[1, 2:] = 0
+    with pytest.raises(ValueError, match="all-ones"):
+        model.forward(input_ids, attention_mask=padded, expert_fn=expert_fn)
+
+    logits = model.forward(
+        input_ids,
+        attention_mask=torch.ones(2, 4, dtype=torch.long),
+        expert_fn=expert_fn,
+    )
+    assert logits.shape == (2, 4, 16)
+    unpadded = model.forward(input_ids, expert_fn=expert_fn)
+    assert torch.equal(logits, unpadded)

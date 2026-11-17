@@ -31,10 +31,16 @@ Deviations from production, all deliberate:
   (iq_model/hybrid.py:980-1041), reasoning recurrence/injection
   (iq_model/hybrid.py:1043-1065), final norm, lm_head) but returns logits
   only and takes no labels/loss. MoE layers require `expert_fn`.
+  `attention_mask` must be None or all-ones; padded batches are
+  unsupported in the CPU mirror — production varlen-packs mamba on the
+  mask (iq_model/hybrid.py:995-1000) while this port's batched CPU mamba
+  prefill is unmasked, so any non-trivial mask is rejected loudly and
+  all-ones masks are passed downstream as None.
 - Mamba residual layers run the batched CPU prefill path directly
   (`norm -> Mamba3CPU.prefill -> residual`); the production varlen
   pack/unpack and `cu_seqlens` contract is a CUDA-kernel runtime detail
-  and is rejected when `attention_mask`/`document_ids` are supplied.
+  and is rejected at layer level when `attention_mask`/`document_ids` are
+  supplied directly.
 """
 
 from __future__ import annotations
@@ -454,6 +460,14 @@ class CPUHybridForCausalLM(nn.Module):
             or int(input_ids.max()) >= self.model_config.vocab_size
         ):
             raise ValueError("input_ids contain token ids outside vocabulary")
+        if attention_mask is not None and not bool((attention_mask == 1).all()):
+            raise ValueError(
+                "CPUHybridForCausalLM.forward supports attention_mask=None or "
+                "all-ones only: the CPU mamba prefill is unmasked, so padded "
+                "batches would let pad tokens corrupt mamba states "
+                "(production varlen-packs mamba on the mask instead; use "
+                "unpadded batches for the CPU mirror)"
+            )
 
         x = self.embed_tokens(input_ids)
         attnres_state = self.attnres.init_state(x) if self.attnres is not None else None
