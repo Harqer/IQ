@@ -1,8 +1,8 @@
-"""Executable, unmodified pretrained Mamba-3 MIMO foundation inside IQ.
+"""Executable pretrained Mamba-3 MIMO foundation inside IQ.
 
 This is a deliberately separate inference lane from the experimental 235-layer
 GLM/Mamba transplant. It preserves ALL 24 donor blocks, embeddings, norms,
-recurrent state equations, and tied output head. No learned adapters are used.
+recurrent state equations, and tied output head. No learned adapters are used.\nThe native source requires a one-line bounds-safety fix to the upstream\nTileLang kernel before GPU execution.
 """
 from __future__ import annotations
 
