@@ -147,7 +147,15 @@ class CheckpointPreflightTests(unittest.TestCase):
             "donors": {"language": {"repo": "openai/gpt-oss-20b"}},
         }
         tokenizer = FakeTokenizer(
-            201088, {"<|im_start|>": 200000, "<|im_end|>": 200001}
+            200019,
+            {
+                "<|startoftext|>": 199998,
+                "<|endoftext|>": 199999,
+                "<|return|>": 200002,
+                "<|start|>": 200006,
+                "<|end|>": 200007,
+                "<|message|>": 200008,
+            },
         )
         self.assertIn("gpt-oss", verify_iq_tokenizer(tokenizer, config, manifest))
 
