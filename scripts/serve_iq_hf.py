@@ -137,8 +137,17 @@ def generate(
             else:
                 result = model(input_ids)
             logits = result.logits[:, -1, :].float()
+            if logits.ndim != 2 or logits.shape[0] != 1:
+                raise RuntimeError("unexpected IQ causal LM logit shape")
+            if logits.shape[-1] < len(tokenizer):
+                raise RuntimeError("IQ model head is smaller than tokenizer vocabulary")
             if not bool(torch.isfinite(logits).all()):
                 raise RuntimeError("non-finite IQ logits")
+            # Some foundation heads (GPT-OSS) have padded embedding/output
+            # rows beyond the tokenizer's last defined token ID. Mask them
+            # before sampling and diagnostics; never decode untrained IDs.
+            if logits.shape[-1] > len(tokenizer):
+                logits[:, len(tokenizer):] = torch.finfo(logits.dtype).min
             if diagnostics and not generated:
                 probabilities = torch.softmax(logits[0], dim=-1)
                 values, indices = probabilities.topk(5)
