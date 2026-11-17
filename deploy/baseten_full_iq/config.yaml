@@ -1,0 +1,56 @@
+# FULL 235-LAYER IQ (NOT the 24-layer student)
+# DO NOT PUSH AS A PAID DEPLOYMENT UNTIL CPU VALIDATION + COST APPROVAL.
+model_name: iq235-glm53-architecture-only
+model_class_name: Model
+base_image:
+  image: pytorch/pytorch:2.10.0-cuda12.8-cudnn9-devel
+external_package_dirs:
+  - ../../iq_cloud
+  - ../../iq_model
+  - ../../iq_transfer
+  - ../../scripts
+  - ../../configs
+system_packages:
+  - git
+requirements:
+  - transformers==5.17.0
+  - huggingface_hub>=0.35
+  - safetensors>=0.4.5
+  - numpy>=1.26
+  - einops
+  - ninja
+  - packaging
+  - tilelang==0.1.8
+  - apache-tvm-ffi==0.1.9
+  - quack-kernels
+  - opentelemetry-api
+  - opentelemetry-sdk
+  - opentelemetry-exporter-otlp-proto-http
+build_commands:
+  - git clone https://github.com/state-spaces/mamba.git /tmp/iq-mamba3-src
+  - git -C /tmp/iq-mamba3-src checkout e9594ce1c732d97440f0332fdc43170a2294dbfa
+  - |
+    python - <<'PY'
+    from pathlib import Path
+    p = Path('/tmp/iq-mamba3-src/mamba_ssm/ops/tilelang/mamba3/mamba3_mimo_fwd.py')
+    s = p.read_text(encoding='utf-8')
+    old = '                for cs, p in T.Parallel(chunk_size, P):\n                    v_shared[cs, p] = V[i_b, chunk_start+cs, i_h, p]'
+    new = '                for cs, p in T.Parallel(chunk_size, P):\n                    if chunk_start + cs < S:\n                        v_shared[cs, p] = V[i_b, chunk_start+cs, i_h, p]\n                    else:\n                        v_shared[cs, p] = 0.0'
+    assert s.count(old) == 1, 'unrecognized pinned MIMO source; fail closed'
+    p.write_text(s.replace(old, new), encoding='utf-8')
+    PY
+  - TORCH_CUDA_ARCH_LIST=9.0 MAMBA_FORCE_BUILD=TRUE python -m pip install --no-build-isolation --no-deps /tmp/iq-mamba3-src
+resources:
+  accelerator: H200:8
+  cpu: "32"
+  memory: 256Gi
+secrets:
+  - hf_access_token
+environment_variables:
+  IQ_PHASE: architecture_only
+runtime:
+  predict_concurrency: 1
+model_metadata:
+  example_model_input:
+    prompt: "1 2 3"
+    max_new_tokens: 1
