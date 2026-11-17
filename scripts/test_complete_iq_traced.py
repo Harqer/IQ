@@ -29,6 +29,8 @@ def make_parser():
 
 
 def run(args):
+    # No execution with a partial/unverified compiled checkpoint.
+    os.environ["IQ_REQUIRE_CHECKPOINT_SHA256"] = "1"
     if not torch.cuda.is_available():
         raise RuntimeError("Full-weight IQ inference requires CUDA; refusing CPU fallback")
     if not 1 <= args.max_new_tokens <= 64:
