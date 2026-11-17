@@ -17,6 +17,7 @@ class FullIqTelemetrySourceContract(unittest.TestCase):
             "scripts/serve_iq_hf.py",
             "iq_transfer/complete_transplant.py",
             "iq_transfer/checkpoint_integrity.py",
+            "scripts/verify_full_iq_integrity_cpu.py",
         ]:
             with self.subTest(path=path):
                 p = ROOT / path
