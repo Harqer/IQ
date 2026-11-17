@@ -125,7 +125,9 @@ class IQTelemetry:
             if key not in ATTRIBUTES or type(value) not in {int, float, bool}:
                 raise ValueError("Telemetry attributes must be approved numeric/boolean fields")
         started = time.monotonic()
-        with self.tracer.start_as_current_span("iq." + name) as span:
+        with self.tracer.start_as_current_span(
+            "iq." + name, record_exception=False, set_status_on_exception=False
+        ) as span:
             for key, value in attributes.items():
                 span.set_attribute("iq." + key, value)
             try:
