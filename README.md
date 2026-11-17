@@ -1,5 +1,12 @@
 # IQ — Hybrid Reasoning LLM
 
+> **Current execution order:** first verify architecture with no donor weights;
+> next inject pretrained tensors into the verified topology; only then deploy
+> the complete artifact on Baseten with OpenTelemetry. Local CUDA is irrelevant
+> to this sequence. The 15 passing student tests cover contracts, not an entire
+> end-to-end model-forward validation. See
+> [architecture decision](docs/IQ_ARCHITECTURE_DECISION.md).
+>
 > **Architecture status — 2026-11-17:** The primary **experimental**
 > inference/student lane on this branch is **GLM-5.3 tokenizer + original GLM
 > lexical embeddings/LM head + two trainable adapters + the complete 24-block
