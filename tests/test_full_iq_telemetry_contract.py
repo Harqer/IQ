@@ -16,6 +16,7 @@ class FullIqTelemetrySourceContract(unittest.TestCase):
             "scripts/test_complete_iq_traced.py",
             "scripts/serve_iq_hf.py",
             "iq_transfer/complete_transplant.py",
+            "iq_transfer/checkpoint_integrity.py",
         ]:
             with self.subTest(path=path):
                 p = ROOT / path
@@ -47,6 +48,8 @@ class FullIqTelemetrySourceContract(unittest.TestCase):
         self.assertIn('X-Baseten-Request-Id', server)
         self.assertIn('telemetry.event("checkpoint.shard.start"', loader)
         self.assertIn('telemetry.event("checkpoint.shard.loaded"', loader)
+        self.assertIn("verify_iq_checkpoint_integrity(root, telemetry=telemetry)", loader)
+        self.assertIn("torch.isfinite(value)", loader)
 
 
 if __name__ == "__main__":
