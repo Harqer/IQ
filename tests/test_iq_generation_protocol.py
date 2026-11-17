@@ -68,6 +68,24 @@ class FullPrefixGenerationTests(unittest.TestCase):
         self.assertEqual(answer, "5")
         self.assertEqual(self.model.calls, 1)
 
+    def test_padded_output_head_rows_are_never_generated(self):
+        class PaddedModel(ToyInferenceModel):
+            def forward(self, input_ids, return_hidden_states=False):
+                base = super().forward(input_ids).logits
+                logits = torch.full(
+                    (*input_ids.shape, 20), -5.0,
+                    device=input_ids.device,
+                )
+                logits[..., :16] = base
+                logits[:, -1, 19] = 1e6  # forbidden, no tokenizer ID
+                return SimpleNamespace(logits=logits)
+
+        padded = PaddedModel().eval()
+        answer, finish, _prompt, count = generate(
+            self.tokenizer, padded, self.messages, 4
+        )
+        self.assertEqual((answer, finish, count), ("5", "stop", 1))
+
     def test_completion_uses_raw_text_tokenizer(self):
         result = generate(
             self.tokenizer, self.model, self.messages, 1, "completion"
