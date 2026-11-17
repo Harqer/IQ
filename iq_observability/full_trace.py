@@ -63,6 +63,21 @@ class IQTrace:
     def event(self, name: str, **attributes):
         record = {"event": name, "run_id": self.run_id, "ts_ns": time.time_ns()}
         record.update(attributes)
+        if self._tracer is not None:
+            # Correlate the durable JSONL trace with its exported OTLP span.
+            from opentelemetry import trace
+            span = trace.get_current_span()
+            if span.is_recording():
+                context = span.get_span_context()
+                record["trace_id"] = format(context.trace_id, "032x")
+                record["span_id"] = format(context.span_id, "016x")
+                exported = {}
+                for key, value in attributes.items():
+                    if isinstance(value, (str, int, float, bool)):
+                        exported["iq." + key] = value[:256] if isinstance(value, str) else value
+                    elif value is not None:
+                        exported["iq." + key] = json.dumps(value, default=str)[:256]
+                span.add_event(name, attributes=exported)
         encoded = json.dumps(record, default=str, separators=(",", ":"), sort_keys=True)
         self._out.write(encoded + "\n")
         print("IQ_TRACE " + encoded, file=sys.stderr, flush=True)
@@ -164,6 +179,9 @@ class IQTrace:
                     torch.cuda.synchronize()
                 elapsed = round((time.perf_counter_ns() - self._started.get(label, time.perf_counter_ns())) / 1e6, 3)
                 if result is None:
+                    if self._tracer is not None:
+                        from opentelemetry.trace import Status, StatusCode, get_current_span
+                        get_current_span().set_status(Status(StatusCode.ERROR, "module forward failed"))
                     self.event("module.failed", module=label, elapsed_ms=elapsed, **self._memory())
                     return
                 tensor = result if isinstance(result, torch.Tensor) else getattr(result, "hidden_states", None)
@@ -193,6 +211,13 @@ class IQTrace:
                     raise FloatingPointError(f"{label}: NaN/Inf detected")
                 if kind:
                     self._completed[kind] += 1
+            except BaseException as exc:
+                if self._tracer is not None:
+                    from opentelemetry.trace import Status, StatusCode, get_current_span
+                    span = get_current_span()
+                    span.record_exception(exc)
+                    span.set_status(Status(StatusCode.ERROR, str(exc)[:200]))
+                raise
             finally:
                 cm = self._contexts.pop(label, None)
                 if cm:
