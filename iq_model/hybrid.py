@@ -593,18 +593,29 @@ class Mamba3ResidualLayer(nn.Module):
         mamba_layer_idx: int,
         dtype: torch.dtype,
         device: torch.device | str,
+        test_only_cpu_reference: bool = False,
     ) -> None:
         super().__init__()
         self.norm = RMSNorm(
             model_config.hidden_size,
             model_config.rms_norm_eps,
         ).to(device=device, dtype=dtype)
-        self.mamba = Mamba3MIMOState(
-            mamba_config,
-            layer_idx=mamba_layer_idx,
-            dtype=dtype,
-            device=device,
-        )
+        if test_only_cpu_reference:
+            # Only the Mamba mixer is CPU-referenced. CSA/HCA, Stable
+            # LatentMoE, AttnRes, and the IQ hybrid forward stay unchanged.
+            from .state.mamba3_mimo_cpu_reference import Mamba3MIMOCPUReferenceState
+
+            self.mamba = Mamba3MIMOCPUReferenceState(
+                mamba_config,
+                layer_idx=mamba_layer_idx,
+            ).to(device=device, dtype=dtype)
+        else:
+            self.mamba = Mamba3MIMOState(
+                mamba_config,
+                layer_idx=mamba_layer_idx,
+                dtype=dtype,
+                device=device,
+            )
         self.residual_dropout = nn.Dropout(model_config.residual_dropout)
 
     def forward(
@@ -713,12 +724,25 @@ class IQHybridForCausalLM(nn.Module):
         *,
         dtype: torch.dtype = torch.bfloat16,
         device: torch.device | str = "cuda",
+        test_only_cpu_reference: bool = False,
     ) -> None:
         super().__init__()
         self.config = config
         self.model_config = config.model
         device_obj = torch.device(device)
-        if device_obj.type != "cuda":
+        if test_only_cpu_reference:
+            cpu_reference = device_obj.type == "cpu" and dtype in (
+                torch.float32, torch.float64
+            )
+            meta_streaming = device_obj.type == "meta" and dtype in (
+                torch.float16, torch.bfloat16, torch.float32
+            )
+            if not (cpu_reference or meta_streaming):
+                raise HybridModelError(
+                    "test_only_cpu_reference requires CPU float32/float64 or "
+                    "explicit meta streaming initialization for the Torch MIMO oracle"
+                )
+        elif device_obj.type != "cuda":
             raise HybridModelError(
                 "IQHybridForCausalLM requires the production CUDA Mamba-3 MIMO runtime"
             )
@@ -739,6 +763,7 @@ class IQHybridForCausalLM(nn.Module):
                     mamba_layer_idx=mamba_layer_idx,
                     dtype=dtype,
                     device=device_obj,
+                    test_only_cpu_reference=test_only_cpu_reference,
                 )
                 mamba_layer_idx += 1
             elif layer_type is HybridLayerType.MOE:
