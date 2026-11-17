@@ -17,6 +17,7 @@ import torch
 from transformers import AutoTokenizer
 
 from iq_transfer import load_complete_iq_checkpoint
+from iq_observability.full_trace import IQTrace
 
 MAX_PROMPT_TOKENS = 2048
 MAX_NEW_TOKENS = 64
@@ -45,16 +46,29 @@ def build_model():
         f"shards={evidence.shard_count} weights={evidence.weight_count}",
         flush=True,
     )
-    model = load_complete_iq_checkpoint(
-        root, device=torch.device("cuda:0"), dtype=torch.bfloat16
-    ).eval()
+    if os.getenv("IQ_FULL_TRACE", "0") == "1":
+        trace = IQTrace(os.getenv("IQ_TRACE_DIR", "/tmp/iq-traces"))
+        try:
+            trace.event("checkpoint.metadata", shards=evidence.shard_count,
+                        weight_tensors=evidence.weight_count,
+                        calibration_mode=evidence.manifest.get("calibration_mode") if evidence.manifest else "unknown")
+            with trace.stage("checkpoint.weight_load"):
+                model = load_complete_iq_checkpoint(
+                    root, device=torch.device("cuda:0"), dtype=torch.bfloat16, telemetry=trace
+                ).eval()
+        finally:
+            trace.close()
+    else:
+        model = load_complete_iq_checkpoint(
+            root, device=torch.device("cuda:0"), dtype=torch.bfloat16
+        ).eval()
     print("IQ: checkpoint loaded; chat endpoint ready", flush=True)
     return tokenizer, model
 
 
-def generate(
+def _generate_impl(
     tokenizer, model, messages: list[dict], max_new_tokens: int,
-    prompt_format: str = "chat",
+    prompt_format: str = "chat", recorder: IQTrace | None = None,
 ) -> tuple[str, str, int, int]:
     if prompt_format == "completion":
         if len(messages) != 1 or messages[0]["role"] != "user":
@@ -113,6 +127,8 @@ def generate(
         stop_ids.add(eot_id)
     with torch.inference_mode():
         for _ in range(max_new_tokens):
+            if recorder is not None:
+                recorder.round_start()
             if diagnostics and not generated:
                 traced: list[tuple[int, torch.Tensor]] = []
                 handles = []
@@ -136,6 +152,14 @@ def generate(
                         handle.remove()
             else:
                 result = model(input_ids)
+            if recorder is not None:
+                recorder.assert_complete()
+                recorder.event(
+                    "inference.forward", token_index=len(generated),
+                    prompt_prefix_tokens=int(input_ids.shape[1]),
+                    moe_outputs=len(result.expert_counts),
+                    reasoning_steps=result.reasoning_steps_executed,
+                )
             logits = result.logits[:, -1, :].float()
             if logits.ndim != 2 or logits.shape[0] != 1:
                 raise RuntimeError("unexpected IQ causal LM logit shape")
@@ -189,6 +213,15 @@ def generate(
                         .float().square().mean().sqrt().item()
                     )
                 print(json.dumps(report, ensure_ascii=False), flush=True)
+            if recorder is not None:
+                probabilities = torch.softmax(logits[0], dim=-1)
+                top_values, top_ids = probabilities.topk(5)
+                recorder.event(
+                    "inference.logits", token_index=len(generated),
+                    minimum=float(logits.min().item()), maximum=float(logits.max().item()),
+                    entropy=float(-(probabilities * probabilities.clamp_min(1e-30).log()).sum().item()),
+                    top_token_ids=top_ids.tolist(), top_probabilities=top_values.tolist(),
+                )
             next_token = logits.argmax(dim=-1, keepdim=True)
             token_id = int(next_token[0, 0].item())
             generated.append(token_id)
@@ -197,6 +230,21 @@ def generate(
                 finish_reason = "stop"
                 break
     return (tokenizer.decode(generated, skip_special_tokens=True), finish_reason, prompt_tokens, len(generated))
+
+
+def generate(
+    tokenizer, model, messages: list[dict], max_new_tokens: int,
+    prompt_format: str = "chat", request_id: str | None = None,
+) -> tuple[str, str, int, int]:
+    if os.getenv("IQ_FULL_TRACE", "0") != "1":
+        return _generate_impl(tokenizer, model, messages, max_new_tokens, prompt_format)
+    trace = IQTrace(os.getenv("IQ_TRACE_DIR", "/tmp/iq-traces"))
+    try:
+        trace.attach(model)
+        with trace.stage("inference.complete_request", request_id=request_id or trace.run_id):
+            return _generate_impl(tokenizer, model, messages, max_new_tokens, prompt_format, trace)
+    finally:
+        trace.close()
 
 
 def create_handler(tokenizer, model):
@@ -250,9 +298,14 @@ def create_handler(tokenizer, model):
                 prompt_format = data.get("prompt_format", "chat")
                 if compatible and prompt_format != "chat":
                     raise ValueError("prompt_format applies only to legacy /chat")
+                request_id = self.headers.get("X-Baseten-Request-Id") or None
                 response, finish_reason, prompt_tokens, completion_tokens = generate(
-                    tokenizer, model, messages, tokens, prompt_format
+                    tokenizer, model, messages, tokens, prompt_format, request_id=request_id
                 )
+                if request_id:
+                    print(json.dumps({"event": "iq.response", "request_id": request_id,
+                                      "prompt_tokens": prompt_tokens,
+                                      "completion_tokens": completion_tokens}), flush=True)
             except (ValueError, KeyError, TypeError) as exc:
                 self.respond(400, {"error": str(exc)})
                 return
