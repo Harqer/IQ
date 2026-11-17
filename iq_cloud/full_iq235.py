@@ -80,12 +80,20 @@ def physical_layer_placement(config, *, gpu_count=GPU_COUNT):
 
 
 def tokenizer_contract(tokenizer):
-    from iq_model.glm_mamba3_student import tokenizer_mapping_hash
     if len(tokenizer) != EXPECTED_VOCAB:
         raise FullIQ235Error("expected full GLM tokenizer ID space of 154880")
     if tokenizer.eos_token_id != 154820:
         raise FullIQ235Error("unexpected pinned GLM tokenizer EOS")
-    return tokenizer_mapping_hash(tokenizer)
+    vocab = tokenizer.get_vocab()
+    if (not isinstance(vocab, dict) or len(vocab) != EXPECTED_VOCAB
+            or len(set(vocab.values())) != EXPECTED_VOCAB):
+        raise FullIQ235Error("invalid GLM token-to-ID mapping")
+    if any(type(key) is not str or type(value) is not int
+           for key, value in vocab.items()):
+        raise FullIQ235Error("invalid tokenizer entries")
+    blob = json.dumps(vocab, sort_keys=True, ensure_ascii=False,
+                      separators=(",", ":")).encode("utf-8")
+    return sha256(blob).hexdigest()
 
 
 def model_schema_sha(model):
@@ -110,11 +118,17 @@ def load_phase_a():
     config_data = read_architecture_contract()
     if not torch.cuda.is_available() or torch.cuda.device_count() != GPU_COUNT:
         raise FullIQ235Error("eight Baseten CUDA GPUs required; no CPU fallback")
+    if (torch.__version__.split("+", 1)[0] != "2.10.0"
+            or torch.version.cuda != "12.8"):
+        raise FullIQ235Error("pinned CUDA PyTorch 2.10.0/12.8 environment required")
     for i in range(GPU_COUNT):
+        if "H200" not in torch.cuda.get_device_name(i):
+            raise FullIQ235Error(f"GPU {i} is not H200")
         if torch.cuda.get_device_capability(i) != (9, 0):
-            raise FullIQ235Error("all GPU devices must be H200/Hopper SM90")
-        if not torch.cuda.is_bf16_supported():
-            raise FullIQ235Error("native BF16 is required")
+            raise FullIQ235Error(f"GPU {i} is not Hopper SM90")
+        with torch.cuda.device(i):
+            if not torch.cuda.is_bf16_supported():
+                raise FullIQ235Error(f"GPU {i} has no native BF16")
     from scripts.patch_iq_native_mimo_tail import check_installed_kernel_guard
     check_installed_kernel_guard()
     from transformers import AutoTokenizer
