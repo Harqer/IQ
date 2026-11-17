@@ -48,7 +48,7 @@ def run(args):
             recorder.event("tokenizer.verified", count=len(tokenizer), lexical_source=lexical)
         with recorder.stage("checkpoint.weight_load"):
             model = load_complete_iq_checkpoint(
-                args.checkpoint, device=torch.device("cuda:0"), dtype=torch.bfloat16
+                args.checkpoint, device=torch.device("cuda:0"), dtype=torch.bfloat16, telemetry=recorder
             ).eval()
         recorder.attach(model)
         recorder.event("checkpoint.loaded", physical_layers=len(model.layers),
