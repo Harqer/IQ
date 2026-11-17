@@ -125,6 +125,11 @@ class IQTrace:
                 nested = getattr(layer, component, None)
                 if nested is not None:
                     named.append((f"kernel.{idx:02d}.{kind}.{component}", nested, None))
+        attnres = getattr(model, "attnres", None)
+        if attnres is not None:
+            for idx, mixer in enumerate(attnres.mixers):
+                named.append((f"attnres.mixer.{idx:02d}", mixer, None))
+            named.append(("attnres.output_mixer", attnres.output_mixer, None))
         for label, module, kind in named:
             self._handles.append(module.register_forward_pre_hook(self._before(label)))
             self._handles.append(module.register_forward_hook(
