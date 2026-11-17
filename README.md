@@ -17,30 +17,9 @@
 > **No cloud GPU has been started.** The checked-in Phase A path requires
 > CPU preflight and Baseten dry-run acceptance before a billable push.
 
-> **Current execution order:** first verify architecture with no donor weights;
-> next inject pretrained tensors into the verified topology; only then deploy
-> the complete artifact on Baseten with OpenTelemetry. Local CUDA is irrelevant
-> to this sequence. The 15 passing student tests cover contracts, not an entire
-> end-to-end model-forward validation. See
-> [architecture decision](docs/IQ_ARCHITECTURE_DECISION.md).
->
-> **Architecture status — 2026-11-17:** The primary **experimental**
-> inference/student lane on this branch is **GLM-5.3 tokenizer + original GLM
-> lexical embeddings/LM head + two trainable adapters + the complete 24-block
-> pretrained Mamba-3 MIMO backbone**. It is **not** the 235-layer full256
-> checkpoint, and its adapter/teacher transfer has **not** established coherent
-> GLM behavior. See [Architecture decision](docs/IQ_ARCHITECTURE_DECISION.md)
-> and [GLM-native Mamba student](docs/GLM53_NATIVE_MAMBA3_STUDENT.md).
->
-> The original hybrid architecture, legacy GPT-OSS/Phi transfer paths, and
-> `mocha`/full256 inference instructions documented below remain **historical
-> or separate experimental lanes**, not instructions for the active GLM student.
-> Do not mix the 128,256-ID Mamba/Llama vocabulary checkpoint with the
-> 154,880-ID GLM student.
->
-> **CPU-only status:** `python -m scripts.iq_glm53_mamba3 --preflight`
-> **CPU-only import regression:** `python -m unittest discover -s tests -p 'test_lazy_public_api.py' -v`
-
+> The earlier 24-layer student documentation is historical on this branch;
+> full-model deployment instructions are in
+> [docs/BASETEN_FULL_IQ235_GLM53.md](docs/BASETEN_FULL_IQ235_GLM53.md).
 
 IQ is an experimental language-model architecture for complex coding, long-context retrieval, and adaptive multi-step reasoning.
 
