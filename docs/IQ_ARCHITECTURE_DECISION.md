@@ -53,6 +53,31 @@ reasoning or MoE capability until measured distillation is completed.
 See `docs/GLM53_NATIVE_MAMBA3_STUDENT.md` for code and lexical-only shard
 staging, and `docs/MAMBA3_PRETRAINED_RUNTIME.md` for native kernel limitations.
 
+## Required implementation sequence (architecture first, weight injection second)
+
+**Stage A — clean architecture, no donor weights.** Verify the selected IQ
+layer graph, Mamba-3 MIMO rank/state geometry, GLM vocabulary boundaries,
+adapter projection dimensions, parameter naming, causal/forward contracts,
+and structural correctness with CPU/meta/synthetic tensors. No donor weight
+download, GPU or Baseten deployment. The 15 passing unit tests are only
+partial contract coverage; they do not certify a complete forward pass.
+
+**Stage B — explicit weight injection.** Only after Stage A passes: inject the
+pinned GLM-5.3 lexical tensors and pretrained native Mamba-3 tensors into
+the validated student topology. Do not silently load legacy full256 weights
+or reinterpret 128,256-ID embeddings as GLM 154,880-ID embeddings. Validate
+every destination tensor's name, shape, dtype, semantic source, and hash.
+
+**Stage C — Baseten cloud inference.** Package and start the exact Stage B
+artifact on a compatible Baseten GPU, verify all tensors are present, trace
+startup/forward/errors with OpenTelemetry, and submit interactive prompts.
+No local NVIDIA GPU is needed; deployment requires explicit billing approval.
+
+**Scope rule:** Architecture tests must not be reframed as training,
+distillation, or downstream capability assessment. Such work is not a
+prerequisite for stages A–C. Keep the 24-layer student and legacy 235-layer
+hybrid separate and do not treat validation of one as validation of the other.
+
 ## Active code ownership
 
 - `iq_model/glm_mamba3_student.py` — GLM tokenizer geometry, lexical weight
