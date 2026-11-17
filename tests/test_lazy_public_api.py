@@ -57,6 +57,13 @@ print("LAZY_IMPORTS_OK")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("LAZY_IMPORTS_OK", result.stdout)
 
+    def test_scripts_resolves_to_this_repository(self):
+        import scripts
+        self.assertEqual(
+            Path(scripts.__file__).resolve(),
+            (ROOT / "scripts" / "__init__.py").resolve(),
+        )
+
     def test_student_lane_never_imports_legacy_checkpoint_loader(self):
         for relative in (
             "iq_model/glm_mamba3_student.py",
