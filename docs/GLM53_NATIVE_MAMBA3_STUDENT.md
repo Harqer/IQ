@@ -37,8 +37,10 @@ The native upstream Mamba-3 CUDA package and kernel tail guard are covered in [t
 python -m scripts.iq_glm53_mamba3 --glm-root "$GLM_DIR" --preflight
 python -m scripts.iq_glm53_mamba3 \
   --glm-root "$GLM_DIR" \
-  --glm-tokenizer-sha256 "$PINNED_GLM_TOKENIZER_MAP_SHA256" \
   --prompt "def square(x): return x * x" --max-new-tokens 16
+
+# To enforce an independently saved source mapping fingerprint, add:
+# --glm-tokenizer-sha256 "$PINNED_GLM_TOKENIZER_MAP_SHA256"
 ~~~
 
 The tokenizer mapping SHA-256 is optional for initial exploration, but when provided it must be independently established from the pinned GLM source. A hash computed from arbitrary unverified local files does not independently authenticate them. Teacher-logit training requires a pinned fingerprint.
