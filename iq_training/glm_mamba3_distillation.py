@@ -64,6 +64,55 @@ class DistillSettings:
             raise ValueError("at least one supervision term must be nonzero")
 
 
+
+@torch.inference_mode()
+def record_glm_teacher_last_token_logits(
+    teacher_model: nn.Module,
+    input_ids: Tensor,
+    *,
+    teacher_revision: str,
+    tokenizer_mapping_sha256: str,
+    expected_vocab: int = 154880,
+) -> GLMLogitBatch:
+    """Capture *real* official GLM teacher logits for the same GLM IDs.
+
+    Teacher execution is caller-owned. The output is not a fabricated target
+    distribution; it comes from the supplied GLM causal-LM forward.
+    """
+    if len(teacher_revision) != 40 or any(
+        c not in "0123456789abcdef" for c in teacher_revision.lower()
+    ):
+        raise MambaGLMDistillationError("pin the GLM teacher source revision")
+    if len(tokenizer_mapping_sha256) != 64 or any(
+        c not in "0123456789abcdef" for c in tokenizer_mapping_sha256.lower()
+    ):
+        raise MambaGLMDistillationError("pin the GLM tokenizer mapping fingerprint")
+    config = getattr(teacher_model, "config", None)
+    if (getattr(config, "model_type", None) != "glm_moe_dsa"
+            or getattr(config, "vocab_size", None) != expected_vocab):
+        raise MambaGLMDistillationError("teacher is not GLM-5.3 causal LM")
+    identity = token_batch_fingerprint(input_ids)
+    if (bool((input_ids < 0).any())
+            or bool((input_ids >= expected_vocab).any())):
+        raise MambaGLMDistillationError("teacher input IDs outside GLM vocabulary")
+    teacher_model.eval()
+    outputs = teacher_model(
+        input_ids=input_ids, use_cache=False, logits_to_keep=1
+    )
+    logits = getattr(outputs, "logits", None)
+    if (not isinstance(logits, Tensor) or logits.shape !=
+            (input_ids.shape[0], 1, expected_vocab)):
+        raise MambaGLMDistillationError("GLM teacher did not return expected final-token logits")
+    if not bool(torch.isfinite(logits).all()):
+        raise MambaGLMDistillationError("non-finite GLM teacher logits")
+    return GLMLogitBatch(
+        logits=logits[:, -1].detach(),
+        input_ids_sha256=identity,
+        tokenizer_mapping_sha256=tokenizer_mapping_sha256.lower(),
+        teacher_revision=teacher_revision.lower(),
+    )
+
+
 def student_trainable_parameters(model: GLMMamba3Student) -> tuple[nn.Parameter, ...]:
     return tuple(p for p in model.parameters() if p.requires_grad)
 
