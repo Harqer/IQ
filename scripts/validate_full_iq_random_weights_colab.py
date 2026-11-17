@@ -204,7 +204,11 @@ def run_geometry(*, tokens: int = 4, compression_probe: bool = True) -> dict:
             materialize(own, gpu)
         def after(own, _args, result):
             torch.cuda.synchronize(gpu)
-            value = result.hidden_states if hasattr(result, "hidden_states") else result
+            value = getattr(result, "hidden_states", None)
+            if value is None:
+                value = getattr(result, "state", None)
+            if value is None:
+                value = result
             if not isinstance(value, torch.Tensor) or not tensor_is_finite(value):
                 raise FloatingPointError(f"{label} returned non-finite/invalid output")
             if index is not None:
@@ -276,6 +280,7 @@ def run_geometry(*, tokens: int = 4, compression_probe: bool = True) -> dict:
                     (HybridLayerType.HCA, cfg.compressed_context.hca_compress_rate + 1),
                 ):
                     probe = None
+                    x = y = None
                     label = kind.value
                     try:
                         with torch.device("meta"):
