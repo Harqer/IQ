@@ -4,6 +4,8 @@ import copy
 from pathlib import Path
 import unittest
 
+from scripts.stage_iq235_baseten import PACKAGE_NAMES, selected_sources
+
 from iq_cloud.full_iq235 import (
     EXPECTED_TYPES, EXPECTED_VOCAB, FullIQ235Error, GPU_COUNT,
     physical_layer_placement, read_architecture_contract,
@@ -36,6 +38,24 @@ class FullIQ235StructuralTests(unittest.TestCase):
     def test_non_eight_gpu_topology_fails(self):
         with self.assertRaisesRegex(FullIQ235Error, "exactly eight"):
             physical_layer_placement(self.config, gpu_count=1)
+
+    def test_baseten_archive_keeps_distinct_python_packages(self):
+        sources = selected_sources()
+        self.assertGreater(len(sources), 15)
+        paths = [Path("packages") / relative for relative in sources]
+        self.assertEqual(len(paths), len(set(paths)))
+        self.assertEqual(
+            {relative.parts[0] for relative in sources},
+            set(PACKAGE_NAMES),
+        )
+        for name in PACKAGE_NAMES:
+            self.assertIn(Path("packages") / name / "__init__.py", paths)
+        config_path = (Path(__file__).resolve().parents[1]
+                       / "deploy" / "baseten_full_iq" / "config.yaml")
+        config_text = config_path.read_text(encoding="utf-8")
+        self.assertIn("  - ../_iq235_baseten_packages", config_text)
+        self.assertNotIn("  - ../../iq_cloud", config_text)
+        self.assertNotIn("  - ../../iq_model", config_text)
 
     def test_student_model_is_not_referenced_by_full_deployment(self):
         model_path = (Path(__file__).resolve().parents[1]
