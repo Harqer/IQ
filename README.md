@@ -1,5 +1,23 @@
 # IQ — Hybrid Reasoning LLM
 
+> **Architecture status — 2026-11-17:** The primary **experimental**
+> inference/student lane on this branch is **GLM-5.3 tokenizer + original GLM
+> lexical embeddings/LM head + two trainable adapters + the complete 24-block
+> pretrained Mamba-3 MIMO backbone**. It is **not** the 235-layer full256
+> checkpoint, and its adapter/teacher transfer has **not** established coherent
+> GLM behavior. See [Architecture decision](docs/IQ_ARCHITECTURE_DECISION.md)
+> and [GLM-native Mamba student](docs/GLM53_NATIVE_MAMBA3_STUDENT.md).
+>
+> The original hybrid architecture, legacy GPT-OSS/Phi transfer paths, and
+> `mocha`/full256 inference instructions documented below remain **historical
+> or separate experimental lanes**, not instructions for the active GLM student.
+> Do not mix the 128,256-ID Mamba/Llama vocabulary checkpoint with the
+> 154,880-ID GLM student.
+>
+> **CPU-only status:** `python -m scripts.iq_glm53_mamba3 --preflight`
+> **CPU-only import regression:** `python -m unittest -v tests.test_lazy_public_api`
+
+
 IQ is an experimental language-model architecture for complex coding, long-context retrieval, and adaptive multi-step reasoning.
 
 The production target is **not** the original Neutrino/Ising mock architecture. IQ v2 uses Mamba-3 MIMO as the dominant token-time sequence/state mixer, DeepSeek V4-family CSA/HCA for long-context addressing, Stable LatentMoE for routed expert computation, and Block AttnRes as the canonical cross-depth residual mechanism. mHC is retained only as an ablation/reference. Reasoning-time recurrence, the EBM critic, and adaptive halting are separate from the physical backbone schedule.
