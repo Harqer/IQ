@@ -1,5 +1,11 @@
 # IQ architecture decision — 17 November 2026
 
+> **Historical 24-layer student design (not this branch's deployment target).**
+> The active full 235-layer Baseten path is documented in
+> [BASETEN_FULL_IQ235_GLM53.md](BASETEN_FULL_IQ235_GLM53.md). Never use
+> the 24-layer student Truss in place of the full IQ architecture test.
+
+
 ## Active experiment: GLM-5.3 lexical + native Mamba-3 MIMO
 
 The **primary experimental student** uses GLM-5.3's official tokenizer, frozen
