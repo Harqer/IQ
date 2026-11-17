@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Bind the official GLM-5.3 tokenizer to the EXISTING IQ hybrid configuration.
+"""Validate GLM-5.3 tokenization without model weights or required local paths.
 
-Loads tokenizer/config metadata only. Does not modify an IQ network, weights,
-Mamba recurrence, or any inference engine.
+By default, Hugging Face supplies *only tokenizer artifacts and config.json*
+from the pinned official GLM release. --offline enforces cached/local files.
+Specify --iq-config only when checking or adapting an existing IQ hybrid JSON.
 """
 from __future__ import annotations
 
@@ -22,47 +23,91 @@ from iq_model.glm_tokenizer import (
 from iq_model.hybrid import IQHybridConfig
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--iq-config", type=Path, required=True,
-                        help="Existing IQHybridConfig JSON (the canonical hybrid schedule)")
-    parser.add_argument("--write-config", type=Path,
-                        help="Write a separate GLM-vocabulary IQ config without overwriting files")
-    parser.add_argument("--expected-mapping-sha256",
-                        help="Optional independently recorded full GLM token-to-ID SHA-256")
-    parser.add_argument("--prompt", default="The answer is",
-                        help="Example text to tokenize and validate against IQ vocabulary")
-    args = parser.parse_args()
+def parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--prompt", default="The answer is",
+                   help="Text to tokenize and check (no model forward pass)")
+    p.add_argument("--offline", action="store_true",
+                   help="Never contact Hugging Face; use cached or local tokenizer artifacts")
+    p.add_argument("--tokenizer-dir", type=Path,
+                   help="Existing local GLM tokenizer directory; no downloads or Hub requests")
+    p.add_argument("--iq-config", type=Path,
+                   help="Optional existing IQHybridConfig JSON to check/adapt")
+    p.add_argument("--write-config", type=Path,
+                   help="Write a new GLM-vocabulary IQ config; requires --iq-config")
+    p.add_argument("--expected-mapping-sha256",
+                   help="Optional independently pinned full tokenizer mapping fingerprint")
+    return p
 
-    config = IQHybridConfig.from_json(str(args.iq_config))
-    if args.write_config is not None:
-        if args.write_config.exists():
-            raise GLMTokenizerError(f"output IQ config already exists: {args.write_config}")
-        config = with_glm_tokenizer_config(config)
 
-    # Download only tokenizer metadata and tokenizer files at the pinned revision.
-    from huggingface_hub import hf_hub_download
+def load_tokenizer_artifacts(
+    *,
+    offline: bool,
+    tokenizer_dir: Path | None,
+):
+    """Request only tokenizer files and GLM metadata—never model weight shards."""
     from transformers import AutoTokenizer
 
-    config_path = hf_hub_download(
-        repo_id=GLM53_TOKENIZER_REPO, filename="config.json",
-        revision=GLM53_TOKENIZER_REVISION,
+    if tokenizer_dir is not None:
+        config_path = tokenizer_dir / "config.json"
+        if not config_path.is_file():
+            raise GLMTokenizerError(
+                f"local GLM tokenizer directory needs config.json: {tokenizer_dir}"
+            )
+        source = str(tokenizer_dir)
+        tokenizer = AutoTokenizer.from_pretrained(
+            source, trust_remote_code=False, local_files_only=True, use_fast=True,
+        )
+    else:
+        from huggingface_hub import hf_hub_download
+
+        config_path = Path(hf_hub_download(
+            repo_id=GLM53_TOKENIZER_REPO,
+            filename="config.json",
+            revision=GLM53_TOKENIZER_REVISION,
+            local_files_only=offline,
+        ))
+        tokenizer = AutoTokenizer.from_pretrained(
+            GLM53_TOKENIZER_REPO,
+            revision=GLM53_TOKENIZER_REVISION,
+            trust_remote_code=False,
+            local_files_only=offline,
+            use_fast=True,
+        )
+    return json.loads(config_path.read_text(encoding="utf-8")), tokenizer
+
+
+def main(argv: list[str] | None = None) -> int:
+    p = parser()
+    args = p.parse_args(argv)
+    if args.write_config is not None and args.iq_config is None:
+        p.error("--write-config requires --iq-config (a real existing IQ hybrid JSON)")
+    if args.write_config is not None and args.write_config.exists():
+        raise GLMTokenizerError(f"output IQ config already exists: {args.write_config}")
+    config = (
+        IQHybridConfig.from_json(str(args.iq_config))
+        if args.iq_config is not None else None
     )
-    source_config = json.loads(Path(config_path).read_text(encoding="utf-8"))
-    tokenizer = AutoTokenizer.from_pretrained(
-        GLM53_TOKENIZER_REPO,
-        revision=GLM53_TOKENIZER_REVISION,
-        trust_remote_code=False,
-        use_fast=True,
+    if config is not None and args.write_config is not None:
+        config = with_glm_tokenizer_config(config)
+
+    source_config, tokenizer = load_tokenizer_artifacts(
+        offline=args.offline, tokenizer_dir=args.tokenizer_dir,
     )
+    model_config = config.model if config is not None else None
     result = verify_glm_tokenizer_for_iq(
-        tokenizer, source_config, config.model,
+        tokenizer, source_config, model_config,
         expected_mapping_sha256=args.expected_mapping_sha256,
     )
-    input_ids = encode_glm_prompt(tokenizer, args.prompt, config.model)
-    result["prompt_token_ids"] = input_ids
-    result["iq_full_schedule_unchanged"] = True
+    result["prompt_token_ids"] = encode_glm_prompt(
+        tokenizer, args.prompt, model_config,
+    )
+    result["source_mode"] = (
+        "local" if args.tokenizer_dir is not None
+        else "offline_cache" if args.offline else "huggingface_tokenizer_only"
+    )
     result["glm_neural_weights_loaded"] = False
+    result["iq_architecture_modified"] = False
     if args.write_config is not None:
         args.write_config.parent.mkdir(parents=True, exist_ok=True)
         config.write_json(str(args.write_config))
