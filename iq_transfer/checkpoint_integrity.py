@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -168,6 +169,9 @@ def verify_iq_checkpoint_integrity(
     complete = _json(_regular(root, "COMPLETE.json").read_bytes(), "COMPLETE.json")
     if complete.get("index_sha256") != index_hash:
         raise IQIntegrityError("COMPLETE.json index SHA-256 mismatch")
+    pinned_index = os.getenv("IQ_EXPECTED_INDEX_SHA256")
+    if pinned_index and pinned_index != index_hash:
+        raise IQIntegrityError("checkpoint index differs from independently pinned SHA-256")
     weight_map = index.get("weight_map")
     if not isinstance(weight_map, dict) or not weight_map or any(
         not isinstance(k, str) or not k or not isinstance(v, str)
@@ -179,6 +183,9 @@ def verify_iq_checkpoint_integrity(
         by_shard.setdefault(shard, set()).add(tensor)
     expected_shards = set(by_shard)
     checksums = _manifest(root)
+    pinned_manifest = os.getenv("IQ_EXPECTED_SHA256SUMS_SHA256")
+    if pinned_manifest and pinned_manifest != _checksum_file(_regular(root, "SHA256SUMS")):
+        raise IQIntegrityError("checkpoint SHA256SUMS differs from independently pinned SHA-256")
     if set(checksums) != expected_shards:
         raise IQIntegrityError(
             f"SHA256SUMS/index mismatch: missing={len(expected_shards - set(checksums))}, "
