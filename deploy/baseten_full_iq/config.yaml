@@ -50,6 +50,7 @@ environment_variables:
   IQ_PHASE: architecture_only
 runtime:
   predict_concurrency: 1
+  enable_tracing_data: true
 model_metadata:
   example_model_input:
     prompt: "1 2 3"
