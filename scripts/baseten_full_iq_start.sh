@@ -10,6 +10,7 @@ export IQ_CHECKPOINT_DIR="${IQ_CHECKPOINT_DIR:-/checkpoints}"
 export IQ_TOKENIZER_DIR="${IQ_TOKENIZER_DIR:-/tokenizer}"
 export IQ_TRACE_DIR="${IQ_TRACE_DIR:-/tmp/iq-traces}"
 export IQ_FULL_TRACE=1
+export IQ_REQUIRE_CHECKPOINT_SHA256=1
 export IQ_TRACE_SYNC="${IQ_TRACE_SYNC:-1}"
 export PORT="${PORT:-8000}"
 export PYTHONPATH="$repo_root${PYTHONPATH:+:$PYTHONPATH}"
