@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import math
+import os
+import time
 import shutil
 import tempfile
 from collections.abc import Mapping
@@ -1005,6 +1007,7 @@ def load_complete_iq_checkpoint(
     *,
     device: torch.device | str = "cuda",
     dtype: torch.dtype = torch.bfloat16,
+    telemetry=None,
 ) -> IQHybridForCausalLM:
     """Load a compiled complete IQ checkpoint with strict tensor coverage.
 
@@ -1022,6 +1025,25 @@ def load_complete_iq_checkpoint(
     except (CheckpointPreflightError, OSError) as exc:
         raise CompleteTransplantError(f"checkpoint preflight failed: {exc}") from exc
     root = evidence.root
+    # Validate the complete published artifact before allocating any CUDA weights.
+    # Synthetic/minimal development checkpoints without publication manifests
+    # keep the existing loader contract; Baseten demands the signed manifest gate.
+    published_files = ((root / "SHA256SUMS").exists(), (root / "COMPLETE.json").exists())
+    strict = os.getenv("IQ_REQUIRE_CHECKPOINT_SHA256", "0") == "1"
+    if strict or any(published_files):
+        from .checkpoint_integrity import IQIntegrityError, verify_iq_checkpoint_integrity
+        try:
+            verified = verify_iq_checkpoint_integrity(root, telemetry=telemetry)
+        except (IQIntegrityError, OSError) as exc:
+            raise CompleteTransplantError(f"full checkpoint SHA-256 integrity failed: {exc}") from exc
+        if telemetry is not None:
+            telemetry.event(
+                "checkpoint.integrity.accepted",
+                verified_shards=verified.verified_sha256_count,
+                tensors=verified.tensor_count,
+                checked_bytes=verified.shard_bytes,
+                index_sha256=verified.index_sha256,
+            )
     config = IQHybridConfig.from_json(str(root / "iq_config.json"))
     if evidence.manifest is not None:
         expected_fingerprint = evidence.manifest.get("recipient_config_fingerprint")
@@ -1064,6 +1086,9 @@ def load_complete_iq_checkpoint(
 
     with torch.no_grad():
         for filename, keys in sorted(by_file.items()):
+            if telemetry is not None:
+                telemetry.event("checkpoint.shard.start", shard=filename, tensors=len(keys))
+            shard_start = time.perf_counter()
             shard = load_file(str(root / filename), device="cpu")
             if set(shard) != set(keys):
                 raise CompleteTransplantError(
@@ -1076,6 +1101,17 @@ def load_complete_iq_checkpoint(
                         f"shape mismatch {key}: checkpoint={tuple(value.shape)} "
                         f"model={tuple(target.shape)}"
                     )
+                # Hash authenticity does not imply numerical validity. Validate
+                # every actual floating/complex tensor before GPU transfer.
+                if value.is_floating_point() or value.is_complex():
+                    if not bool(torch.isfinite(value).all().item()):
+                        raise CompleteTransplantError(
+                            f"non-finite checkpoint values in {filename}:{key}"
+                        )
                 target.copy_(value.to(device=target.device, dtype=target.dtype))
+            if telemetry is not None:
+                telemetry.event("checkpoint.shard.loaded", shard=filename, tensors=len(keys),
+                                elapsed_ms=round((time.perf_counter() - shard_start) * 1000, 3),
+                                cuda_allocated_bytes=(torch.cuda.memory_allocated() if torch.cuda.is_available() else 0))
     model.eval()
     return model
