@@ -1,14 +1,12 @@
 """CPU-only GLM-5.3 tokenizer compatibility tests for IQ's actual hybrid schedule."""
 from __future__ import annotations
 
-import json
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
 
-import torch
 from torch import nn
 
 from iq_model.architecture import HybridSchedule
