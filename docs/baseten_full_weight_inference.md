@@ -12,8 +12,9 @@ Use Baseten Dedicated Inference with the official Truss **custom Docker HTTP ser
 
 - Start with an image that includes CUDA/PyTorch 2.10 and CUDA 12.8 development headers (e.g. existing project target `pytorch/pytorch:2.10.0-cuda12.8-cudnn9-devel`) and an available compatible GPU with sufficient VRAM (H100 80 GB or better; subject to runtime verification).
 - Ensure the exact repository source from branch `feature/baseten-full-iq-otel-20261117` is present inside the image or container. Do not silently use the older `main` server/loader.
-- Import ALL 82 weight shards plus `iq_config.json`, `transplant_manifest.json`, `model.safetensors.index.json` from `hf://buckets/kofecheckmate/mocha` to a mounted **read-only** checkpoint directory. HF bucket URIs are **not equivalent** to normal HF model repository IDs; verify Baseten BDN ingestion/mount method before assuming `weights: hf://...` supports buckets.
+- Import ALL 82 weight shards plus `iq_config.json`, `transplant_manifest.json`, `model.safetensors.index.json`, **`SHA256SUMS` and `COMPLETE.json`** from `hf://buckets/kofecheckmate/mocha` to a mounted **read-only** checkpoint directory. HF bucket URIs are **not equivalent** to normal HF model repository IDs; verify Baseten BDN ingestion/mount method before assuming `weights: hf://...` supports buckets.
 - Mount tokenizer assets separately at `/tokenizer` with exact special IDs and vocab size 128,256 (see `checkpoint_preflight.py`). The cached checkpoint does not include tokenizer files at root.
+- Set `IQ_REQUIRE_CHECKPOINT_SHA256=1` (the Baseten starter and complete test runner enforce it). This gate checks *all bytes* via streaming SHA-256, each safetensors header, tensor name/shape/dtype/offset coverage, the index digest, and NaN/Inf weight tensors before GPU upload. The gate is CPU/file-I/O only and must execute on a mounted full checkpoint; remote metadata checks alone do not substitute for it.
 - Set `IQ_CHECKPOINT_DIR=/checkpoints`, `IQ_TOKENIZER_DIR=/tokenizer`, `IQ_TRACE_DIR=/tmp/iq-traces`, `IQ_FULL_TRACE=1`, and optionally `IQ_TRACE_SYNC=1`.
 - Start `bash scripts/baseten_full_iq_start.sh`. It refuses missing shards; calls pinned runtime setup, then serves `scripts/serve_iq_hf.py` with strict full checkpoint loading.
 - In the Truss custom server configuration, map server port 8000, predict endpoint `/chat`, readiness/liveness `/health`. For each inference request, log `X-Baseten-Request-Id` to correlate with traces.
@@ -39,5 +40,7 @@ bash scripts/hf_container_venv.sh python scripts/test_complete_iq_traced.py \
 ```
 
 The run must produce non-empty generated text, finite logits, 24 MoE layer outputs, and all 80 layer completion spans for **each token**. Report quality separately, including any repeated-subword/incorrect-answer canary results.
+
+**OTLP verification:** `python -m unittest tests.test_iq_otlp_export` sends a real protobuf span and event to a local loopback receiver without Baseten or a GPU. Configure `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=https://YOUR-COLLECTOR/v1/traces` for actual backend exports; without it, durable local JSONL remains available. The test does not prove a production collector is connected.
 
 **Billing guard:** obtain a live Baseten credit/balance estimate and confirm GPU availability before pushing/deploying; do not auto-create billed resources without approval.
