@@ -16,7 +16,7 @@ def test_preflight_exact_zero_and_summary_structure(tmp_path):
     work = tmp_path / "parity"
     summary = module.preflight(work_dir=work, seed_base=20261025)
     assert summary["mode"] == "preflight"
-    assert summary["tolerance"] == 1e-3
+    assert summary["tolerance"] == 0.0
     cases = summary["cases"]
     assert [case["name"] for case in cases] == ["prefill", "decode"]
     assert cases[0]["input_shape"] == [4, 64]
@@ -96,3 +96,24 @@ def test_execute_requires_h200(tmp_path, monkeypatch):
     monkeypatch.setattr(module, "_assert_h200", lambda: (_ for _ in ()).throw(SystemExit("no cuda")))
     with pytest.raises(SystemExit):
         module.execute(work_dir=tmp_path, seed_base=20261025)
+
+
+def test_preflight_verdict_requires_exact_zero_and_fails_loudly():
+    exact = [{"max_abs_diff": 0.0}, {"max_abs_diff": 0.0}]
+    assert module._verdict(exact, module.PREFLIGHT_TOLERANCE) == "pass"
+
+    perturbed = [{"max_abs_diff": 0.0}, {"max_abs_diff": 1e-4}]
+    assert module._verdict(perturbed, module.PREFLIGHT_TOLERANCE) == "fail"
+    assert module._verdict(perturbed, module.OUTPUT_TOLERANCE) == "pass"
+
+    failing_summary = {
+        "mode": "preflight",
+        "tolerance": module.PREFLIGHT_TOLERANCE,
+        "cases": [
+            {"name": "prefill", "verdict": "pass"},
+            {"name": "decode", "verdict": "fail"},
+        ],
+    }
+    assert module._exit_code(failing_summary) == 1
+    passing_summary = {"mode": "preflight", "tolerance": 0.0, "cases": [{"verdict": "pass"}]}
+    assert module._exit_code(passing_summary) == 0

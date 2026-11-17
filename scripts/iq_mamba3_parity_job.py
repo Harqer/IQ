@@ -16,8 +16,10 @@ layers {0, first mamba layer after an attention block}.
 
 Tolerance: bf16 inputs through fp32 math are expected to stay under 1e-3
 max_abs_diff for outputs and under 1e-3 for state tensors after 64 prefill
-steps. Exact-zero is only expected in preflight (CPU port vs itself); the
-printed table reports PASS/FAIL per tensor against this tolerance.
+steps. Preflight (CPU port vs itself) REQUIRES exact-zero: its verdicts are
+gated on max_abs_diff == 0 and any nonzero diff fails with a nonzero exit
+code. --execute allows max_abs_diff < 1e-3; the printed table reports
+PASS/FAIL per tensor against the mode's tolerance.
 """
 from __future__ import annotations
 
@@ -35,6 +37,7 @@ if str(REPO) not in sys.path:
 DEFAULT_CHECKPOINT_DIR = REPO / "checkpoints" / "iq"
 OUTPUT_TOLERANCE = 1e-3
 STATE_TOLERANCE = 1e-3
+PREFLIGHT_TOLERANCE = 0.0
 ATTENTION_TYPES = {"csa", "hca", "dense_attention"}
 PREFILL_BATCH, PREFILL_SEQ = 4, 64
 DECODE_BATCH, DECODE_PRIME_SEQ = 1, 8
@@ -125,6 +128,10 @@ def _verdict(comparisons: list[dict], tolerance: float) -> str:
     return "pass" if all(c["max_abs_diff"] <= tolerance for c in comparisons) else "fail"
 
 
+def _exit_code(summary: dict) -> int:
+    return 0 if all(case["verdict"] == "pass" for case in summary["cases"]) else 1
+
+
 def _case_payload(case: str, layer_idx: int, input_shape, input_tensor, output_tensor,
                   state, comparisons: list[dict]) -> dict:
     return {
@@ -213,24 +220,24 @@ def preflight(work_dir: Path, seed_base: int) -> dict:
             "layer": 0,
             "input_shape": [PREFILL_BATCH, PREFILL_SEQ],
             "comparisons": prefill_comparisons,
-            "verdict": _verdict(prefill_comparisons, OUTPUT_TOLERANCE),
+            "verdict": _verdict(prefill_comparisons, PREFLIGHT_TOLERANCE),
         },
         {
             "name": "decode",
             "layer": 0,
             "input_shape": [DECODE_BATCH, 1],
             "comparisons": decode_comparisons,
-            "verdict": _verdict(decode_comparisons, OUTPUT_TOLERANCE),
+            "verdict": _verdict(decode_comparisons, PREFLIGHT_TOLERANCE),
         },
     ]
     _write_case(work_dir, prefill_payload)
     _write_case(work_dir, decode_payload)
     summary = {
         "mode": "preflight",
-        "tolerance": OUTPUT_TOLERANCE,
+        "tolerance": PREFLIGHT_TOLERANCE,
         "cases": cases,
     }
-    _print_table("Mamba-3 preflight summary (CPU port vs itself)", cases, OUTPUT_TOLERANCE)
+    _print_table("Mamba-3 preflight summary (CPU port vs itself)", cases, PREFLIGHT_TOLERANCE)
     return summary
 
 
@@ -463,7 +470,7 @@ def main() -> int:
         )
     else:
         summary = preflight(work_dir=args.work_dir, seed_base=args.seed_base)
-    return 0 if all(case["verdict"] == "pass" for case in summary["cases"]) else 1
+    return _exit_code(summary)
 
 
 if __name__ == "__main__":
