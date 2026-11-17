@@ -713,6 +713,7 @@ class IQHybridForCausalLM(nn.Module):
         *,
         dtype: torch.dtype = torch.bfloat16,
         device: torch.device | str = "cuda",
+        layer_devices: tuple[torch.device | str, ...] | None = None,
     ) -> None:
         super().__init__()
         self.config = config
@@ -722,6 +723,17 @@ class IQHybridForCausalLM(nn.Module):
             raise HybridModelError(
                 "IQHybridForCausalLM requires the production CUDA Mamba-3 MIMO runtime"
             )
+        if layer_devices is None:
+            self.layer_devices = tuple(device_obj for _ in config.schedule.layers)
+        else:
+            if len(layer_devices) != len(config.schedule.layers):
+                raise HybridModelError("layer_devices must cover every physical IQ layer")
+            self.layer_devices = tuple(torch.device(value) for value in layer_devices)
+            if any(d.type != "cuda" for d in self.layer_devices):
+                raise HybridModelError("IQ multi-GPU layers must all use CUDA")
+            if any(d.index is None or d.index < 0 or d.index >= torch.cuda.device_count()
+                   for d in self.layer_devices):
+                raise HybridModelError("IQ layer placement refers to unavailable CUDA device")
 
         self.embed_tokens = nn.Embedding(
             config.model.vocab_size,
@@ -731,14 +743,15 @@ class IQHybridForCausalLM(nn.Module):
         )
         self.layers = nn.ModuleList()
         mamba_layer_idx = 0
-        for layer_type in config.schedule.layers:
+        for layer_index, layer_type in enumerate(config.schedule.layers):
+            layer_device = self.layer_devices[layer_index]
             if layer_type is HybridLayerType.MAMBA3:
                 layer = Mamba3ResidualLayer(
                     config.model,
                     config.mamba3,
                     mamba_layer_idx=mamba_layer_idx,
                     dtype=dtype,
-                    device=device_obj,
+                    device=layer_device,
                 )
                 mamba_layer_idx += 1
             elif layer_type is HybridLayerType.MOE:
@@ -748,24 +761,24 @@ class IQHybridForCausalLM(nn.Module):
                         config.stable_moe,
                         norm_eps=config.model.rms_norm_eps,
                         residual_dropout=config.model.residual_dropout,
-                    ).to(device=device_obj, dtype=dtype)
+                    ).to(device=layer_device, dtype=dtype)
                 else:
                     layer = RoutedSwiGLUMoELayer(
                         config.moe,
                         norm_eps=config.model.rms_norm_eps,
                         residual_dropout=config.model.residual_dropout,
-                    ).to(device=device_obj, dtype=dtype)
+                    ).to(device=layer_device, dtype=dtype)
             elif layer_type is HybridLayerType.DENSE_ATTENTION:
                 layer = DenseContextResidualLayer(
                     config.model,
-                ).to(device=device_obj, dtype=dtype)
+                ).to(device=layer_device, dtype=dtype)
             elif layer_type in {HybridLayerType.CSA, HybridLayerType.HCA}:
                 assert config.compressed_context is not None
                 layer = CompressedContextResidualLayer(
                     config.model,
                     config.compressed_context,
                     mode=layer_type,
-                ).to(device=device_obj, dtype=dtype)
+                ).to(device=layer_device, dtype=dtype)
             else:
                 raise HybridModelError(
                     f"unsupported hybrid layer type: {layer_type.value}"
@@ -992,14 +1005,23 @@ class IQHybridForCausalLM(nn.Module):
                 if self.attnres is not None and attnres_state is not None
                 else x
             )
+            # Keep cross-depth AttnRes state on the coordinator GPU. Individual
+            # physical layers run on their assigned CUDA devices; all bridges are
+            # explicit and differentiable for future training use.
+            layer_device = self.layer_devices[layer_index]
+            local_input = layer_input.to(layer_device, non_blocking=True)
+            local_mask = (attention_mask.to(layer_device, non_blocking=True)
+                          if attention_mask is not None else None)
+            local_docs = (document_ids.to(layer_device, non_blocking=True)
+                          if document_ids is not None else None)
             if layer_type is HybridLayerType.MAMBA3:
                 layer_output = layer(
-                    layer_input,
-                    attention_mask=attention_mask,
-                    document_ids=document_ids,
+                    local_input,
+                    attention_mask=local_mask,
+                    document_ids=local_docs,
                 )
             elif layer_type is HybridLayerType.MOE:
-                moe_output = layer(layer_input)
+                moe_output = layer(local_input)
                 layer_output = moe_output.hidden_states
                 moe_outputs.append(moe_output)
             elif layer_type in {
@@ -1008,16 +1030,21 @@ class IQHybridForCausalLM(nn.Module):
                 HybridLayerType.HCA,
             }:
                 layer_output = layer(
-                    layer_input,
-                    position_ids=position_ids,
-                    attention_mask=attention_mask,
-                    document_ids=document_ids,
+                    local_input,
+                    position_ids=(position_ids.to(layer_device, non_blocking=True)
+                                  if position_ids is not None else None),
+                    attention_mask=local_mask,
+                    document_ids=local_docs,
                 )
             else:
                 raise HybridModelError(
                     f"unsupported runtime layer type: {layer_type.value}"
                 )
 
+            # AttnRes/visual fusion run on the coordinator device; they must
+            # never silently consume tensors allocated on another GPU.
+            layer_output = layer_output.to(self.embed_tokens.weight.device,
+                                           non_blocking=True)
             if self.multimodal is not None:
                 layer_output, visual_memory = self.multimodal.fuse(
                     layer_index,
