@@ -13,15 +13,20 @@ from pathlib import Path
 import torch
 
 EXPECTED = {"mamba3": 32, "csa": 12, "hca": 12, "moe": 24}
+_OTEL_PROVIDER = None
+_OTEL_TRACER = None
 
 
 def _otel_tracer():
-    """OTLP export is opt-in. Local JSONL traces always remain available."""
+    """OTLP export is opt-in. Reuse the SDK provider across requests."""
+    global _OTEL_PROVIDER, _OTEL_TRACER
     if not (
         os.getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
         or os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
     ):
         return None, None
+    if _OTEL_TRACER is not None:
+        return _OTEL_TRACER, _OTEL_PROVIDER
     try:
         from opentelemetry import trace
         from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
@@ -33,7 +38,9 @@ def _otel_tracer():
     provider = TracerProvider(resource=Resource.create({"service.name": "iq-full-weight-inference"}))
     provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))
     trace.set_tracer_provider(provider)
-    return trace.get_tracer("iq.full_inference"), provider
+    _OTEL_PROVIDER = provider
+    _OTEL_TRACER = trace.get_tracer("iq.full_inference")
+    return _OTEL_TRACER, _OTEL_PROVIDER
 
 
 class IQTrace:
@@ -173,6 +180,7 @@ class IQTrace:
                         stats["expert_assignments"] = int(counts.sum().item())
                         stats["experts_active"] = int((counts > 0).sum().item())
                         stats["expert_count"] = int(counts.numel())
+                        stats["expert_assignment_distribution"] = counts.detach().to("cpu").tolist()
                         if int(counts.numel()) != 32:
                             raise RuntimeError("MoE expert count was not 32")
                 self.event("module.complete", **stats, **self._memory())
@@ -195,5 +203,4 @@ class IQTrace:
         self._contexts.clear()
         if self._provider:
             self._provider.force_flush(timeout_millis=3000)
-            self._provider.shutdown()
         self._out.close()
