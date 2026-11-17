@@ -22,7 +22,7 @@ from iq_model.glm_mamba3_student import (
 from iq_training.glm_mamba3_distillation import (
     DistillSettings, GLMLogitBatch, MambaGLMDistillationError,
     glm_to_mamba_distillation_step, student_trainable_parameters,
-    token_batch_fingerprint,
+    token_batch_fingerprint, record_glm_teacher_last_token_logits,
 )
 from scripts.iq_glm53_mamba3 import (
     GLM_EMBED_KEY, GLM_HEAD_KEY, lexical_shard_paths,
@@ -233,6 +233,34 @@ class GLMMamba3StudentTests(unittest.TestCase):
                 student, input_ids=ids, next_token_ids=torch.tensor([1]),
                 teacher=teacher, optimizer=optimizer,
                 settings=DistillSettings(TEACHER_REVISION, self.mapping_sha256))
+
+
+    def test_capture_real_teacher_forward_matches_input_ids(self):
+        class ToyGLM(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.config = SimpleNamespace(model_type="glm_moe_dsa", vocab_size=16)
+                self.embed = nn.Embedding(16, 8)
+                self.head = nn.Linear(8, 16)
+
+            def forward(self, *, input_ids, use_cache, logits_to_keep):
+                self.assert_call = (use_cache, logits_to_keep)
+                h = self.embed(input_ids)
+                return SimpleNamespace(logits=self.head(h[:, -1:]))
+
+        teacher_model = ToyGLM()
+        ids = torch.tensor([[1, 2, 3], [3, 4, 5]])
+        recorded = record_glm_teacher_last_token_logits(
+            teacher_model, ids, teacher_revision=TEACHER_REVISION,
+            tokenizer_mapping_sha256=self.mapping_sha256, expected_vocab=16)
+        self.assertEqual(tuple(recorded.logits.shape), (2, 16))
+        self.assertFalse(recorded.logits.requires_grad)
+        self.assertEqual(recorded.input_ids_sha256, token_batch_fingerprint(ids))
+        self.assertEqual(teacher_model.assert_call, (False, 1))
+        with self.assertRaisesRegex(MambaGLMDistillationError, "not GLM"):
+            record_glm_teacher_last_token_logits(
+                TinySource(), ids, teacher_revision=TEACHER_REVISION,
+                tokenizer_mapping_sha256=self.mapping_sha256, expected_vocab=16)
 
     def test_shard_preflight_does_not_read_weights(self):
         with tempfile.TemporaryDirectory() as folder:
