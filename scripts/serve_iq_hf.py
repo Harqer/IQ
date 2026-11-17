@@ -299,9 +299,14 @@ def create_handler(tokenizer, model):
                 if compatible and prompt_format != "chat":
                     raise ValueError("prompt_format applies only to legacy /chat")
                 request_id = self.headers.get("X-Baseten-Request-Id") or None
-                response, finish_reason, prompt_tokens, completion_tokens = generate(
-                    tokenizer, model, messages, tokens, prompt_format, request_id=request_id
-                )
+                if request_id:
+                    response, finish_reason, prompt_tokens, completion_tokens = generate(
+                        tokenizer, model, messages, tokens, prompt_format, request_id=request_id
+                    )
+                else:
+                    response, finish_reason, prompt_tokens, completion_tokens = generate(
+                        tokenizer, model, messages, tokens, prompt_format
+                    )
                 if request_id:
                     print(json.dumps({"event": "iq.response", "request_id": request_id,
                                       "prompt_tokens": prompt_tokens,
