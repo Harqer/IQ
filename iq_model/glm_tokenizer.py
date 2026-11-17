@@ -53,11 +53,13 @@ def verify_glm_tokenizer_for_iq(
     model: Any | None = None,
 ) -> dict[str, Any]:
     """Check exact token-space geometry; do not claim neural-weight compatibility."""
+    source_eos = source_config.get("eos_token_id")
     if (
         source_config.get("model_type") != "glm_moe_dsa"
         or source_config.get("vocab_size") != GLM53_VOCAB_SIZE
         or source_config.get("pad_token_id") != GLM53_PAD_TOKEN_ID
-        or tuple(source_config.get("eos_token_id", ())) != GLM53_EOS_TOKEN_IDS
+        or not isinstance(source_eos, (tuple, list))
+        or tuple(source_eos) != GLM53_EOS_TOKEN_IDS
     ):
         raise GLMTokenizerError("GLM-5.3 tokenizer source config does not match official IDs")
     if model_config.vocab_size != GLM53_VOCAB_SIZE:
