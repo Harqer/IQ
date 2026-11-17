@@ -3,7 +3,6 @@ from __future__ import annotations
 import copy
 from pathlib import Path
 import unittest
-import yaml
 
 from iq_cloud.full_iq235 import (
     EXPECTED_TYPES, EXPECTED_VOCAB, FullIQ235Error, GPU_COUNT,
@@ -49,12 +48,11 @@ class FullIQ235StructuralTests(unittest.TestCase):
     def test_config_requests_full_h200_eight(self):
         path = (Path(__file__).resolve().parents[1]
                 / "deploy" / "baseten_full_iq" / "config.yaml")
-        manifest = yaml.safe_load(path.read_text(encoding="utf-8"))
-        self.assertEqual(manifest["resources"]["accelerator"], "H200:8")
-        self.assertEqual(manifest["environment_variables"]["IQ_PHASE"],
-                         "architecture_only")
-        self.assertEqual(manifest["model_name"], "iq235-glm53-architecture-only")
-        self.assertNotIn("gpu_count", manifest["resources"])
+        content = path.read_text(encoding="utf-8")
+        self.assertIn("accelerator: H200:8", content)
+        self.assertIn("IQ_PHASE: architecture_only", content)
+        self.assertIn("model_name: iq235-glm53-architecture-only", content)
+        self.assertNotIn("gpu_count:", content)
 
     def test_contract_mismatch_rejected(self):
         changed = copy.deepcopy(self.config)
