@@ -47,7 +47,7 @@ def tokenizer_mapping_sha256(vocab: dict[str, int]) -> str:
 def verify_glm_tokenizer_for_iq(
     tokenizer: Any,
     source_config: dict[str, Any],
-    model_config: IQModelConfig,
+    model_config: IQModelConfig | None = None,
     *,
     expected_mapping_sha256: str | None = None,
     model: Any | None = None,
@@ -62,11 +62,13 @@ def verify_glm_tokenizer_for_iq(
         or tuple(source_eos) != GLM53_EOS_TOKEN_IDS
     ):
         raise GLMTokenizerError("GLM-5.3 tokenizer source config does not match official IDs")
-    if model_config.vocab_size != GLM53_VOCAB_SIZE:
+    if model_config is not None and model_config.vocab_size != GLM53_VOCAB_SIZE:
         raise GLMTokenizerError(
             f"IQ vocab_size={model_config.vocab_size} differs from GLM {GLM53_VOCAB_SIZE}; "
             "create a new IQ config with with_glm_tokenizer_config"
         )
+    if model is not None and model_config is None:
+        raise GLMTokenizerError("checking IQ model weights requires an IQ model config")
     if (
         getattr(tokenizer, "pad_token_id", None) != GLM53_PAD_TOKEN_ID
         or getattr(tokenizer, "eos_token_id", None) not in GLM53_EOS_TOKEN_IDS
@@ -105,20 +107,26 @@ def verify_glm_tokenizer_for_iq(
         "vocab_size": GLM53_VOCAB_SIZE,
         "pad_token_id": GLM53_PAD_TOKEN_ID,
         "eos_token_ids": list(GLM53_EOS_TOKEN_IDS),
-        "iq_hidden_size": model_config.hidden_size,
-        "iq_config_fingerprint": model_config.fingerprint,
+        "iq_config_checked": model_config is not None,
+        "iq_hidden_size": model_config.hidden_size if model_config is not None else None,
+        "iq_config_fingerprint": model_config.fingerprint if model_config is not None else None,
         "weight_alignment_verified": False,
     }
 
 
-def encode_glm_prompt(tokenizer: Any, text: str, model_config: IQModelConfig) -> list[int]:
-    """Check encoded IDs/context before passing them to the user's IQ engine."""
+def encode_glm_prompt(
+    tokenizer: Any, text: str, model_config: IQModelConfig | None = None,
+) -> list[int]:
+    """Validate token IDs; also check IQ context when a config is supplied."""
     if not text:
         raise GLMTokenizerError("prompt must be nonempty")
     ids = tokenizer.encode(text, add_special_tokens=True)
-    if not ids or len(ids) > model_config.max_position_embeddings:
-        raise GLMTokenizerError("GLM prompt is empty or exceeds IQ configured context")
-    if any(type(token_id) is not int or not (0 <= token_id < model_config.vocab_size)
+    if not ids:
+        raise GLMTokenizerError("GLM tokenizer produced an empty prompt")
+    if model_config is not None and len(ids) > model_config.max_position_embeddings:
+        raise GLMTokenizerError("GLM prompt exceeds IQ configured context")
+    max_vocab = model_config.vocab_size if model_config is not None else GLM53_VOCAB_SIZE
+    if any(type(token_id) is not int or not (0 <= token_id < max_vocab)
            for token_id in ids):
         raise GLMTokenizerError("encoded GLM token ID outside IQ vocabulary")
     return ids
