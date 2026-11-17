@@ -100,6 +100,8 @@ class HybridRunner:
         self,
         prompt_ids: list[int],
         max_new_tokens: int,
+        *,
+        stop_tokens: set[int] | None = None,
     ) -> list[int]:
         if not prompt_ids:
             raise ValueError("prompt_ids must contain at least one token")
@@ -111,10 +113,14 @@ class HybridRunner:
         logits = self._prefill(prompt_ids)
         next_token = int(logits[0, -1].argmax())
         generated = [next_token]
+        if stop_tokens and next_token in stop_tokens:
+            return generated
         for _ in range(max_new_tokens - 1):
             logits = self._decode_step(next_token)
             next_token = int(logits[0, -1].argmax())
             generated.append(next_token)
+            if stop_tokens and next_token in stop_tokens:
+                break
         return generated
 
     def _prefill(self, prompt_ids: list[int]) -> torch.Tensor:
