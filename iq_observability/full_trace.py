@@ -113,6 +113,11 @@ class IQTrace:
             module = getattr(model, name, None)
             if module is not None:
                 named.append((name, module, None))
+        for idx, (kind, layer) in enumerate(zip(schedule, model.layers, strict=True)):
+            for component in ("mamba", "attention", "moe"):
+                nested = getattr(layer, component, None)
+                if nested is not None:
+                    named.append((f"kernel.{idx:02d}.{kind}.{component}", nested, None))
         for label, module, kind in named:
             self._handles.append(module.register_forward_pre_hook(self._before(label)))
             self._handles.append(module.register_forward_hook(
@@ -150,6 +155,8 @@ class IQTrace:
                     self.event("module.failed", module=label, elapsed_ms=elapsed, **self._memory())
                     return
                 tensor = result if isinstance(result, torch.Tensor) else getattr(result, "hidden_states", None)
+                if tensor is None:
+                    tensor = getattr(result, "state", None)
                 if not isinstance(tensor, torch.Tensor):
                     raise RuntimeError(f"{label}: missing tensor output")
                 values = tensor.detach().float()
