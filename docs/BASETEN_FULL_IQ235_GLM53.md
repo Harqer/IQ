@@ -36,6 +36,13 @@ validation and may expose failures that CPU structural tests cannot find.
 
 ### No-GPU preflight (safe)
 
+The preflight automatically stages only the pinned Python packages and config
+JSON files under `deploy/_iq235_baseten_packages/`, which is git-ignored.
+Baseten's archive builder **flattens** each `external_package_dirs` entry;
+therefore the Truss config references a *single staged parent* so
+`packages/iq_cloud/__init__.py` and `packages/iq_model/__init__.py` cannot
+collide. The staged parent is rebuilt before every dry-run.
+
 Run in a worktree on `feat/iq235-glm53-baseten-architecture-20261117`:
 
 ```bash
