@@ -57,6 +57,20 @@ class FullIQ235StructuralTests(unittest.TestCase):
         self.assertNotIn("  - ../../iq_cloud", config_text)
         self.assertNotIn("  - ../../iq_model", config_text)
 
+    def test_baseten_build_commands_have_no_embedded_newlines(self):
+        """Baseten rejects YAML literal build commands with newline characters."""
+        cfg_path = (Path(__file__).resolve().parents[1]
+                    / "deploy" / "baseten_full_iq" / "config.yaml")
+        config_text = cfg_path.read_text(encoding="utf-8")
+        commands = config_text.split("build_commands:\n", 1)[1].split("\nresources:\n", 1)[0]
+        command_lines = commands.splitlines()
+        self.assertEqual(sum(line.startswith("  - ") for line in command_lines), 4)
+        self.assertFalse(any(line.startswith("    ") for line in command_lines))
+        self.assertNotIn("  - |", commands)
+        self.assertNotIn("  - >", commands)
+        self.assertIn("s.count(old)==1 or sys.exit", commands)
+        self.assertIn("TORCH_CUDA_ARCH_LIST=9.0", commands)
+
     def test_student_model_is_not_referenced_by_full_deployment(self):
         model_path = (Path(__file__).resolve().parents[1]
                       / "deploy" / "baseten_full_iq" / "model" / "model.py")
