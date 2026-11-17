@@ -77,7 +77,7 @@ Preserved for reproducibility, **not merged into the active student**:
   checkpoint, and the in-progress local `IQ-baseten-full` worktree.
 - `iq_transfer/phi4.py`, `iq_transfer/phi_pipeline.py`,
   `iq_transfer/gpt_oss20b.py` and old transfer launchers.
-- `nif_sovereign/` Mojo research, alternative attention/halting experiments.
+- `nif_sovereign/` Mojo research (82 files) is retained on `main` and in Git\n  history but intentionally omitted from this student-only branch; alternative\n  attention/halting experiments remain separate.
 - The earlier 80-layer `mocha` checkpoint and Baseten experiment branch.
 
 **No history was deleted.** Only the active runtime import boundary was
