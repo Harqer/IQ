@@ -136,8 +136,11 @@ def verify_iq_tokenizer(
     """
     model = config.get("model", {})
     size = model.get("vocab_size")
-    if type(size) is not int or len(tokenizer) != size:
-        raise CheckpointPreflightError("tokenizer vocabulary size differs from checkpoint")
+    if type(size) is not int or size <= 0:
+        raise CheckpointPreflightError("invalid checkpoint vocabulary size")
+    lexical_size = len(tokenizer)
+    if type(lexical_size) is not int or lexical_size <= 0 or lexical_size > size:
+        raise CheckpointPreflightError("tokenizer vocabulary exceeds checkpoint output head")
     if manifest is None:
         raise CheckpointPreflightError(
             "missing transplant manifest: cannot validate which pretrained tokenizer owns the lexical weights"
@@ -147,8 +150,10 @@ def verify_iq_tokenizer(
         foundation = manifest.get("foundation", {})
         if not isinstance(foundation, dict) or foundation.get("repo") != "state-spaces/mamba3-mimo-1.5b":
             raise CheckpointPreflightError("Mamba foundation donor does not match manifest")
-        if size != 128256:
-            raise CheckpointPreflightError("Mamba lexical donor requires 128256 token IDs")
+        if size != 128256 or lexical_size != 128256:
+            raise CheckpointPreflightError(
+                "Mamba lexical donor requires exactly 128256 token IDs"
+            )
         required_tokens = {
             "<|begin_of_text|>": 128000,
             "<|end_of_text|>": 128001,
@@ -162,15 +167,23 @@ def verify_iq_tokenizer(
         language = donors.get("language", {}) if isinstance(donors, dict) else {}
         if not isinstance(language, dict) or language.get("repo") != "openai/gpt-oss-20b":
             raise CheckpointPreflightError("GPT-OSS donor identity mismatches lexical manifest")
-        if size != 201088:
-            raise CheckpointPreflightError("GPT-OSS lexical donor requires 201088 token IDs")
-        # Exact IDs are set by the GPT-OSS tokenizer asset; do not impose
-        # Llama special IDs on the GPT-OSS vocabulary.
+        # GPT-OSS embeds 201088 rows, but its official tokenizer has
+        # 200019 defined IDs (199998 base + 21 special tokens). The
+        # remaining output rows are *padding*, not decodable tokens.
+        if size != 201088 or lexical_size != 200019:
+            raise CheckpointPreflightError(
+                "GPT-OSS lexical contract requires 200019 tokenizer IDs "
+                "and 201088 checkpoint vocabulary rows"
+            )
         required_tokens = {
-            "<|im_start|>": None,
-            "<|im_end|>": None,
+            "<|startoftext|>": 199998,
+            "<|endoftext|>": 199999,
+            "<|return|>": 200002,
+            "<|start|>": 200006,
+            "<|end|>": 200007,
+            "<|message|>": 200008,
         }
-        label = "gpt-oss-20b lexical IDs"
+        label = "gpt-oss-20b lexical IDs (201088 padded rows)"
     else:
         raise CheckpointPreflightError(
             f"unsupported lexical source method {method!r}; add a verified source mapping before serving"
@@ -180,9 +193,9 @@ def verify_iq_tokenizer(
     vocab = tokenizer.get_vocab()
     if not isinstance(vocab, dict) or not vocab:
         raise CheckpointPreflightError("tokenizer mapping is empty/invalid")
-    if len(vocab) != size or len(set(vocab.values())) != size:
+    if len(vocab) != lexical_size or len(set(vocab.values())) != lexical_size:
         raise CheckpointPreflightError("tokenizer has duplicate or missing token IDs")
-    if any(type(i) is not int or i < 0 or i >= size for i in vocab.values()):
+    if any(type(i) is not int or i < 0 or i >= lexical_size for i in vocab.values()):
         raise CheckpointPreflightError("tokenizer mapping has out-of-range token IDs")
     for token, expected_id in required_tokens.items():
         actual = vocab.get(token)
