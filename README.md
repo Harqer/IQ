@@ -1,5 +1,22 @@
 # IQ — Hybrid Reasoning LLM
 
+> **ACTIVE EXPERIMENT ON THIS BRANCH — FULL IQ 235-LAYER BASETEN**
+>
+> This branch targets the complete **235-layer IQ hybrid** from
+> `kofecheckmate/iq-glm53-all256` (79 Mamba-3, 78 CSA/HCA, 78 Stable
+> LatentMoE with 256 experts), **using the original GLM-5.3 tokenizer**
+> (154880 IDs) in a separate Phase-A geometry. Phase A must execute a full
+> forward pass on **eight Baseten H200 GPUs without donor weights**, then
+> explicitly deactivate the deployment. Only afterward do we implement
+> and verify direct checkpoint weight injection and run Phase B.
+>
+> See [the exact full-IQ runbook](docs/BASETEN_FULL_IQ235_GLM53.md).
+> The 24-layer student is retained on branch
+> `refactor/iq-glm53-student-consolidation-20261117`, not deployed here.
+>
+> **No cloud GPU has been started.** The checked-in Phase A path requires
+> CPU preflight and Baseten dry-run acceptance before a billable push.
+
 > **Current execution order:** first verify architecture with no donor weights;
 > next inject pretrained tensors into the verified topology; only then deploy
 > the complete artifact on Baseten with OpenTelemetry. Local CUDA is irrelevant
