@@ -6,6 +6,7 @@ import json
 import struct
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from iq_transfer.checkpoint_integrity import IQIntegrityError, verify_iq_checkpoint_integrity
@@ -92,6 +93,14 @@ class PublishedCheckpointIntegrityTests(unittest.TestCase):
         path.write_text(path.read_text() + path.read_text().splitlines()[0] + "\n")
         with self.assertRaisesRegex(IQIntegrityError, "invalid/duplicate"):
             verify_iq_checkpoint_integrity(self.root)
+
+    def test_independent_manifest_pin_blocks_republished_corruption(self):
+        name, (tensor, payload) = next(iter(self.blobs.items()))
+        self._write_shard(name, tensor, payload[:-4] + struct.pack("<f", 999.0))
+        self._republish()  # An attacker also rewrites the sidecar hash list.
+        with patch.dict("os.environ", {"IQ_EXPECTED_SHA256SUMS_SHA256": "0" * 64}):
+            with self.assertRaisesRegex(IQIntegrityError, "independently pinned"):
+                verify_iq_checkpoint_integrity(self.root)
 
     def test_extra_tensor_header_fails(self):
         name, (tensor, payload) = next(iter(self.blobs.items()))
