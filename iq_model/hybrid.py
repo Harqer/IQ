@@ -731,9 +731,16 @@ class IQHybridForCausalLM(nn.Module):
         self.model_config = config.model
         device_obj = torch.device(device)
         if test_only_cpu_reference:
-            if device_obj.type != "cpu" or dtype not in (torch.float32, torch.float64):
+            cpu_reference = device_obj.type == "cpu" and dtype in (
+                torch.float32, torch.float64
+            )
+            meta_streaming = device_obj.type == "meta" and dtype in (
+                torch.float16, torch.bfloat16, torch.float32
+            )
+            if not (cpu_reference or meta_streaming):
                 raise HybridModelError(
-                    "test_only_cpu_reference requires CPU with float32/float64"
+                    "test_only_cpu_reference requires CPU float32/float64 or "
+                    "explicit meta streaming initialization for the Torch MIMO oracle"
                 )
         elif device_obj.type != "cuda":
             raise HybridModelError(
