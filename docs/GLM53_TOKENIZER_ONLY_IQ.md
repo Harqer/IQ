@@ -35,6 +35,30 @@ The optional `--iq-config` parameter is used **only** when validating an existin
 
 An independently recorded tokenizer mapping fingerprint can be supplied using `--expected-mapping-sha256`. Without it, the tool checks full token ID geometry and outputs the observed hash, but does not claim independent fingerprint authentication.
 
+## Architecture-only test (no weights, no tokenizer download)
+
+To validate **the full IQ architecture defined in the repository** rather than the simplified 24-block Mamba donor, run:
+
+~~~bash
+python -m scripts.audit_iq_architecture_only
+~~~
+
+This derives the actual `canonical_glm53_config()`, switches **only** the vocabulary to 154,880, and validates the 32 rank-4 Mamba-3 MIMO layers, 24 Stable LatentMoE layers, 12 CSA + 12 HCA layers, Block AttnRes, reasoning recurrence, residual width, and complete expected tensor-key schema. It uses CPU/meta-device structures and does **not** load neural weights, require a local IQ config path, or run a model forward pass.
+
+To produce a real configuration file for your separate architecture/inference tests, rather than a made-up path:
+
+~~~bash
+python -m scripts.audit_iq_architecture_only --write-config
+~~~
+
+The output is `./iq_glm53_architecture.json`, created relative to your current working directory. Existing files are never overwritten. This is an **untrained architecture configuration** and is not compatible with the previous 128,256-ID transplanted checkpoint's lexical rows.
+
+### Transfer investigation
+
+The existing `iq_transfer/glm53_compile.py` pipeline is a **different**, pretrained-weight transfer workflow. It uses Mamba global embeddings/head, creates GLM-derived context and MoE shards through calibration/transport, and checks expected tensor-key coverage; those checks establish schema completeness, not GLM reasoning or coding retention. The legacy compiled artifacts should not be treated as an architecture-only test fixture.
+
+To test architecture rather than learned behavior, **bypass** `glm53-compile`, `mamba3-compile`, checkpoint transpilation and teacher distillation. Keep the canonical IQ model classes and use new initialization or meta-device schema checks. No destructive reversal of existing transfer artifacts is necessary.
+
 ## Exact boundary of the change
 
 This is a tokenizer-only architecture configuration, **not** a claim that Mamba or GLM language ability is preserved automatically.
