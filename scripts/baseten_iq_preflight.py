@@ -135,39 +135,37 @@ def execute(args: argparse.Namespace, telemetry: IQTelemetry) -> dict:
             weights, shards = index_inventory(root, args.expected_shards)
             telemetry.annotate(span, indexed_tensors=len(weights), shards=len(shards))
 
-        with telemetry.stage("tokenizer") as token_span:
-            try:
+        try:
+            with telemetry.stage("tokenizer") as token_span:
                 verify_tokenizer_mapping(
                     args.tokenizer_dir.resolve() if args.tokenizer_dir else root,
                     args.expected_glm_tokenizer_sha256,
                 )
                 telemetry.annotate(token_span, tokenizer_verified=True)
-            except (OSError, ValueError, ImportError) as exc:
-                # No raw exception contents in telemetry or JSON output.
-                details["findings"].append("tokenizer_" + type(exc).__name__)
-                telemetry.annotate(token_span, tokenizer_verified=False)
+        except (OSError, ValueError, ImportError) as exc:
+            # The OTel span is ERROR, with exception type only.
+            details["findings"].append("tokenizer_" + type(exc).__name__)
 
-        with telemetry.stage("tensor_headers") as tensor_span:
-            try:
+        try:
+            with telemetry.stage("tensor_headers") as tensor_span:
                 verified = verify_headers(root, weights, shards)
                 telemetry.annotate(tensor_span, verified_tensors=verified)
                 details["tensor_headers_verified"] = verified
-            except (OSError, ValueError, ImportError, RuntimeError) as exc:
-                details["findings"].append("tensor_headers_" + type(exc).__name__)
-                details["tensor_headers_verified"] = 0
+        except (OSError, ValueError, ImportError, RuntimeError) as exc:
+            details["findings"].append("tensor_headers_" + type(exc).__name__)
+            details["tensor_headers_verified"] = 0
 
         if args.sha256_manifest:
-            with telemetry.stage("tensor_hashes") as hash_span:
-                try:
+            try:
+                with telemetry.stage("tensor_hashes") as hash_span:
                     verified_hashes = verify_shard_hashes(
                         root, shards, args.sha256_manifest
                     )
                     details["hashes_verified"] = verified_hashes
                     telemetry.annotate(hash_span, hashes_verified=True)
-                except (OSError, ValueError) as exc:
-                    details["findings"].append("tensor_hashes_" + type(exc).__name__)
-                    details["hashes_verified"] = 0
-                    telemetry.annotate(hash_span, hashes_verified=False)
+            except (OSError, ValueError) as exc:
+                details["findings"].append("tensor_hashes_" + type(exc).__name__)
+                details["hashes_verified"] = 0
         else:
             details["hashes_verified"] = 0
             details["findings"].append("independent_shard_hashes_not_checked")
