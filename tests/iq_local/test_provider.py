@@ -203,7 +203,10 @@ def test_shard_is_pinned_against_cache_eviction(tmp_path: Path):
 
 
 def test_int4_payload_is_pinned_against_cache_eviction(tmp_path: Path):
-    provider, client, cache, _, _ = make_provider(tmp_path, max_ram_experts=0)
+    # max_ram_experts=1: the expert is resident while the churn runs, so its
+    # int4 entry is pinned under the residency invariant (with 0 residents the
+    # invariant correctly pins nothing).
+    provider, client, cache, _, _ = make_provider(tmp_path, max_ram_experts=1)
     int4_key = f"int4/{_expert_file(0, 0)}"
     provider.load_expert(0, 0)
     int4_size = cache.path_for(int4_key).stat().st_size
@@ -215,6 +218,37 @@ def test_int4_payload_is_pinned_against_cache_eviction(tmp_path: Path):
     assert cache.contains(int4_key)
     assert not cache.contains("dummy0")
     assert cache.usage() == (int4_size + 100, 2)
+
+
+def test_ram_eviction_unpins_evicted_expert_int4_entry(tmp_path: Path):
+    """Provider invariant: pinned int4 entries == experts resident in the RAM
+    LRU. Observed through public ``cache.contains()``: an unpinned int4 file
+    is evictable by a budget churn, a pinned one survives — no private
+    ``_pinned`` peeking."""
+    provider, client, cache, _, _ = make_provider(tmp_path, max_ram_experts=1)
+    int4_a = f"int4/{_expert_file(0, 0)}"
+    int4_b = f"int4/{_expert_file(0, 1)}"
+
+    provider.load_expert(0, 0)  # A resident; int4/A pinned
+    provider.load_expert(0, 1)  # evicts A from the RAM hot set
+
+    # Re-residency reloads A from the persisted int4 file and re-pins it.
+    provider.load_expert(0, 0)
+    assert cache.contains(int4_a)
+    assert provider.counters["bucket_files"] == 2
+    assert client.calls == [_expert_file(0, 0), _expert_file(0, 1)]
+
+    # B left the RAM hot set when A returned: its int4 entry must be unpinned,
+    # so the churn below evicts int4/B while pinned int4/A survives.
+    size_a = cache.path_for(int4_a).stat().st_size
+    cache.budget_bytes = size_a + 150
+    dummy = tmp_path / "dummy.bin"
+    dummy.write_bytes(b"q" * 100)
+    cache.commit("dummy", dummy)
+    assert not cache.contains(int4_b)
+    assert cache.contains(int4_a)
+    assert cache.contains("dummy")
+    assert cache.usage() == (size_a + 100, 2)
 
 
 def test_failed_shard_download_leaves_no_temp_or_accounting(tmp_path: Path):

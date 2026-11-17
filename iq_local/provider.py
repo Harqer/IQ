@@ -142,7 +142,13 @@ class StreamingWeightProvider:
         self._ram[key] = triple
         self._ram.move_to_end(key)
         while len(self._ram) > self.max_ram_experts:
-            self._ram.popitem(last=False)
+            evicted, _ = self._ram.popitem(last=False)
+            self.cache.unpin(self._int4_key_for_ram(evicted))
+
+    def _int4_key_for_ram(self, ram_key: str) -> str:
+        """Int4 cache key for a RAM LRU key (`"<stage>:<idx>"`)."""
+        stage_text, expert_text = ram_key.split(":")
+        return f"int4/{self._expert_filename(int(stage_text), int(expert_text))}"
 
     def load_expert(
         self, stage: int, expert_idx: int
