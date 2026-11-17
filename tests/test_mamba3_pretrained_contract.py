@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+import json
+import subprocess
+import sys
 import unittest
 
 import torch
@@ -84,6 +87,11 @@ class NativeFoundationContractTests(unittest.TestCase):
         with self.assertRaisesRegex(FoundationInferenceError, "MIMO"):
             validate_native_contract(self.donor, self.tokenizer)
 
+    def test_rejects_untied_source_head(self):
+        self.donor.lm_head.weight = nn.Parameter(torch.empty((128256, 2048), device="meta"))
+        with self.assertRaisesRegex(FoundationInferenceError, "tying"):
+            validate_native_contract(self.donor, self.tokenizer)
+
     def test_rejects_bad_mimo_rank(self):
         self.donor.backbone.layers[10].mixer.mimo_rank = 1
         with self.assertRaisesRegex(FoundationInferenceError, "MIMO"):
@@ -117,6 +125,13 @@ class NativeFoundationContractTests(unittest.TestCase):
             with self.subTest(ids_shape=tuple(ids.shape), max_new=max_new):
                 with self.assertRaises(FoundationInferenceError):
                     validate_ids(ids, max_new)
+
+    def test_cli_preflight_does_not_claim_inference(self):
+        result = subprocess.run([sys.executable, "-m", "scripts.iq_mamba3_native_inference",
+                                 "--preflight"], capture_output=True, text=True, check=True)
+        payload = json.loads(result.stdout)
+        self.assertIs(payload["native_pretrained_inference_executed"], False)
+        self.assertIn("cuda_available", payload["hardware"])
 
     def test_bf16_device_guard_runs_before_hf_download(self):
         if torch.cuda.is_available() and torch.cuda.is_bf16_supported():
