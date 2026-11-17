@@ -2,6 +2,8 @@
 from __future__ import annotations
 import json
 
+from scripts.stage_iq235_baseten import stage_sources
+
 from iq_cloud.full_iq235 import (
     EXPECTED_TYPES, EXPECTED_VOCAB, GLM_REVISION,
     GPU_COUNT, physical_layer_placement, read_architecture_contract,
@@ -11,6 +13,7 @@ from iq_cloud.full_iq235 import (
 def main():
     config = read_architecture_contract()
     ids = physical_layer_placement(config)
+    stage = stage_sources()
     counts = {key: config["schedule"]["layers"].count(key)
               for key in sorted(EXPECTED_TYPES)}
     print(json.dumps({
@@ -27,6 +30,7 @@ def main():
         "layer_assignments": {str(d): ids.count(d) for d in range(GPU_COUNT)},
         "gpu_started": False,
         "donor_weights_loaded": False,
+        "package_stage": stage,
     }, indent=2))
 
 
