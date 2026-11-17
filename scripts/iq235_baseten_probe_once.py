@@ -131,7 +131,7 @@ def main():
                    f"deployment/{args.deployment_id}/predict")
             response = request(url, key, method="POST",
                                body={"prompt": args.prompt, "max_new_tokens": 1},
-                               timeout=900)
+                               timeout=180)
             verify_response(response)
             args.output_dir.mkdir(parents=True, exist_ok=True)
             output = args.output_dir / "architecture_only.json"
@@ -148,7 +148,7 @@ def main():
             print(f"DEPLOYMENT_STOPPED: {terminal['status']}, replicas={terminal['active_replica_count']}",
                   flush=True)
         except Exception as exc:
-            print(f"CRITICAL: BAS​ETEN DEACTIVATION UNVERIFIED: {exc}",
+            print(f"CRITICAL: BASETEN DEACTIVATION UNVERIFIED: {exc}",
                   file=sys.stderr, flush=True)
             raise SystemExit(3)
     if inference_error:
