@@ -69,7 +69,7 @@ class TestBasetenReadOnly(unittest.TestCase):
 
     def test_bad_api_response_does_not_leak_credentials(self):
         from urllib.error import HTTPError
-        def opener(_req, _timeout):
+        def opener(_req, timeout):
             raise HTTPError("https://api.baseten.co/v1/models", 401,
                             "Authorization: Api-Key secret-contents", None, None)
         with self.assertRaisesRegex(RuntimeError, "401") as cm:
