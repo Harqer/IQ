@@ -259,3 +259,60 @@ class Mamba3MIMOTinyCPU(torch.nn.Module):
                 if self.norm is not None else None),
         )
         return self.out_proj(y.reshape(b,t,self.d_inner)),new_state
+
+
+class Mamba3MIMOCPUReferenceState(torch.nn.Module):
+    """Test-only MIMO mixer with IQ's actual packed-sequence interface.
+
+    Each cu_seqlens span starts with independent zero SSM/angle/K/V state.
+    Never silently replace the production CUDA kernel with this CPU oracle.
+    """
+
+    def __init__(self, config, *, layer_idx: int) -> None:
+        super().__init__()
+        if config.mimo_rank != 4:
+            raise ValueError("full IQ CPU validation requires rank-4 MIMO")
+        if not 0 <= layer_idx < config.num_layers:
+            raise ValueError("invalid Mamba layer index")
+        self.layer_idx = layer_idx
+        self.core = Mamba3MIMOTinyCPU(
+            d_model=config.d_model,
+            d_state=config.d_state,
+            headdim=config.headdim,
+            mimo_rank=config.mimo_rank,
+            expand=config.expand,
+            rope_fraction=config.rope_fraction,
+            is_outproj_norm=config.outproj_norm,
+        )
+
+    def forward(
+        self,
+        hidden_states: Tensor,
+        *,
+        cu_seqlens: Tensor | None = None,
+        inference_params=None,
+    ) -> Tensor:
+        if inference_params is not None:
+            raise ValueError("CPU oracle does not implement production CUDA cache")
+        if cu_seqlens is None:
+            return self.core(hidden_states)[0]
+        if (
+            hidden_states.ndim != 3
+            or hidden_states.shape[0] != 1
+            or cu_seqlens.ndim != 1
+            or cu_seqlens.numel() < 2
+            or cu_seqlens.dtype not in (torch.int32, torch.int64)
+        ):
+            raise ValueError("packed MIMO expects [1,total,hidden] and cu_seqlens")
+        boundaries = cu_seqlens.tolist()
+        if (
+            boundaries[0] != 0
+            or boundaries[-1] != hidden_states.shape[1]
+            or any(b <= a for a, b in zip(boundaries, boundaries[1:]))
+        ):
+            raise ValueError("invalid packed MIMO segment boundaries")
+        segments = []
+        for start, end in zip(boundaries, boundaries[1:]):
+            segment, _ = self.core(hidden_states[:,start:end])
+            segments.append(segment)
+        return torch.cat(segments, dim=1)
