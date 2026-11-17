@@ -37,9 +37,10 @@ def _otel_tracer():
         raise RuntimeError("OTLP requested but OpenTelemetry exporter is missing") from exc
     provider = TracerProvider(resource=Resource.create({"service.name": "iq-full-weight-inference"}))
     provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))
-    trace.set_tracer_provider(provider)
+    # Do NOT replace the host's global OTel provider (Baseten may own it).
+    # Our spans are created directly from an isolated provider with OTLP export.
     _OTEL_PROVIDER = provider
-    _OTEL_TRACER = trace.get_tracer("iq.full_inference")
+    _OTEL_TRACER = provider.get_tracer("iq.full_inference")
     return _OTEL_TRACER, _OTEL_PROVIDER
 
 
