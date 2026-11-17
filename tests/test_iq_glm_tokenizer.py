@@ -1,11 +1,15 @@
 """CPU-only GLM-5.3 tokenizer compatibility tests for IQ's actual hybrid schedule."""
 from __future__ import annotations
 
+from contextlib import redirect_stdout
+from io import StringIO
+import json
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from torch import nn
 
@@ -23,6 +27,7 @@ from iq_model.glm_tokenizer import (
 from iq_model.hybrid import IQHybridConfig
 from iq_model.mlp import RoutedMoEConfig
 from iq_model.state import Mamba3MIMOConfig
+from scripts import check_iq_glm_tokenizer as tokenizer_cli
 
 
 VOCAB = {
@@ -184,6 +189,67 @@ class GLMIQTokenizerContractTests(unittest.TestCase):
         self.tokenizer.encode = lambda text, add_special_tokens: [154880]
         with self.assertRaisesRegex(GLMTokenizerError, "outside"):
             encode_glm_prompt(self.tokenizer, "hello", self.config.model)
+
+    def test_cli_standalone_with_no_iq_config_or_model_weights(self):
+        output = StringIO()
+        with patch.object(
+            tokenizer_cli, "load_tokenizer_artifacts",
+            return_value=(official_config(), self.tokenizer),
+        ) as loader, redirect_stdout(output):
+            self.assertEqual(tokenizer_cli.main(["--prompt", "Hello world"]), 0)
+        loader.assert_called_once_with(offline=False, tokenizer_dir=None)
+        report = json.loads(output.getvalue())
+        self.assertEqual(report["prompt_token_ids"], [1, 2, 154829])
+        self.assertFalse(report["iq_config_checked"])
+        self.assertIsNone(report["iq_config_fingerprint"])
+        self.assertFalse(report["glm_neural_weights_loaded"])
+        self.assertFalse(report["iq_architecture_modified"])
+
+    def test_cli_write_config_requires_explicit_iq_config(self):
+        with patch.object(tokenizer_cli, "load_tokenizer_artifacts") as loader:
+            with self.assertRaises(SystemExit):
+                tokenizer_cli.main(["--write-config", "output.json"])
+            loader.assert_not_called()
+
+    def test_local_tokenizer_mode_never_calls_hub(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "config.json").write_text(json.dumps(official_config()))
+            with (
+                patch("transformers.AutoTokenizer.from_pretrained",
+                      return_value=self.tokenizer) as auto,
+                patch("huggingface_hub.hf_hub_download") as download,
+            ):
+                source, tokenizer = tokenizer_cli.load_tokenizer_artifacts(
+                    offline=True, tokenizer_dir=root
+                )
+            self.assertEqual(source["vocab_size"], 154880)
+            self.assertIs(tokenizer, self.tokenizer)
+            auto.assert_called_once_with(
+                str(root), trust_remote_code=False,
+                local_files_only=True, use_fast=True,
+            )
+            download.assert_not_called()
+
+    def test_hf_mode_fetches_only_metadata_and_tokenizer(self):
+        with tempfile.TemporaryDirectory() as folder:
+            config_path = Path(folder) / "config.json"
+            config_path.write_text(json.dumps(official_config()))
+            with (
+                patch("transformers.AutoTokenizer.from_pretrained",
+                      return_value=self.tokenizer) as auto,
+                patch("huggingface_hub.hf_hub_download",
+                      return_value=str(config_path)) as download,
+            ):
+                source, tokenizer = tokenizer_cli.load_tokenizer_artifacts(
+                    offline=True, tokenizer_dir=None
+                )
+            self.assertEqual(source["model_type"], "glm_moe_dsa")
+            self.assertIs(tokenizer, self.tokenizer)
+            self.assertEqual(download.call_args.kwargs["filename"], "config.json")
+            self.assertTrue(download.call_args.kwargs["local_files_only"])
+            self.assertTrue(auto.call_args.kwargs["local_files_only"])
+            self.assertTrue(auto.call_args.kwargs["trust_remote_code"] is False)
 
     def test_cli_usage_needs_no_model_and_no_inference(self):
         output = subprocess.run(
