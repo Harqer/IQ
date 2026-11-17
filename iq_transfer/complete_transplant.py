@@ -1005,6 +1005,7 @@ def load_complete_iq_checkpoint(
     *,
     device: torch.device | str = "cuda",
     dtype: torch.dtype = torch.bfloat16,
+    telemetry=None,
 ) -> IQHybridForCausalLM:
     """Load a compiled complete IQ checkpoint with strict tensor coverage.
 
@@ -1064,6 +1065,9 @@ def load_complete_iq_checkpoint(
 
     with torch.no_grad():
         for filename, keys in sorted(by_file.items()):
+            if telemetry is not None:
+                telemetry.event("checkpoint.shard.start", shard=filename, tensors=len(keys))
+            shard_start = __import__("time").perf_counter()
             shard = load_file(str(root / filename), device="cpu")
             if set(shard) != set(keys):
                 raise CompleteTransplantError(
@@ -1077,5 +1081,9 @@ def load_complete_iq_checkpoint(
                         f"model={tuple(target.shape)}"
                     )
                 target.copy_(value.to(device=target.device, dtype=target.dtype))
+            if telemetry is not None:
+                telemetry.event("checkpoint.shard.loaded", shard=filename, tensors=len(keys),
+                                elapsed_ms=round((__import__("time").perf_counter() - shard_start) * 1000, 3),
+                                cuda_allocated_bytes=(torch.cuda.memory_allocated() if torch.cuda.is_available() else 0))
     model.eval()
     return model
