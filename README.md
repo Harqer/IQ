@@ -11,6 +11,7 @@
 > and verify direct checkpoint weight injection and run Phase B.
 >
 > See [the exact full-IQ runbook](docs/BASETEN_FULL_IQ235_GLM53.md).
+> **Modal alternative ($30-credit experiment):** [one-shot 8×H200 full-IQ Phase A](docs/MODAL_FULL_IQ235.md). Requires a Modal payment method and zero-out-of-pocket spend limit before starting.
 > The 24-layer student is retained on branch
 > `refactor/iq-glm53-student-consolidation-20261117`, not deployed here.
 >
