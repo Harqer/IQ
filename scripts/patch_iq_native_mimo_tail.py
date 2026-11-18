@@ -73,10 +73,25 @@ def main() -> None:
                        help="Apply exact one-line native kernel safety patch to a pinned source clone")
     group.add_argument("--check-installed", action="store_true",
                        help="Read-only verify installed native kernel contains the tail guard")
+    group.add_argument("--patch-installed", action="store_true",
+                       help="Patch the exact installed, pinned Python TileLang kernel source")
     args = parser.parse_args()
     if args.check_installed:
         check_installed_kernel_guard()
         print("IQ_NATIVE_MIMO_TAIL_GUARD_OK")
+    elif args.patch_installed:
+        from importlib import util
+        spec = util.find_spec("mamba_ssm")
+        if spec is None or not spec.submodule_search_locations:
+            raise NativeMIMOKernelSafetyError("pinned mamba_ssm package not installed")
+        # Install the exact upstream Git revision with pip FIRST, so the
+        # immutable commit is preserved in PEP-610 VCS metadata. Only the
+        # Python TileLang kernel tail is then patched, without changing the
+        # installed package's upstream revision identity.
+        root = Path(next(iter(spec.submodule_search_locations))).parent
+        target = patch_kernel(root)
+        check_installed_kernel_guard()
+        print(f"IQ_NATIVE_MIMO_INSTALLED_TAIL_PATCHED={target}")
     else:
         print(f"IQ_NATIVE_MIMO_TAIL_PATCHED={patch_kernel(args.patch_checkout)}")
 
