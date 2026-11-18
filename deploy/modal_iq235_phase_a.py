@@ -52,10 +52,12 @@ image = (
     )
     .add_local_dir(STAGED, remote_path="/root/IQ", copy=True)
     .run_commands(
-        "git clone https://github.com/state-spaces/mamba.git /tmp/iq-mamba3-src",
-        "git -C /tmp/iq-mamba3-src checkout e9594ce1c732d97440f0332fdc43170a2294dbfa",
-        "cd /root/IQ && python -m scripts.patch_iq_native_mimo_tail --patch-checkout /tmp/iq-mamba3-src",
-        "TORCH_CUDA_ARCH_LIST=9.0 MAMBA_FORCE_BUILD=TRUE python -m pip install --no-build-isolation --no-deps /tmp/iq-mamba3-src",
+        # VCS URL preserves the *actual pinned source commit* in PEP-610
+        # direct_url.json, required by IQ's fail-closed Mamba-3 loader.
+        "TORCH_CUDA_ARCH_LIST=9.0 MAMBA_FORCE_BUILD=TRUE python -m pip install --no-build-isolation --no-deps 'git+https://github.com/state-spaces/mamba.git@e9594ce1c732d97440f0332fdc43170a2294dbfa'",
+        # Patch the installed Python TileLang kernel after the pinned install.
+        "cd /root/IQ && python -m scripts.patch_iq_native_mimo_tail --patch-installed",
+        "cd /root/IQ && python -m scripts.patch_iq_native_mimo_tail --check-installed",
     )
 )
 
