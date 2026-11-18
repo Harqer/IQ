@@ -73,6 +73,7 @@ app = modal.App("iq235-glm53-architecture-one-shot")
     max_containers=1,
     scaledown_window=2,
     retries=0,
+    single_use_containers=True,
 )
 def full_iq_phase_a_once() -> dict:
     import sys
