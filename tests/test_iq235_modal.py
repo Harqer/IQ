@@ -46,6 +46,20 @@ class ModalIQ235SourceTests(unittest.TestCase):
         self.assertNotIn("modal.deploy(", self.source)
         self.assertNotIn("detach=True", self.source)
 
+    def test_mamba_pinned_vcs_metadata_and_kernel_tail_guard(self):
+        """Reject unpinned local installs that lack pip VCS provenance."""
+        self.assertIn(
+            "git+https://github.com/state-spaces/mamba.git@"
+            "e9594ce1c732d97440f0332fdc43170a2294dbfa",
+            self.source,
+        )
+        self.assertIn("--patch-installed", self.source)
+        self.assertIn("--check-installed", self.source)
+        self.assertNotIn(
+            "pip install --no-build-isolation --no-deps /tmp/iq-mamba3-src",
+            self.source,
+        )
+
     def test_source_staging_is_scoped(self):
         self.assertIn("_iq235_baseten_packages", self.source)
         self.assertIn("stage_manifest.json", self.source)
