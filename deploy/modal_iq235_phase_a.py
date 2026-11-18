@@ -20,7 +20,9 @@ import modal
 REPO = Path(__file__).resolve().parents[1]
 STAGED = REPO / "deploy" / "_iq235_baseten_packages"
 
-if not STAGED.is_dir() or not (STAGED / "stage_manifest.json").is_file():
+if modal.is_local() and (
+    not STAGED.is_dir() or not (STAGED / "stage_manifest.json").is_file()
+):
     raise RuntimeError(
         "Missing verified IQ source stage; run "
         "python3 -m scripts.iq235_preflight from the repository first"
