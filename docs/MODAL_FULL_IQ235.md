@@ -6,7 +6,8 @@
 are test-initialized and the existing 128256-token checkpoint is **not** loaded.
 
 Modal GPU access **requires a payment method on file**, even when Starter
-includes $30 monthly compute credit:
+includes $30 monthly compute credit. Successful `modal setup` verifies
+authentication, **not** GPU billing authorization:
 https://modal.com/docs/guide/gpu
 
 ## Mandatory cost controls before testing
@@ -25,7 +26,11 @@ one single-use container, zero minimum containers, and no detached run.
 These timeouts alone are not a dollar-based spending cap.
 
 The model's large expert count means loading can be slow, and a code/build
-failure might consume credits without generating a token. The application
+failure might consume credits without generating a token. The native Mamba-3
+package is installed using a pinned Git VCS URL, retaining PEP-610 source
+revision metadata; then its installed Python TileLang kernel receives a
+verified one-line tail correction. Both source revision and tail guard are
+checked at model startup. The application
 and model are **not yet validated on Modal**.
 
 ## Authenticate and validate (no GPU allocation)
