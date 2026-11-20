@@ -22,6 +22,7 @@ LLAMA_OFFICIAL = "meta-llama/Llama-3.1-8B"
 LLAMA_COPY_REVISION = "e9a141a2091ea561b96483212645a2a05e6f99fc"
 LLAMA_COPY_MAPPING_SHA256 = "f66003c7a898537275cd9d3ab290d6e247b9c5063352c2cc010213febfbe068f"
 MAX_TOKEN_CHARS = 512
+MAX_COMPOSITION_TOKENS = 16
 
 
 class LexicalCandidateError(ValueError):
@@ -70,6 +71,7 @@ def candidate_rows(
     *,
     target_ids: Iterable[int] | None = None,
     diagnostics: dict[str, int] | None = None,
+    compositions: dict[int, list[int]] | None = None,
     source_limit: int = SOURCE_IQ_VOCAB,
     target_limit: int = GLM_VOCAB,
 ) -> dict[int, int]:
@@ -112,7 +114,21 @@ def candidate_rows(
         if (len(possible) != 1 or type(possible[0]) is not int
                 or not 0 <= possible[0] < source_limit
                 or possible[0] in source_special):
-            reasons["source_not_single_defined_token"] += 1
+            # Input-only warm-start candidate: a GLM token may be represented
+            # by a *sequence* of Llama tokens. This does NOT initialize a
+            # GLM output-head row or prove semantic alignment.
+            if (compositions is not None
+                    and 2 <= len(possible) <= MAX_COMPOSITION_TOKENS
+                    and all(type(i) is int and 0 <= i < source_limit
+                            and i not in source_special for i in possible)
+                    and source_tokenizer.decode(
+                        possible, skip_special_tokens=False,
+                        clean_up_tokenization_spaces=False,
+                    ) == text):
+                compositions[target_id] = list(possible)
+                reasons["input_only_composition_candidate"] += 1
+            else:
+                reasons["source_not_single_defined_token"] += 1
             continue
         source_id = possible[0]
         if _one_id_roundtrips(source_tokenizer, source_id) != text:
@@ -125,6 +141,7 @@ def candidate_rows(
         diagnostics.update({name: reasons[name] for name in (
             "candidate_matched", "target_special", "target_non_roundtrip",
             "source_not_single_defined_token", "source_non_roundtrip",
+            "input_only_composition_candidate",
         )})
         if sum(diagnostics.values()) != len(ids):
             raise LexicalCandidateError("candidate diagnostic counts incomplete")
@@ -149,8 +166,10 @@ def make_candidate_manifest(
     if source_revision != LLAMA_COPY_REVISION:
         raise LexicalCandidateError("source revision must use pinned public copy")
     diagnostics: dict[str, int] = {}
+    input_compositions: dict[int, list[int]] = {}
     correspondences = candidate_rows(
-        source_tokenizer, target_tokenizer, diagnostics=diagnostics,
+        source_tokenizer, target_tokenizer,
+        diagnostics=diagnostics, compositions=input_compositions,
     )
     defined_target_count = len(target_tokenizer.get_vocab())
     return {
@@ -172,6 +191,10 @@ def make_candidate_manifest(
         "candidate_matched_defined_rows": len(correspondences),
         "candidate_diagnostics": diagnostics,
         "candidate_matches": [[t, s] for t, s in sorted(correspondences.items())],
+        "input_only_composition_candidates": [
+            [t, source_ids] for t, source_ids in sorted(input_compositions.items())
+        ],
+        "input_compositions_are_not_trained_output_weights": True,
         "candidate_rows_not_trained_alignment": True,
         "full_pretrained_inference_ready": False,
         "source_weights_opened": False,
@@ -209,7 +232,7 @@ def validate_candidate_manifest(manifest: Mapping[str, Any]) -> dict[str, int]:
     diagnosis = manifest.get("candidate_diagnostics")
     if diagnosis is not None:
         expected_names = {"candidate_matched", "target_special",
-                          "target_non_roundtrip",
+                          "target_non_roundtrip", "input_only_composition_candidate",
                           "source_not_single_defined_token", "source_non_roundtrip"}
         if (not isinstance(diagnosis, dict)
                 or set(diagnosis) != expected_names
@@ -217,7 +240,28 @@ def validate_candidate_manifest(manifest: Mapping[str, Any]) -> dict[str, int]:
                 or diagnosis["candidate_matched"] != len(rows)
                 or sum(diagnosis.values()) != manifest["target_defined_token_count"]):
             raise LexicalCandidateError("candidate diagnostics inconsistent")
+    compositions = manifest.get("input_only_composition_candidates")
+    if compositions is not None:
+        if (not isinstance(compositions, list)
+                or manifest.get("input_compositions_are_not_trained_output_weights") is not True):
+            raise LexicalCandidateError("unverified input composition provenance")
+        matched = {t for t, _ in rows}
+        previous = -1
+        for entry in compositions:
+            if (not isinstance(entry, list) or len(entry) != 2
+                    or type(entry[0]) is not int
+                    or not previous < entry[0] < GLM_VOCAB
+                    or entry[0] in matched
+                    or not isinstance(entry[1], list)
+                    or not 2 <= len(entry[1]) <= MAX_COMPOSITION_TOKENS
+                    or any(type(i) is not int or not 0 <= i < SOURCE_IQ_VOCAB
+                           for i in entry[1])):
+                raise LexicalCandidateError("invalid input-only composition IDs")
+            previous = entry[0]
+        if diagnosis is not None and diagnosis["input_only_composition_candidate"] != len(compositions):
+            raise LexicalCandidateError("composition coverage counts inconsistent")
     return {
         "candidate_matched_rows": len(rows),
+        "input_only_composition_rows": len(compositions or []),
         "unmatched_or_reserved_rows": GLM_VOCAB - len(rows),
     }

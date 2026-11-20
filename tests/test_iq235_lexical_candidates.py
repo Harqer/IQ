@@ -48,6 +48,7 @@ class CandidateTests(unittest.TestCase):
         self.assertEqual(report["target_special"], 1)
         self.assertEqual(report["source_not_single_defined_token"], 1)
         self.assertEqual(sum(report.values()), 4)
+        self.assertEqual(report["input_only_composition_candidate"], 0)
 
     def test_control_and_replacement_char_filtered(self):
         source = TokenizerStub({"hello":1,"\ufffd":2,"\x00":3})
@@ -60,6 +61,29 @@ class CandidateTests(unittest.TestCase):
         target=TokenizerStub({"hi":2})
         with self.assertRaises(LexicalCandidateError):
             candidate_rows(source,target,target_ids=[2,2],target_limit=10)
+
+    def test_multi_token_input_only_composition(self):
+        class SourceWithPieces(TokenizerStub):
+            def encode(self, text, **kwargs):
+                if text == "hello-world":
+                    return [1, 2]
+                return super().encode(text, **kwargs)
+            def decode(self, ids, **kwargs):
+                if ids == [1, 2]:
+                    return "hello-world"
+                return super().decode(ids, **kwargs)
+        source = SourceWithPieces({"hello":1, "world":2})
+        target = TokenizerStub({"hello-world":10, "hello":11})
+        compositions = {}
+        diagnostics = {}
+        matches = candidate_rows(
+            source, target, compositions=compositions, diagnostics=diagnostics,
+            source_limit=10, target_limit=20,
+        )
+        self.assertEqual(matches, {11:1})
+        self.assertEqual(compositions, {10:[1,2]})
+        self.assertEqual(diagnostics["input_only_composition_candidate"],1)
+        self.assertEqual(sum(diagnostics.values()),2)
 
     def test_source_out_of_range_not_copied(self):
         source=TokenizerStub({"hi":11})

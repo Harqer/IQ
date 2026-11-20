@@ -53,6 +53,7 @@ def main() -> None:
     summary = {
         **counts,
         "candidate_diagnostics": manifest["candidate_diagnostics"],
+        "input_only_compositions_do_not_initialize_output_head": True,
         "source_commit": source_commit,
         "source_mapping_sha256": manifest["source_tokenizer_mapping_sha256"],
         "target_mapping_sha256": manifest["target_tokenizer_mapping_sha256"],
