@@ -116,10 +116,16 @@ def static_release_blockers(root: Path, *, approved_digest_pin: str | None) -> d
         "source_payload_sha256_verified": False,
         "all_source_model_weights_loaded": False,
         "actual_model_schema_matched_all_shards": False,
-        "runtime_restricts_architecture_only": (
-            'only architecture_only is implemented' in runtime
-            and 'IQ_PHASE") != "architecture_only"' in runtime
+        "runtime_restricts_architecture_only": False,
+        "default_deployment_is_architecture_only": (
+            'IQ_PHASE: architecture_only' in
+            (root / "deploy/baseten_full_iq/config.yaml").read_text(encoding="utf-8")
         ),
+        "source_vocab_experimental_path_integrated": (
+            'def load_pretrained_source(' in runtime
+            and 'install_source_lexical=True' in runtime
+        ),
+        "source_vocab_experiment_blocked_on_manifest_pin": approved_digest_pin is None,
         "runtime_injects_checkpoint_weights": "load_verified_full235_body(" in runtime,
         "baseten_stage_includes_loader": (
             '"full235_weight_loader.py"' in stage
@@ -134,13 +140,13 @@ def static_release_blockers(root: Path, *, approved_digest_pin: str | None) -> d
         "readiness_to_collect_inference_api_key": False,
         "production_inference_ready": False,
         "steps_before_real_pretrained_inference": [
-            "Approve a complete source SHA-256 manifest for all 20283 shards",
-            "Verify pinned CUDA Mamba3 runtime and exact model/index schema",
-            "Package and integrate remote weight injection into serving runtime",
-            "Load verified 63162 nonlexical source tensors on correct GPUs",
-            "Initialize and train GLM 154880x4096 embedding and output head",
-            "Evaluate held-out full235 generation and teacher/student outputs",
-            "Authorize billable GPU capacity and set private provider secrets",
+            "Independently review and pin every 20283-shard SHA-256 source digest",
+            "Validate full 63164-tensor schema on the exact CUDA Mamba3 runtime",
+            "Authorize billable H200x8 capacity before any remote launch",
+            "Load all 63164 original-ID IQ tensors including the two lexical matrices",
+            "Measure full235 forward, per-layer numerics, and held-out generation",
+            "Separately verify original Mamba donor tensor equality and output quality",
+            "Keep GLM 154880-ID lexical adaptation as a distinct future experiment",
         ],
     }
 

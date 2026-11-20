@@ -42,9 +42,12 @@ class ReadinessTests(unittest.TestCase):
         )
         self.assertFalse(report["production_inference_ready"])
         self.assertFalse(report["readiness_to_collect_inference_api_key"])
-        self.assertTrue(report["runtime_restricts_architecture_only"])
-        self.assertFalse(report["runtime_injects_checkpoint_weights"])
-        self.assertFalse(report["baseten_stage_includes_loader"])
+        self.assertFalse(report["runtime_restricts_architecture_only"])
+        self.assertTrue(report["default_deployment_is_architecture_only"])
+        self.assertTrue(report["source_vocab_experimental_path_integrated"])
+        self.assertTrue(report["source_vocab_experiment_blocked_on_manifest_pin"])
+        self.assertTrue(report["runtime_injects_checkpoint_weights"])
+        self.assertTrue(report["baseten_stage_includes_loader"])
         self.assertTrue(report["lexical_production_training_blocked"])
 
     def test_six_disjoint_synthetic_header_categories(self):
