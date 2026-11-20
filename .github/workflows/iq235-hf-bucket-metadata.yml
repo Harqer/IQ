@@ -8,6 +8,8 @@ on:
       - "configs/iq235_checkpoint_source.json"
       - "configs/iq235_glm53_tokenizer_phase_a.json"
       - "scripts/iq235_bucket_metadata.py"
+      - "scripts/iq235_lexical_header.py"
+      - "iq_cloud/lexical_header.py"
       - ".github/workflows/iq235-hf-bucket-metadata.yml"
   workflow_dispatch:
 
@@ -32,3 +34,8 @@ jobs:
           HF_HUB_DISABLE_TELEMETRY: "1"
         run: |
           python -m scripts.iq235_bucket_metadata
+      - name: Inspect real IQ235 lexical SafeTensors header only
+        env:
+          HF_HUB_DISABLE_TELEMETRY: "1"
+        run: |
+          python -m scripts.iq235_lexical_header
