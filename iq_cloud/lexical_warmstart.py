@@ -1,0 +1,180 @@
+"""Weight-free, conservative lexical correspondences for GLM-5.3 -> Mamba IQ235.
+
+Candidate row matches are *not* trained lexical alignment, even when identical
+text roundtrips across tokenizers. No neural weights are loaded or modified.
+The source tokenizer is a public third-party copy until independently verified
+against the original Mamba-3's official Llama-3.1-8B tokenizer.
+"""
+from __future__ import annotations
+
+from hashlib import sha256
+import json
+from typing import Any, Iterable, Mapping
+
+from .glm53_lexical import (
+    GLM_PINNED_MAPPING_SHA256, GLM_VOCAB, SOURCE_IQ_VOCAB,
+    mapping_sha256,
+)
+
+LLAMA_PUBLIC_COPY = "unsloth/Meta-Llama-3.1-8B"
+LLAMA_OFFICIAL = "meta-llama/Llama-3.1-8B"
+MAX_TOKEN_CHARS = 512
+
+
+class LexicalCandidateError(ValueError):
+    """Lexical inputs or a candidate manifest are incompatible."""
+
+
+def _mapping_hash(tokenizer: Any, limit: int) -> str:
+    vocabulary = tokenizer.get_vocab()
+    if (not isinstance(vocabulary, dict) or not vocabulary
+            or any(type(k) is not str or type(v) is not int
+                   or v < 0 or v >= limit for k, v in vocabulary.items())
+            or len(set(vocabulary.values())) != len(vocabulary)):
+        raise LexicalCandidateError("tokenizer mapping has invalid IDs/entries")
+    return sha256(json.dumps(
+        vocabulary, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")).hexdigest()
+
+
+def _one_id_roundtrips(tokenizer: Any, token_id: int) -> str | None:
+    """Only byte/text-exact, printable single-token encodings qualify."""
+    if token_id in set(tokenizer.all_special_ids):
+        return None
+    text = tokenizer.decode(
+        [token_id], skip_special_tokens=False,
+        clean_up_tokenization_spaces=False,
+    )
+    if (not isinstance(text, str) or not 0 < len(text) <= MAX_TOKEN_CHARS
+            or "\ufffd" in text
+            or any(not (c.isprintable() or c in "\t\n") for c in text)):
+        return None
+    encoded = tokenizer.encode(text, add_special_tokens=False)
+    if encoded != [token_id]:
+        return None
+    return text
+
+
+def candidate_rows(
+    source_tokenizer: Any,
+    target_tokenizer: Any,
+    *,
+    target_ids: Iterable[int] | None = None,
+    source_limit: int = SOURCE_IQ_VOCAB,
+    target_limit: int = GLM_VOCAB,
+) -> dict[int, int]:
+    """Return target-row -> source-row matches, ignoring ambiguous tokens.
+
+    This is a conservative warm-start proposal, not a substitute for training.
+    Both directions must be exactly a *single* token in their own tokenizer.
+    """
+    if type(source_limit) is not int or source_limit < 1:
+        raise LexicalCandidateError("invalid source vocabulary capacity")
+    if type(target_limit) is not int or target_limit < 1:
+        raise LexicalCandidateError("invalid GLM vocabulary capacity")
+    source_vocabulary = source_tokenizer.get_vocab()
+    target_vocabulary = target_tokenizer.get_vocab()
+    if not source_vocabulary or not target_vocabulary:
+        raise LexicalCandidateError("empty source or target token mapping")
+    if target_ids is None:
+        ids = sorted(target_vocabulary.values())
+    else:
+        ids = sorted(target_ids)
+    if len(ids) != len(set(ids)) or any(
+        type(i) is not int or i < 0 or i >= target_limit
+        or i not in set(target_vocabulary.values()) for i in ids
+    ):
+        raise LexicalCandidateError("invalid target token IDs")
+    source_special = set(source_tokenizer.all_special_ids)
+    target_special = set(target_tokenizer.all_special_ids)
+    matches: dict[int, int] = {}
+    for target_id in ids:
+        if target_id in target_special:
+            continue
+        text = _one_id_roundtrips(target_tokenizer, target_id)
+        if text is None:
+            continue
+        possible = source_tokenizer.encode(text, add_special_tokens=False)
+        if (len(possible) != 1 or type(possible[0]) is not int
+                or not 0 <= possible[0] < source_limit
+                or possible[0] in source_special):
+            continue
+        source_id = possible[0]
+        if _one_id_roundtrips(source_tokenizer, source_id) != text:
+            continue
+        matches[target_id] = source_id
+    return matches
+
+
+def make_candidate_manifest(
+    source_tokenizer: Any, target_tokenizer: Any,
+    *, source_revision: str, target_revision: str,
+    source_resolved_revision: str,
+) -> dict[str, Any]:
+    """Construct deterministic, NO-WEIGHTS candidate mapping + provenance."""
+    if not (source_revision and target_revision and source_resolved_revision):
+        raise LexicalCandidateError("tokenizer commit provenance must be nonempty")
+    target_fingerprint = mapping_sha256(target_tokenizer.get_vocab())
+    if target_fingerprint != GLM_PINNED_MAPPING_SHA256:
+        raise LexicalCandidateError("unexpected GLM-5.3 mapping fingerprint")
+    if len(target_tokenizer) > GLM_VOCAB or len(source_tokenizer) > SOURCE_IQ_VOCAB:
+        raise LexicalCandidateError("tokenizer exceeds recipient's vocabulary")
+    source_hash = _mapping_hash(source_tokenizer, SOURCE_IQ_VOCAB)
+    correspondences = candidate_rows(source_tokenizer, target_tokenizer)
+    defined_target_count = len(target_tokenizer.get_vocab())
+    return {
+        "schema_version": 1,
+        "stage": "lexical_candidate_mapping_only",
+        "source_model": "state-spaces/mamba3-mimo-1.5b",
+        "source_tokenizer_official_repo": LLAMA_OFFICIAL,
+        "source_tokenizer_copy_repo": LLAMA_PUBLIC_COPY,
+        "source_tokenizer_requested_revision": source_revision,
+        "source_tokenizer_resolved_commit": source_resolved_revision,
+        "source_tokenizer_mapping_sha256": source_hash,
+        "source_tokenizer_official_equivalence_proven": False,
+        "target_tokenizer_repo": "zai-org/GLM-5.3-BF16",
+        "target_tokenizer_revision": target_revision,
+        "target_tokenizer_mapping_sha256": target_fingerprint,
+        "target_model_vocab_capacity": GLM_VOCAB,
+        "target_defined_token_count": defined_target_count,
+        "unmapped_target_rows_including_reserved": GLM_VOCAB - len(correspondences),
+        "candidate_matched_defined_rows": len(correspondences),
+        "candidate_matches": [[t, s] for t, s in sorted(correspondences.items())],
+        "candidate_rows_not_trained_alignment": True,
+        "full_pretrained_inference_ready": False,
+        "source_weights_opened": False,
+        "weights_initialized_or_modified": False,
+        "needs_training_and_held_out_validation": True,
+    }
+
+
+def validate_candidate_manifest(manifest: Mapping[str, Any]) -> dict[str, int]:
+    """Fail closed if correspondences or reported counts are inconsistent."""
+    if (manifest.get("schema_version") != 1
+            or manifest.get("stage") != "lexical_candidate_mapping_only"
+            or manifest.get("source_tokenizer_official_equivalence_proven") is not False
+            or manifest.get("target_tokenizer_mapping_sha256") != GLM_PINNED_MAPPING_SHA256
+            or manifest.get("target_model_vocab_capacity") != GLM_VOCAB
+            or manifest.get("full_pretrained_inference_ready") is not False
+            or manifest.get("weights_initialized_or_modified") is not False):
+        raise LexicalCandidateError("manifest makes unverified provenance/readiness claim")
+    rows = manifest.get("candidate_matches")
+    if not isinstance(rows, list):
+        raise LexicalCandidateError("candidate matches must be a list")
+    prev = -1
+    for row in rows:
+        if (not isinstance(row, list) or len(row) != 2
+                or type(row[0]) is not int or type(row[1]) is not int
+                or not prev < row[0] < GLM_VOCAB
+                or not 0 <= row[1] < SOURCE_IQ_VOCAB):
+            raise LexicalCandidateError("candidate IDs unsorted, duplicate or out of bounds")
+        prev = row[0]
+    if (manifest.get("candidate_matched_defined_rows") != len(rows)
+            or manifest.get("unmapped_target_rows_including_reserved") != GLM_VOCAB-len(rows)
+            or type(manifest.get("target_defined_token_count")) is not int
+            or not len(rows) <= manifest["target_defined_token_count"] <= GLM_VOCAB):
+        raise LexicalCandidateError("candidate row coverage counts inconsistent")
+    return {
+        "candidate_matched_rows": len(rows),
+        "unmatched_or_reserved_rows": GLM_VOCAB - len(rows),
+    }

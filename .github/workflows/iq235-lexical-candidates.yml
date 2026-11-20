@@ -1,0 +1,39 @@
+name: iq235-lexical-candidates
+
+on:
+  pull_request:
+    paths:
+      - "iq_cloud/lexical_warmstart.py"
+      - "scripts/iq235_lexical_candidates.py"
+      - ".github/workflows/iq235-lexical-candidates.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  weight-free-candidates:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install tokenizer libraries without PyTorch or model weights
+        run: python -m pip install "transformers==5.17.0" "huggingface_hub==1.33.0"
+      - name: Compile and test candidate matching contracts
+        run: |
+          python -m compileall -q iq_cloud/lexical_warmstart.py scripts/iq235_lexical_candidates.py
+          python -m unittest discover -s tests -p "test_iq235_lexical_candidates.py"
+      - name: Build actual cross-tokenizer candidate mapping (no neural weights)
+        env:
+          HF_HUB_DISABLE_TELEMETRY: "1"
+        run: |
+          python -m scripts.iq235_lexical_candidates --out artifacts/iq235_glm53_lexical_candidates.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: iq235-glm53-lexical-candidates-no-weights
+          path: artifacts/iq235_glm53_lexical_candidates.json
+          if-no-files-found: error
+          retention-days: 7
