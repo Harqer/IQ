@@ -11,7 +11,7 @@ import unittest
 
 from iq_cloud.remote_shard_loader import (
     RemoteShardError, validate_digest_manifest,
-    verified_remote_shard, verify_safetensors_header,
+    verified_remote_shard, snapshot_remote_shard, verify_safetensors_header,
 )
 
 def make_shard():
@@ -62,6 +62,37 @@ class RemoteShardTests(unittest.TestCase):
                 self.assertEqual(len(list(Path(root).iterdir())), 1)
             self.assertEqual(list(Path(root).iterdir()), [])
         self.assertEqual(fs.calls, 1)
+
+    def test_experimental_single_pass_snapshot_is_unreviewed(self):
+        blob = make_shard()
+        fs = FakeRemote(blob)
+        with tempfile.TemporaryDirectory() as root:
+            with snapshot_remote_shard(
+                fs, self.uri, expected_keys={"x.weight", "y.weight"},
+                scratch_dir=root, chunk_bytes=7,
+            ) as (path, header, digest):
+                self.assertEqual(digest, sha256(blob).hexdigest())
+                self.assertEqual(path.read_bytes(), blob)
+                self.assertEqual(set(header), {"x.weight", "y.weight"})
+            self.assertEqual(list(Path(root).iterdir()), [])
+        self.assertEqual(fs.calls, 1)
+
+    def test_experimental_corrupted_header_does_not_yield(self):
+        blob = make_shard()
+        with self.assertRaisesRegex(RemoteShardError, "tensor names"):
+            with snapshot_remote_shard(
+                FakeRemote(blob), self.uri,
+                expected_keys={"unexpected.weight"},
+            ):
+                self.fail("unverified/invalid structure was exposed")
+
+    def test_verified_loading_never_accepts_unpinned_hash(self):
+        with self.assertRaisesRegex(RemoteShardError, "pinned SHA-256"):
+            with verified_remote_shard(
+                FakeRemote(make_shard()), self.uri, None,
+                expected_keys={"x.weight", "y.weight"},
+            ):
+                self.fail("unpinned input accepted by verified loader")
 
     def test_checksum_failure_does_not_yield_or_leave_scratch(self):
         with tempfile.TemporaryDirectory() as root:

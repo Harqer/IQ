@@ -127,22 +127,23 @@ def validate_digest_manifest(
 
 
 @contextmanager
-def verified_remote_shard(
-    filesystem, uri: str, expected_sha256: str, *,
+def _stage_remote_shard(
+    filesystem, uri: str, *, expected_sha256: str | None,
     expected_keys: set[str] | frozenset[str],
     scratch_dir: str | None = None,
     max_shard_bytes: int = MAX_SHARD,
     chunk_bytes: int = CHUNK,
-) -> Iterator[tuple[Path, dict[str, dict]]]:
-    """Stream one shard into ephemeral remote scratch; verify before yielding.
+) -> Iterator[tuple[Path, dict[str, dict], str]]:
+    """One remote read: stage, compute SHA, inspect header, and clean up.
 
-    A caller cannot read/use the staged model tensor before its checksum,
-    length, and header are fully verified. Scratch is deleted on exit/failure.
+    Without an expected digest the returned checksum is an *unreviewed
+    snapshot*, not an independent authenticity or corruption attestation.
     """
     if (not isinstance(uri, str) or not uri.startswith("hf://buckets/")
             or not uri.endswith(".safetensors") or ".." in uri.split("/")
-            or not isinstance(expected_sha256, str)
-            or SHA256.fullmatch(expected_sha256) is None):
+            or (expected_sha256 is not None and (
+                not isinstance(expected_sha256, str)
+                or SHA256.fullmatch(expected_sha256) is None))):
         raise RemoteShardError("unsafe source URI or invalid pinned digest")
     if (type(max_shard_bytes) is not int or not 8 < max_shard_bytes <= MAX_SHARD
             or type(chunk_bytes) is not int or not 0 < chunk_bytes <= CHUNK):
@@ -165,10 +166,52 @@ def verified_remote_shard(
                 output.write(chunk)
             if remote.read(1):
                 raise RemoteShardError("remote stream exceeds recorded shard size")
-        if copied != size or digest.hexdigest() != expected_sha256:
+        actual_sha256 = digest.hexdigest()
+        if copied != size or (
+            expected_sha256 is not None and actual_sha256 != expected_sha256
+        ):
             raise RemoteShardError("remote shard length or SHA-256 integrity mismatch")
         with staged.open("rb") as check:
             header = verify_safetensors_header(
                 check, file_size=size, expected_keys=expected_keys,
             )
+        yield staged, header, actual_sha256
+
+
+@contextmanager
+def verified_remote_shard(
+    filesystem, uri: str, expected_sha256: str, *,
+    expected_keys: set[str] | frozenset[str],
+    scratch_dir: str | None = None,
+    max_shard_bytes: int = MAX_SHARD,
+    chunk_bytes: int = CHUNK,
+) -> Iterator[tuple[Path, dict[str, dict]]]:
+    """Production mode: require independent pinned SHA before tensor exposure."""
+    if not isinstance(expected_sha256, str) or SHA256.fullmatch(expected_sha256) is None:
+        raise RemoteShardError("pinned SHA-256 required for verified loading")
+    with _stage_remote_shard(
+        filesystem, uri, expected_sha256=expected_sha256,
+        expected_keys=expected_keys, scratch_dir=scratch_dir,
+        max_shard_bytes=max_shard_bytes, chunk_bytes=chunk_bytes,
+    ) as (staged, header, _actual):
         yield staged, header
+
+
+@contextmanager
+def snapshot_remote_shard(
+    filesystem, uri: str, *, expected_keys: set[str] | frozenset[str],
+    scratch_dir: str | None = None,
+    max_shard_bytes: int = MAX_SHARD,
+    chunk_bytes: int = CHUNK,
+) -> Iterator[tuple[Path, dict[str, dict], str]]:
+    """Explicit experimental mode: hash while loading; NO authenticity claim.
+
+    The caller must save and independently review the complete snapshot
+    before it can become a pinned reference for any subsequent verified run.
+    """
+    with _stage_remote_shard(
+        filesystem, uri, expected_sha256=None, expected_keys=expected_keys,
+        scratch_dir=scratch_dir, max_shard_bytes=max_shard_bytes,
+        chunk_bytes=chunk_bytes,
+    ) as sample:
+        yield sample
