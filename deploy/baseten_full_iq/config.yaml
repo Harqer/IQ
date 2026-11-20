@@ -25,10 +25,12 @@ requirements:
   - opentelemetry-sdk
   - opentelemetry-exporter-otlp-proto-http
 build_commands:
-  - git clone https://github.com/state-spaces/mamba.git /tmp/iq-mamba3-src
-  - git -C /tmp/iq-mamba3-src checkout e9594ce1c732d97440f0332fdc43170a2294dbfa
-  - python3 -c 'from pathlib import Path; import sys; p=Path("/tmp/iq-mamba3-src/mamba_ssm/ops/tilelang/mamba3/mamba3_mimo_fwd.py"); s=p.read_text(encoding="utf-8"); old="                for cs, p in T.Parallel(chunk_size, P):\n                    v_shared[cs, p] = V[i_b, chunk_start+cs, i_h, p]"; new="                for cs, p in T.Parallel(chunk_size, P):\n                    if chunk_start + cs < S:\n                        v_shared[cs, p] = V[i_b, chunk_start+cs, i_h, p]\n                    else:\n                        v_shared[cs, p] = 0.0"; s.count(old)==1 or sys.exit("unrecognized pinned MIMO source; fail closed"); p.write_text(s.replace(old, new), encoding="utf-8")'
-  - TORCH_CUDA_ARCH_LIST=9.0 MAMBA_FORCE_BUILD=TRUE python -m pip install --no-build-isolation --no-deps /tmp/iq-mamba3-src
+  # Install via pinned VCS URL. pip's direct_url.json must contain vcs_info
+  # because require_mamba3_mimo_runtime() checks the exact source commit.
+  - TORCH_CUDA_ARCH_LIST=9.0 MAMBA_FORCE_BUILD=TRUE python -m pip install --no-build-isolation --no-deps 'git+https://github.com/state-spaces/mamba.git@e9594ce1c732d97440f0332fdc43170a2294dbfa'
+  # Patch the installed TileLang Python kernel, not a detached source clone.
+  - python3 -c 'from pathlib import Path; from importlib.util import find_spec; import sys; spec=find_spec("mamba_ssm"); spec and spec.submodule_search_locations or sys.exit("no pinned mamba_ssm install"); root=Path(next(iter(spec.submodule_search_locations))); p=root/"ops/tilelang/mamba3/mamba3_mimo_fwd.py"; s=p.read_text(encoding="utf-8"); old="                for cs, p in T.Parallel(chunk_size, P):\n                    v_shared[cs, p] = V[i_b, chunk_start+cs, i_h, p]"; new="                for cs, p in T.Parallel(chunk_size, P):\n                    if chunk_start + cs < S:\n                        v_shared[cs, p] = V[i_b, chunk_start+cs, i_h, p]\n                    else:\n                        v_shared[cs, p] = 0.0"; s.count(old)==1 or sys.exit("unrecognized pinned MIMO source; fail closed"); p.write_text(s.replace(old, new), encoding="utf-8")'
+  - python3 -c 'from importlib.metadata import distribution; from pathlib import Path; from importlib.util import find_spec; import json; from hashlib import sha256; d=distribution("mamba_ssm"); info=json.loads(d.read_text("direct_url.json")); assert info.get("vcs_info",{}).get("commit_id")=="e9594ce1c732d97440f0332fdc43170a2294dbfa", "Mamba3 install lost pinned VCS provenance"; p=Path(next(iter(find_spec("mamba_ssm").submodule_search_locations)))/"ops/tilelang/mamba3/mamba3_mimo_fwd.py"; s=p.read_text(); assert "if chunk_start + cs < S:" in s, "missing patched MIMO tail guard"'
 resources:
   accelerator: H200:8
   cpu: "32"
