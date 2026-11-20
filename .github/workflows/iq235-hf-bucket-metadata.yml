@@ -4,6 +4,9 @@ on:
   pull_request:
     paths:
       - "iq_cloud/checkpoint_metadata.py"
+      - "iq_cloud/bulk_readiness.py"
+      - "scripts/iq235_bulk_readiness.py"
+      - "tests/test_iq235_bulk_readiness.py"
       - "iq_cloud/checkpoint_migration.py"
       - "scripts/iq235_checkpoint_migration.py"
       - "tests/test_iq235_checkpoint_migration.py"
@@ -53,3 +56,8 @@ jobs:
           HF_HUB_DISABLE_TELEMETRY: "1"
         run: |
           python -m scripts.iq235_lexical_header
+      - name: Bulk readiness plus six representative source headers only
+        env:
+          HF_HUB_DISABLE_TELEMETRY: "1"
+        run: |
+          python -m scripts.iq235_bulk_readiness --remote-header-samples
