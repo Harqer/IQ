@@ -174,6 +174,28 @@ class LexicalTrainTests(unittest.TestCase):
                 tokenizer_mapping_sha256="TEST_ONLY",
             )
 
+    def test_test_only_flag_cannot_bypass_production_model_geometry(self):
+        class LargerFixture(ToyIQ):
+            def __init__(self):
+                super().__init__()
+                self.embed_tokens = nn.Embedding(33, 4)
+                self.lm_head = nn.Linear(4, 33, bias=False)
+        with self.assertRaisesRegex(LexicalTrainingError, "tiny synthetic"):
+            IQ235GLM53LexicalObjective(
+                LargerFixture(), range(5), tokenizer_mapping_sha256="TEST_ONLY",
+                test_only_small_model=True,
+            )
+        class MislabelledFullModel(ToyIQ):
+            def __init__(self):
+                super().__init__()
+                self.layers = nn.ModuleList([nn.Identity() for _ in range(235)])
+        with self.assertRaisesRegex(LexicalTrainingError, "tiny synthetic"):
+            IQ235GLM53LexicalObjective(
+                MislabelledFullModel(), range(5),
+                tokenizer_mapping_sha256="TEST_ONLY",
+                test_only_small_model=True,
+            )
+
     def test_production_does_not_accept_a_self_attested_integrity_dict(self):
         # The live model cannot be instantiated on CPU; inspect the actual
         # production gate with a source-level regression to prevent a future

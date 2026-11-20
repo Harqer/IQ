@@ -150,8 +150,17 @@ class IQ235GLM53LexicalObjective(nn.Module):
                 "verified full-checkpoint loader/attestation; metadata and "
                 "caller-supplied source_integrity flags cannot authorize it"
             )
-        elif tokenizer_mapping_sha256 != "TEST_ONLY":
-            raise LexicalTrainingError("small-model fixture requires TEST_ONLY identity")
+        else:
+            # TEST_ONLY is never a backdoor for a full-sized or pretrained IQ.
+            # Production geometry is deliberately too large for this CPU
+            # fixture path, even if a caller sets the flag explicitly.
+            if (tokenizer_mapping_sha256 != "TEST_ONLY"
+                    or embedding.shape[0] > 32
+                    or embedding.shape[1] > 64
+                    or len(getattr(student, "layers", ())) >= 235):
+                raise LexicalTrainingError(
+                    "TEST_ONLY restricted to tiny synthetic CPU fixtures"
+                )
         defined = _require_ids(defined_token_ids, embedding.shape[0])
         if not test_only_small_model and len(defined) != 154856:
             raise LexicalTrainingError("all 154856 defined GLM IDs are required")
