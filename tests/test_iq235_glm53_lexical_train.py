@@ -120,6 +120,32 @@ class LexicalTrainTests(unittest.TestCase):
         with self.assertRaisesRegex(LexicalTrainingError, "no supervised"):
             self.obj(**b)
 
+    def test_reject_invalid_lexical_batch_before_backbone_forward(self):
+        class CountingIQ(ToyIQ):
+            def __init__(self):
+                super().__init__()
+                self.forward_calls = 0
+            def forward(self, *args, **kwargs):
+                self.forward_calls += 1
+                return super().forward(*args, **kwargs)
+        student = CountingIQ()
+        objective = IQ235GLM53LexicalObjective(
+            student, range(5), tokenizer_mapping_sha256="TEST_ONLY",
+            test_only_small_model=True, teacher_weight=0.5,
+        )
+        bad = batch()
+        bad["labels"][0, 1] = 5
+        with self.assertRaisesRegex(LexicalTrainingError, "undefined"):
+            objective(**bad)
+        self.assertEqual(student.forward_calls, 0)
+        bad = batch()
+        bad["teacher_logits"] = torch.zeros(2, 4, 6)
+        bad["teacher_input_ids"] = bad["input_ids"].clone()
+        bad["teacher_input_ids"][0, 0] = 4
+        with self.assertRaisesRegex(LexicalTrainingError, "must exactly equal"):
+            objective(**bad)
+        self.assertEqual(student.forward_calls, 0)
+
     def test_heldout_does_not_mutate_parameters(self):
         before = {k: v.clone() for k, v in self.model.state_dict().items()}
         self.obj.train()

@@ -199,18 +199,9 @@ class IQ235GLM53LexicalObjective(nn.Module):
             raise LexicalTrainingError("input token ID outside GLM vocabulary")
         if bool((lookup[input_ids.long()] < 0).any()):
             raise LexicalTrainingError("input contains undefined GLM token ID")
-        output = self.student(
-            input_ids, labels=None, attention_mask=attention_mask,
-            **student_kwargs,
-        )
-        logits = getattr(output, "logits", None)
+        # Reject invalid labels and teacher streams BEFORE the expensive
+        # 235-layer multi-GPU forward pass.
         expected = (*input_ids.shape, lookup.numel())
-        if not isinstance(logits, torch.Tensor) or tuple(logits.shape) != expected:
-            raise LexicalTrainingError("full IQ model did not produce GLM-sized logits")
-        if not bool(torch.isfinite(logits).all()):
-            raise LexicalTrainingError("student logits contain nonfinite values")
-        ids = self.defined_ids.to(logits.device)
-        compact = logits[:, :-1].float().index_select(-1, ids)
         shifted = labels[:, 1:].long()
         valid = shifted != -100
         if attention_mask is not None:
@@ -223,9 +214,6 @@ class IQ235GLM53LexicalObjective(nn.Module):
         dense = lookup[requested.to(lookup.device)]
         if bool((dense < 0).any()):
             raise LexicalTrainingError("supervised target is an undefined token")
-        token_logits = compact[valid]
-        causal = F.cross_entropy(token_logits, dense.to(token_logits.device))
-        teacher_kl: torch.Tensor | None = None
         if self.teacher_weight:
             if (not isinstance(teacher_logits, torch.Tensor)
                     or tuple(teacher_logits.shape) != expected
@@ -236,12 +224,28 @@ class IQ235GLM53LexicalObjective(nn.Module):
             if (not isinstance(teacher_input_ids, torch.Tensor)
                     or teacher_input_ids.shape != input_ids.shape
                     or teacher_input_ids.dtype not in (torch.int32, torch.int64)
+                    or teacher_input_ids.device != input_ids.device
                     or not torch.equal(teacher_input_ids, input_ids)):
                 raise LexicalTrainingError(
                     "GLM teacher input token IDs must exactly equal student input IDs"
                 )
-            if teacher_logits.device != logits.device:
+            if teacher_logits.device != input_ids.device:
                 raise LexicalTrainingError("student and teacher logits must share a device")
+        output = self.student(
+            input_ids, labels=None, attention_mask=attention_mask,
+            **student_kwargs,
+        )
+        logits = getattr(output, "logits", None)
+        if not isinstance(logits, torch.Tensor) or tuple(logits.shape) != expected:
+            raise LexicalTrainingError("full IQ model did not produce GLM-sized logits")
+        if not bool(torch.isfinite(logits).all()):
+            raise LexicalTrainingError("student logits contain nonfinite values")
+        ids = self.defined_ids.to(logits.device)
+        compact = logits[:, :-1].float().index_select(-1, ids)
+        token_logits = compact[valid]
+        causal = F.cross_entropy(token_logits, dense.to(token_logits.device))
+        teacher_kl: torch.Tensor | None = None
+        if self.teacher_weight:
             teacher = teacher_logits[:, :-1].float().index_select(-1, ids)
             t = self.temperature
             teacher_logp = F.log_softmax(teacher[valid] / t, dim=-1).detach()
