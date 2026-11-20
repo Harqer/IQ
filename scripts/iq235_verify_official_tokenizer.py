@@ -10,7 +10,8 @@ import os
 from pathlib import Path
 
 from iq_cloud.glm53_lexical import (
-    GLM_REPO, GLM_REVISION, GLM_VOCAB, verify_glm53_tokenizer,
+    GLM_REPO, GLM_REVISION, GLM_VOCAB, GLM_PINNED_MAPPING_SHA256,
+    verify_glm53_tokenizer,
 )
 
 
@@ -18,7 +19,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--expected-mapping-sha256",
-        default=os.environ.get("IQ_GLM53_TOKENIZER_SHA256"),
+        default=os.environ.get(
+            "IQ_GLM53_TOKENIZER_SHA256", GLM_PINNED_MAPPING_SHA256
+        ),
         help="Optional previously verified independent mapping fingerprint",
     )
     parser.add_argument("--offline", action="store_true",

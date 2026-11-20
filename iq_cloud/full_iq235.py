@@ -81,10 +81,15 @@ def physical_layer_placement(config, *, gpu_count=GPU_COUNT):
 
 def tokenizer_contract(tokenizer, source_config):
     """Reuse the official GLM-5.3 lexical contract, never source IQ token IDs."""
-    from .glm53_lexical import verify_glm53_tokenizer
-    expected = os.getenv("IQ_GLM53_TOKENIZER_SHA256") or None
+    from .glm53_lexical import (
+        GLM_PINNED_MAPPING_SHA256, verify_glm53_tokenizer,
+    )
+    supplied = os.getenv("IQ_GLM53_TOKENIZER_SHA256")
+    if supplied and supplied.lower().strip() != GLM_PINNED_MAPPING_SHA256:
+        raise FullIQ235Error("unverified override of pinned GLM tokenizer mapping")
     return verify_glm53_tokenizer(
-        tokenizer, source_config, expected_mapping_sha256=expected
+        tokenizer, source_config,
+        expected_mapping_sha256=GLM_PINNED_MAPPING_SHA256,
     )["mapping_sha256"]
 
 

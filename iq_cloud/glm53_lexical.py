@@ -13,6 +13,7 @@ from typing import Any, Mapping
 
 GLM_REPO = "zai-org/GLM-5.3-BF16"
 GLM_REVISION = "abf42e6c0e53bc29a875511301e7b7fcd220315b"
+GLM_PINNED_MAPPING_SHA256 = "e3ed8f39509e41ae3b307ed3b3d8e7237a2e9b9bd13ee4d06da1905f9768639e"  # Verified official token map in CI
 GLM_VOCAB = 154880
 GLM_PAD_ID = 154820
 GLM_EOS_IDS = (154820, 154827, 154829)
