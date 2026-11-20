@@ -174,6 +174,15 @@ class LexicalTrainTests(unittest.TestCase):
                 tokenizer_mapping_sha256="TEST_ONLY",
             )
 
+    def test_production_does_not_accept_a_self_attested_integrity_dict(self):
+        # The live model cannot be instantiated on CPU; inspect the actual
+        # production gate with a source-level regression to prevent a future
+        # boolean-flag bypass.
+        from inspect import getsource
+        gate = getsource(IQ235GLM53LexicalObjective.__init__)
+        self.assertIn("caller-supplied source_integrity flags cannot authorize it", gate)
+        self.assertNotIn('source_integrity.get("weights_injected")', gate)
+
     def test_tied_lexical_weights_rejected(self):
         model = ToyIQ()
         model.lm_head.weight = model.embed_tokens.weight

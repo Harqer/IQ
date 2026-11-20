@@ -4,6 +4,9 @@ on:
   pull_request:
     paths:
       - "iq_cloud/checkpoint_metadata.py"
+      - "iq_cloud/checkpoint_migration.py"
+      - "scripts/iq235_checkpoint_migration.py"
+      - "tests/test_iq235_checkpoint_migration.py"
       - "iq_cloud/glm53_lexical.py"
       - "configs/iq235_checkpoint_source.json"
       - "configs/iq235_glm53_tokenizer_phase_a.json"
@@ -37,6 +40,11 @@ jobs:
           HF_HUB_DISABLE_TELEMETRY: "1"
         run: |
           python -m scripts.iq235_bucket_metadata
+      - name: Check source-to-GLM body reuse and lexical replacement plan
+        env:
+          HF_HUB_DISABLE_TELEMETRY: "1"
+        run: |
+          python -m scripts.iq235_checkpoint_migration
       - name: Audit existing GLM residual-coordinate matrices (headers only)
         run: |
           python -m scripts.iq235_glm53_calibration_headers

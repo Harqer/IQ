@@ -22,7 +22,6 @@ from torch.nn import functional as F
 from iq_cloud.glm53_lexical import (
     GLM_PINNED_MAPPING_SHA256, GLM_REVISION, GLM_VOCAB, IQ_WIDTH,
 )
-from iq_cloud.checkpoint_metadata import EXPECTED_INDEX_SHA256
 
 
 class LexicalTrainingError(ValueError):
@@ -142,15 +141,15 @@ class IQ235GLM53LexicalObjective(nn.Module):
                 raise LexicalTrainingError(
                     "GLM teacher model must match the pinned full BF16 revision"
                 )
-            if (not isinstance(source_integrity, Mapping)
-                    or source_integrity.get("checkpoint_index_sha256") != EXPECTED_INDEX_SHA256
-                    or source_integrity.get("source_payloads_sha256_verified") is not True
-                    or source_integrity.get("weights_injected") is not True
-                    or source_integrity.get("model_phase") != "pretrained_full235_loaded"):
-                raise LexicalTrainingError(
-                    "full source payload integrity and pretrained weight loading required; "
-                    "architecture-only/random weights are forbidden"
-                )
+            # A caller-supplied mapping is NOT trusted evidence. An actual
+            # weight loader must prove and bind all loaded payload digests to
+            # this model before a production path can be enabled. No such
+            # loader is currently implemented in this branch.
+            raise LexicalTrainingError(
+                "IQ235 production lexical training blocked: there is no "
+                "verified full-checkpoint loader/attestation; metadata and "
+                "caller-supplied source_integrity flags cannot authorize it"
+            )
         elif tokenizer_mapping_sha256 != "TEST_ONLY":
             raise LexicalTrainingError("small-model fixture requires TEST_ONLY identity")
         defined = _require_ids(defined_token_ids, embedding.shape[0])
