@@ -171,6 +171,7 @@ def generate_probe(state, prompt, *, max_new_tokens=1, tracer=None):
         raise FullIQ235Error("phase A prompt must encode to 1..64 GLM token IDs")
     if bool(((ids < 0) | (ids >= EXPECTED_VOCAB)).any().item()):
         raise FullIQ235Error("GLM input token ID outside 154880 vocabulary")
+    prompt_token_count = int(ids.shape[1])
     ids = ids.to("cuda:0")
     executed = [0 for _ in range(235)]
     hooks = []
@@ -186,6 +187,7 @@ def generate_probe(state, prompt, *, max_new_tokens=1, tracer=None):
                 })
         hooks.append(layer.register_forward_hook(on_forward))
     output_ids = []
+    finish_reason = "length"
     try:
         for step in range(max_new_tokens):
             scope = (tracer.start_as_current_span("iq235.full_forward")
@@ -205,6 +207,7 @@ def generate_probe(state, prompt, *, max_new_tokens=1, tracer=None):
                     raise FullIQ235Error("GLM output token ID outside vocabulary")
                 output_ids.append(token_id)
                 if token_id in (154820, 154827, 154829):
+                    finish_reason = "eos_token"
                     break
                 ids = torch.cat([ids, torch.tensor([[token_id]], device=ids.device)], -1)
     finally:
@@ -220,7 +223,8 @@ def generate_probe(state, prompt, *, max_new_tokens=1, tracer=None):
         "moe_layers": 78,
         "experts_per_moe_layer": 256,
         "glm_tokenizer_vocab": EXPECTED_VOCAB,
-        "input_tokens": int(ids.shape[1] - len(output_ids)),
+        "input_tokens": prompt_token_count,
+        "finish_reason": finish_reason,
         "generated_ids": output_ids,
         "completion": state.tokenizer.decode(output_ids, skip_special_tokens=True),
         "schema_sha256": state.schema_sha256,
