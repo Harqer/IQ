@@ -7,6 +7,7 @@ against the original Mamba-3's official Llama-3.1-8B tokenizer.
 """
 from __future__ import annotations
 
+from collections import Counter
 from hashlib import sha256
 import json
 from typing import Any, Iterable, Mapping
@@ -68,6 +69,7 @@ def candidate_rows(
     target_tokenizer: Any,
     *,
     target_ids: Iterable[int] | None = None,
+    diagnostics: dict[str, int] | None = None,
     source_limit: int = SOURCE_IQ_VOCAB,
     target_limit: int = GLM_VOCAB,
 ) -> dict[int, int]:
@@ -97,21 +99,35 @@ def candidate_rows(
     source_special = set(source_tokenizer.all_special_ids)
     target_special = set(target_tokenizer.all_special_ids)
     matches: dict[int, int] = {}
+    reasons: Counter[str] = Counter()
     for target_id in ids:
         if target_id in target_special:
+            reasons["target_special"] += 1
             continue
         text = _one_id_roundtrips(target_tokenizer, target_id)
         if text is None:
+            reasons["target_non_roundtrip"] += 1
             continue
         possible = source_tokenizer.encode(text, add_special_tokens=False)
         if (len(possible) != 1 or type(possible[0]) is not int
                 or not 0 <= possible[0] < source_limit
                 or possible[0] in source_special):
+            reasons["source_not_single_defined_token"] += 1
             continue
         source_id = possible[0]
         if _one_id_roundtrips(source_tokenizer, source_id) != text:
+            reasons["source_non_roundtrip"] += 1
             continue
+        reasons["candidate_matched"] += 1
         matches[target_id] = source_id
+    if diagnostics is not None:
+        diagnostics.clear()
+        diagnostics.update({name: reasons[name] for name in (
+            "candidate_matched", "target_special", "target_non_roundtrip",
+            "source_not_single_defined_token", "source_non_roundtrip",
+        )})
+        if sum(diagnostics.values()) != len(ids):
+            raise LexicalCandidateError("candidate diagnostic counts incomplete")
     return matches
 
 
@@ -132,7 +148,10 @@ def make_candidate_manifest(
     validate_source_copy_provenance(source_hash, source_resolved_revision)
     if source_revision != LLAMA_COPY_REVISION:
         raise LexicalCandidateError("source revision must use pinned public copy")
-    correspondences = candidate_rows(source_tokenizer, target_tokenizer)
+    diagnostics: dict[str, int] = {}
+    correspondences = candidate_rows(
+        source_tokenizer, target_tokenizer, diagnostics=diagnostics,
+    )
     defined_target_count = len(target_tokenizer.get_vocab())
     return {
         "schema_version": 1,
@@ -151,6 +170,7 @@ def make_candidate_manifest(
         "target_defined_token_count": defined_target_count,
         "unmapped_target_rows_including_reserved": GLM_VOCAB - len(correspondences),
         "candidate_matched_defined_rows": len(correspondences),
+        "candidate_diagnostics": diagnostics,
         "candidate_matches": [[t, s] for t, s in sorted(correspondences.items())],
         "candidate_rows_not_trained_alignment": True,
         "full_pretrained_inference_ready": False,
@@ -186,6 +206,17 @@ def validate_candidate_manifest(manifest: Mapping[str, Any]) -> dict[str, int]:
             or type(manifest.get("target_defined_token_count")) is not int
             or not len(rows) <= manifest["target_defined_token_count"] <= GLM_VOCAB):
         raise LexicalCandidateError("candidate row coverage counts inconsistent")
+    diagnosis = manifest.get("candidate_diagnostics")
+    if diagnosis is not None:
+        expected_names = {"candidate_matched", "target_special",
+                          "target_non_roundtrip",
+                          "source_not_single_defined_token", "source_non_roundtrip"}
+        if (not isinstance(diagnosis, dict)
+                or set(diagnosis) != expected_names
+                or any(type(v) is not int or v < 0 for v in diagnosis.values())
+                or diagnosis["candidate_matched"] != len(rows)
+                or sum(diagnosis.values()) != manifest["target_defined_token_count"]):
+            raise LexicalCandidateError("candidate diagnostics inconsistent")
     return {
         "candidate_matched_rows": len(rows),
         "unmatched_or_reserved_rows": GLM_VOCAB - len(rows),

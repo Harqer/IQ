@@ -52,6 +52,7 @@ def main() -> None:
     counts = validate_candidate_manifest(manifest)
     summary = {
         **counts,
+        "candidate_diagnostics": manifest["candidate_diagnostics"],
         "source_commit": source_commit,
         "source_mapping_sha256": manifest["source_tokenizer_mapping_sha256"],
         "target_mapping_sha256": manifest["target_tokenizer_mapping_sha256"],

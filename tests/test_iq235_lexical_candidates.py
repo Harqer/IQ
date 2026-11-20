@@ -36,6 +36,19 @@ class CandidateTests(unittest.TestCase):
         self.assertEqual(candidate_rows(source,target,target_limit=20,source_limit=10),
                          {10:1,11:2})
 
+    def test_diagnostics_account_for_every_target_token(self):
+        source = TokenizerStub({"hello":1, "world":2})
+        target = TokenizerStub({"hello":10, "world":11, "absent":12, "<special>":13},
+                               special=[13])
+        report = {}
+        matches = candidate_rows(source, target, diagnostics=report,
+                                 target_limit=20, source_limit=10)
+        self.assertEqual(matches, {10:1, 11:2})
+        self.assertEqual(report["candidate_matched"], 2)
+        self.assertEqual(report["target_special"], 1)
+        self.assertEqual(report["source_not_single_defined_token"], 1)
+        self.assertEqual(sum(report.values()), 4)
+
     def test_control_and_replacement_char_filtered(self):
         source = TokenizerStub({"hello":1,"\ufffd":2,"\x00":3})
         target = TokenizerStub({"hello":10,"\ufffd":11,"\x00":12})
