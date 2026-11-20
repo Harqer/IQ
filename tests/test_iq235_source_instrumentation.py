@@ -45,6 +45,12 @@ class IQ235SourceInstrumentationTests(unittest.TestCase):
     def test_source_mode_guard_denies_gpu_before_manifest_pin(self):
         from iq_cloud.full_iq235 import load_pretrained_source, FullIQ235Error
         with patch.dict("os.environ", {"IQ_PHASE": "pretrained_source"}):
+            with self.assertRaisesRegex(FullIQ235Error, "billable-GPU authorization"):
+                load_pretrained_source()
+        with patch.dict("os.environ", {
+            "IQ_PHASE": "pretrained_source",
+            "IQ235_AUTHORIZE_H200X8": "I_APPROVE_BILLABLE_H200X8",
+        }):
             with self.assertRaisesRegex(FullIQ235Error, "no GPU or checkpoint"):
                 load_pretrained_source()
 

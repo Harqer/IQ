@@ -95,8 +95,10 @@ public Llama 3.1 mapping at the original source vocabulary capacity (128256),
 and prepares to inject **all** indexed source tensors, including the two
 original-ID lexical matrices. These are not GLM-tokenizer weights.
 
-The path **cannot** run until an independently reviewed 20,283-shard SHA-256
-manifest is anchored in `checkpoint_metadata.py`; that pin remains `None`.
+The path **cannot** run until explicit billable H200x8 approval is passed via
+`IQ235_AUTHORIZE_H200X8=I_APPROVE_BILLABLE_H200X8` AND an independently
+reviewed 20,283-shard SHA-256 manifest is anchored in
+`checkpoint_metadata.py`; that pin remains `None`.
 Once approved, a remote worker needs the reviewed manifest file at
 `IQ235_APPROVED_MANIFEST_PATH` and scratch at `IQ235_SHARD_SCRATCH_DIR`.
 Neither can be substituted for independent content verification. The default

@@ -35,15 +35,21 @@ class Model:
         provider.add_span_processor(BatchSpanProcessor(exporter))
         trace.set_tracer_provider(provider)
         self.tracer = trace.get_tracer("iq235.full")
-        with self.tracer.start_as_current_span(
-            "iq235.load.full_architecture" if phase == "architecture_only"
-            else "iq235.load.pretrained_source"
-        ):
-            token = (self.config.get("secrets") or {}).get("hf_access_token")
-            if token:
-                environ.setdefault("HF_TOKEN", token)
-            self.state = (load_phase_a() if phase == "architecture_only"
-                          else load_pretrained_source(tracer=self.tracer))
+        try:
+            with self.tracer.start_as_current_span(
+                "iq235.load.full_architecture" if phase == "architecture_only"
+                else "iq235.load.pretrained_source"
+            ):
+                token = (self.config.get("secrets") or {}).get("hf_access_token")
+                if token:
+                    environ.setdefault("HF_TOKEN", token)
+                self.state = (load_phase_a() if phase == "architecture_only"
+                              else load_pretrained_source(tracer=self.tracer))
+        except Exception:
+            # A failing model initialization may terminate the worker before
+            # the batch processor exports its span; flush before propagation.
+            provider.force_flush(timeout_millis=5000)
+            raise
 
     def predict(self, model_input):
         if self.state is None:

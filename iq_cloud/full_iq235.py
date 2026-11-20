@@ -118,7 +118,7 @@ class FullIQ235:
 
 def load_phase_a():
     if os.getenv("IQ_PHASE") != "architecture_only":
-        raise FullIQ235Error("only architecture_only is implemented; injection follows the first stop")
+        raise FullIQ235Error("architecture-only loader requires IQ_PHASE=architecture_only")
     config_data = read_architecture_contract()
     _require_worker_cuda()
     from transformers import AutoTokenizer
@@ -167,6 +167,10 @@ def load_pretrained_source(*, tracer=None) -> FullIQ235:
     """
     if os.getenv("IQ_PHASE") != "pretrained_source":
         raise FullIQ235Error("pretrained source mode requires explicit IQ_PHASE")
+    if os.getenv("IQ235_AUTHORIZE_H200X8") != "I_APPROVE_BILLABLE_H200X8":
+        raise FullIQ235Error(
+            "pretrained source mode requires separate explicit billable-GPU authorization"
+        )
     from .checkpoint_metadata import (
         PINNED_SOURCE_SHARD_MANIFEST_SHA256, EXPECTED_SHARDS,
     )
