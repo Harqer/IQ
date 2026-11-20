@@ -33,6 +33,11 @@ from .remote_shard_loader import (
     verified_remote_shard,
 )
 
+# No independent, fully reviewed 20,283-shard checksum anchor exists yet.
+# Review the streamed shard digests and commit the approved root SHA here
+# before the production loader can execute. NEVER accept an arbitrary caller
+# fingerprint as permission to load the original checkpoint.
+PINNED_SOURCE_SHARD_MANIFEST_SHA256: str | None = None
 SOURCE_LEXICAL = frozenset(("embed_tokens.weight", "lm_head.weight"))
 SOURCE_LEXICAL_SHAPE = (SOURCE_IQ_VOCAB, IQ_WIDTH)
 TARGET_LEXICAL_SHAPE = (GLM_VOCAB, IQ_WIDTH)
@@ -71,6 +76,7 @@ def validate_model_inventory(
     index: Mapping[str, object],
     *,
     expected_lexical_shape: tuple[int, int] = TARGET_LEXICAL_SHAPE,
+    expected_config: Mapping[str, object] | None = None,
     require_production: bool = True,
 ) -> dict[str, torch.Tensor]:
     """Match the source index to live destination parameters exactly."""
@@ -92,6 +98,9 @@ def validate_model_inventory(
     if require_production:
         model_config = getattr(model, "config", None)
         if (model_config is None
+                or not hasattr(model_config, "to_dict")
+                or expected_config is None
+                or model_config.to_dict() != expected_config
                 or getattr(getattr(model_config, "model", None), "vocab_size", None)
                     != GLM_VOCAB
                 or getattr(getattr(model_config, "model", None), "hidden_size", None)
@@ -101,6 +110,7 @@ def validate_model_inventory(
             raise VerifiedBodyLoaderError("full235 production architecture not constructed")
         if (not torch.cuda.is_available() or torch.cuda.device_count() != 8
                 or any("H200" not in torch.cuda.get_device_name(i)
+                       or torch.cuda.get_device_capability(i) != (9, 0)
                        for i in range(8))):
             raise VerifiedBodyLoaderError("exactly eight H200 worker GPUs required")
         for name, tensor in weights.items():
@@ -186,6 +196,11 @@ def load_verified_full235_body(
     to generate meaningful GLM text: source lexical matrix IDs differ and
     final full235 inference is still forbidden until lexical training/validation.
     """
+    if (PINNED_SOURCE_SHARD_MANIFEST_SHA256 is None
+            or approved_manifest_sha256 != PINNED_SOURCE_SHARD_MANIFEST_SHA256):
+        raise VerifiedBodyLoaderError(
+            "no independently pinned 20,283-shard manifest; production loading blocked"
+        )
     if (not isinstance(approved_manifest_bytes, bytes)
             or not isinstance(approved_manifest_sha256, str)
             or SHA256.fullmatch(approved_manifest_sha256) is None
@@ -216,7 +231,9 @@ def load_verified_full235_body(
         source_index_digest=EXPECTED_INDEX_SHA256,
     )
     # Fail before any 539 GB network streaming if model geometry is wrong.
-    targets = validate_model_inventory(model, index)
+    targets = validate_model_inventory(
+        model, index, expected_config=target_config,
+    )
     grouped: dict[str, set[str]] = defaultdict(set)
     for key, shard in index["weight_map"].items():
         grouped[shard].add(key)

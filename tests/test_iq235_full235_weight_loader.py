@@ -97,10 +97,27 @@ class FullLoaderTests(unittest.TestCase):
         self.assertTrue(torch.equal(orig, self.m.norm.bias))
 
     def test_missing_external_manifest_is_rejected_before_network_or_gpu(self):
-        with self.assertRaisesRegex(VerifiedBodyLoaderError, "manifest required"):
+        with self.assertRaisesRegex(VerifiedBodyLoaderError, "manifest; production loading blocked"):
             load_verified_full235_body(
                 self.m, approved_manifest_bytes=b"{}",
                 approved_manifest_sha256="0"*64,
+            )
+
+    def test_self_attested_complete_digest_manifest_does_not_bypass_pin(self):
+        import json
+        from hashlib import sha256
+        manifest = {
+            "schema_version": 1,
+            "source_index_sha256": "a"*64,
+            "sha256_algorithm": "sha256",
+            "model_source_status": "compiled_not_inference_validated",
+            "shards_sha256": {"model-a.safetensors": "a"*64},
+        }
+        contents = json.dumps(manifest, sort_keys=True).encode()
+        with self.assertRaisesRegex(VerifiedBodyLoaderError, "production loading blocked"):
+            load_verified_full235_body(
+                self.m, approved_manifest_bytes=contents,
+                approved_manifest_sha256=sha256(contents).hexdigest(),
             )
 
     def test_return_type_cannot_claim_inference_ready(self):
