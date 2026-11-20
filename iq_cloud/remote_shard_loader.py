@@ -2,8 +2,9 @@
 
 Only a single shard is staged at a time. The original source remains in its
 Hugging Face bucket. No code path from this module can write to that bucket.
-A pinned digest manifest, external to the model index, is mandatory; metadata
-alone cannot establish that the 539 GB model is intact.
+Verified production reads require an independently pinned digest. The separate
+experimental snapshot reader hashes the same download without claiming source
+authenticity. Metadata alone cannot establish 539 GB payload provenance.
 
 The caller MUST run this on an authorized remote worker with enough scratch
 space for the largest individual shard, not on the user's local computer.

@@ -1,8 +1,9 @@
 """Full IQ235 architecture probe and separately guarded source-vocabulary experiment.
 
-Architecture-only is the deployment default. The 128256-token pretrained
-experiment is explicitly disabled until an independently pinned digest
-manifest exists; neither path certifies language quality or production use.
+Architecture-only is the deployment default. Strict source inference requires
+an independently pinned manifest; separately authorized exploratory source
+inference may write an unreviewed manifest during loading. Neither mode
+certifies language quality or production use.
 """
 from __future__ import annotations
 from collections import Counter
@@ -165,7 +166,7 @@ def load_pretrained_source(*, tracer=None) -> FullIQ235:
     """Experimental full source-ID inference, not production quality certification.
 
     Strict gates run before constructing any GPU model or fetching weight data.
-    No 539GB streaming is possible while the trusted digest pin remains None.
+    No 539GB streaming is possible without explicit billing/scan authorization.
     """
     phase = os.getenv("IQ_PHASE")
     if phase not in {"pretrained_source", "pretrained_source_exploratory"}:

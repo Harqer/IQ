@@ -5,8 +5,9 @@ the Hugging Face bucket; each shard is temporarily streamed, SHA-256 verified,
 copied to its exact existing model tensor on its assigned GPU, then deleted.
 
 No trusted per-shard digest manifest currently exists in the source bucket.
-Consequently the live loader MUST fail closed until an independently reviewed
-digest manifest is pinned via the worker's trusted deployment configuration.
+Verified production loading MUST fail closed until independent digest review.
+Explicitly authorized experimental loading instead hashes each shard during
+the same read, saves an unreviewed snapshot, and permits diagnostic inference.
 No metadata-only assertion or caller-provided boolean can enable inference.
 """
 from __future__ import annotations

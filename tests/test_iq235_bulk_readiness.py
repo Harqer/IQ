@@ -45,7 +45,13 @@ class ReadinessTests(unittest.TestCase):
         self.assertFalse(report["runtime_restricts_architecture_only"])
         self.assertTrue(report["default_deployment_is_architecture_only"])
         self.assertTrue(report["source_vocab_experimental_path_integrated"])
-        self.assertTrue(report["source_vocab_experiment_blocked_on_manifest_pin"])
+        self.assertTrue(report["source_vocab_verified_mode_blocked_on_manifest_pin"])
+        self.assertTrue(report["single_pass_exploratory_integrated"])
+        self.assertFalse(report["single_pass_exploratory_executed"])
+        self.assertIn("Stream/sha256/load each source shard exactly once",
+                      report["steps_before_real_pretrained_inference"])
+        self.assertIn("Pin the fully reviewed source manifest",
+                      report["steps_before_verified_production_inference"])
         self.assertTrue(report["runtime_injects_checkpoint_weights"])
         self.assertTrue(report["baseten_stage_includes_loader"])
         self.assertTrue(report["lexical_production_training_blocked"])

@@ -125,7 +125,13 @@ def static_release_blockers(root: Path, *, approved_digest_pin: str | None) -> d
             'def load_pretrained_source(' in runtime
             and 'install_source_lexical=True' in runtime
         ),
-        "source_vocab_experiment_blocked_on_manifest_pin": approved_digest_pin is None,
+        "source_vocab_verified_mode_blocked_on_manifest_pin": approved_digest_pin is None,
+        "single_pass_exploratory_integrated": (
+            '"pretrained_source_exploratory"' in runtime
+            and "experimental_snapshot_path=" in runtime
+        ),
+        "single_pass_exploratory_executed": False,
+        "exploratory_manifest_and_inference_result_reviewed": False,
         "runtime_injects_checkpoint_weights": "load_verified_full235_body(" in runtime,
         "baseten_stage_includes_loader": (
             '"full235_weight_loader.py"' in stage
@@ -140,13 +146,19 @@ def static_release_blockers(root: Path, *, approved_digest_pin: str | None) -> d
         "readiness_to_collect_inference_api_key": False,
         "production_inference_ready": False,
         "steps_before_real_pretrained_inference": [
-            "Independently review and pin every 20283-shard SHA-256 source digest",
-            "Validate full 63164-tensor schema on the exact CUDA Mamba3 runtime",
-            "Authorize billable H200x8 capacity before any remote launch",
-            "Load all 63164 original-ID IQ tensors including the two lexical matrices",
-            "Measure full235 forward, per-layer numerics, and held-out generation",
-            "Separately verify original Mamba donor tensor equality and output quality",
-            "Keep GLM 154880-ID lexical adaptation as a distinct future experiment",
+            "Confirm exact CUDA Mamba3 runtime, provider capacity, and a durable output mount",
+            "Explicitly authorize billable H200x8 and streaming 539GB source weights",
+            "Require opt-in experimental unreviewed provenance acceptance",
+            "Stream/sha256/load each source shard exactly once while checking structural integrity",
+            "Save unreviewed bulk manifest and separate inference outcome report",
+            "Review traces and source Llama-ID generation before approving any digest pin",
+        ],
+        "steps_before_verified_production_inference": [
+            "Independently review/checkpoint donor provenance and every source shard digest",
+            "Pin the fully reviewed source manifest before the verified production load",
+            "Re-run strict source/tensor validation on a supported CUDA runtime",
+            "Validate full-model output quality and release readiness",
+            "Treat GLM tokenizer remapping as a separate future experiment",
         ],
     }
 
