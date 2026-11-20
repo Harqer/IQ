@@ -13,7 +13,7 @@ class Model:
 
     def load(self):
         phase = environ.get("IQ_PHASE")
-        if phase not in {"architecture_only", "pretrained_source"}:
+        if phase not in {"architecture_only", "pretrained_source", "pretrained_source_exploratory"}:
             raise RuntimeError("IQ_PHASE must explicitly select an allowed mode")
         from opentelemetry import trace
         from opentelemetry.sdk.resources import Resource

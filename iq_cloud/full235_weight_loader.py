@@ -15,6 +15,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from hashlib import sha256
 import json
+import os
 from pathlib import Path
 import re
 from typing import Callable, Mapping
@@ -32,7 +33,7 @@ from .checkpoint_migration import build_migration_plan
 from .glm53_lexical import GLM_VOCAB, IQ_WIDTH, SOURCE_IQ_VOCAB
 from .remote_shard_loader import (
     RemoteShardError, SHA256, validate_digest_manifest,
-    verified_remote_shard,
+    verified_remote_shard, snapshot_remote_shard,
 )
 
 # The payload checksum pin is owned by the pure-metadata module so GPU-less
@@ -216,34 +217,93 @@ def _read_bounded(fs, name: str, limit: int) -> bytes:
     return raw
 
 
+def write_unreviewed_snapshot(
+    path: str | Path, *, hashes: Mapping[str, str],
+    indexed_shards: set[str], source_index_digest: str = EXPECTED_INDEX_SHA256,
+) -> str:
+    """Write a complete experimental manifest once; never label it trusted.
+
+    The caller must persist it outside an ephemeral worker for future review.
+    An incomplete manifest is not saved and an existing file is never replaced.
+    """
+    manifest = {
+        "schema_version": 1,
+        "source_index_sha256": source_index_digest,
+        "sha256_algorithm": "sha256",
+        "model_source_status": "compiled_not_inference_validated",
+        "shards_sha256": dict(hashes),
+        "status": "unreviewed_source_digest_snapshot",
+        "full_tensor_finiteness_checked": True,
+        "original_llama_lexical_structure_sampled": True,
+        "independently_pinned": False,
+        "inference_ready": False,
+    }
+    validate_digest_manifest(
+        manifest, indexed_shards, source_index_digest=source_index_digest,
+    )
+    path = Path(path)
+    if path.is_symlink() or path.exists() or not path.parent.is_dir():
+        raise VerifiedBodyLoaderError(
+            "unreviewed manifest destination must be an unused file in an existing directory"
+        )
+    data = json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode()
+    with path.open("xb") as output:
+        output.write(data)
+        output.flush()
+        os.fsync(output.fileno())
+    return sha256(data).hexdigest()
+
+
 def load_verified_full235_body(
     model: torch.nn.Module,
     *,
-    approved_manifest_bytes: bytes,
-    approved_manifest_sha256: str,
+    approved_manifest_bytes: bytes | None = None,
+    approved_manifest_sha256: str | None = None,
     scratch_dir: str | None = None,
     on_shard_verified: Callable[[int, int], None] | None = None,
     install_source_lexical: bool = False,
+    experimental_snapshot_path: str | None = None,
     tracer=None,
 ) -> LoadedSourceBody:
-    """Fail-closed 539GB injection. Original-ID lexical rows only in source mode.
+    """Single-pass shard hashing/injection: trusted or explicitly experimental.
 
-    A returned record verifies loaded bytes/geometry, never language quality.
+    EXPERIMENTAL: captures an unreviewed SHA-256 map while streaming original
+    source tensors once; never claims independent provenance, even on success.
+    PRODUCTION: requires an independently pinned digest manifest before reads.
     """
-    if (PINNED_SOURCE_SHARD_MANIFEST_SHA256 is None
-            or approved_manifest_sha256 != PINNED_SOURCE_SHARD_MANIFEST_SHA256):
-        raise VerifiedBodyLoaderError(
-            "no independently pinned 20,283-shard manifest; production loading blocked"
-        )
-    if (not isinstance(approved_manifest_bytes, bytes)
-            or not isinstance(approved_manifest_sha256, str)
-            or SHA256.fullmatch(approved_manifest_sha256) is None
-            or sha256(approved_manifest_bytes).hexdigest() != approved_manifest_sha256):
-        raise VerifiedBodyLoaderError("independently approved shard digest manifest required")
-    try:
-        manifest = json.loads(approved_manifest_bytes)
-    except (UnicodeDecodeError, ValueError) as exc:
-        raise VerifiedBodyLoaderError("unreadable trusted digest manifest") from exc
+    experimental = experimental_snapshot_path is not None
+    if experimental:
+        if (not install_source_lexical
+                or approved_manifest_bytes is not None
+                or approved_manifest_sha256 is not None
+                or os.getenv("IQ235_EXPLORATORY_UNPINNED") != "I_ACCEPT_UNATTESTED_SOURCE"
+                or os.getenv("IQ235_AUTHORIZE_539GB_READ") != "I_AUTHORIZE_539GB"):
+            raise VerifiedBodyLoaderError(
+                "single-pass exploratory source loading requires separate explicit "
+                "acceptance and 539GB read authorization"
+            )
+        target = Path(experimental_snapshot_path)
+        if (not target.is_absolute() or target.is_symlink()
+                or target.exists() or not target.parent.is_dir()):
+            raise VerifiedBodyLoaderError(
+                "unreviewed manifest destination must be unused absolute path"
+            )
+        manifest = None
+    else:
+        if (PINNED_SOURCE_SHARD_MANIFEST_SHA256 is None
+                or approved_manifest_sha256 != PINNED_SOURCE_SHARD_MANIFEST_SHA256):
+            raise VerifiedBodyLoaderError(
+                "no independently pinned 20,283-shard manifest; production loading blocked"
+            )
+        if (not isinstance(approved_manifest_bytes, bytes)
+                or not isinstance(approved_manifest_sha256, str)
+                or SHA256.fullmatch(approved_manifest_sha256) is None
+                or sha256(approved_manifest_bytes).hexdigest() != approved_manifest_sha256):
+            raise VerifiedBodyLoaderError("independently approved shard digest manifest required")
+        try:
+            manifest = json.loads(approved_manifest_bytes)
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise VerifiedBodyLoaderError("unreadable trusted digest manifest") from exc
 
     from huggingface_hub import HfFileSystem
     from iq_cloud.full_iq235 import read_architecture_contract, config_paths
@@ -261,9 +321,11 @@ def load_verified_full235_body(
     index = json.loads(index_bytes)
     build_migration_plan(original_config, glm_config, index,
                          json.loads(marker_bytes))
-    hashes = validate_digest_manifest(
-        manifest, set(index["weight_map"].values()),
-        source_index_digest=EXPECTED_INDEX_SHA256,
+    indexed_shards = set(index["weight_map"].values())
+    hashes = (
+        {} if experimental else validate_digest_manifest(
+            manifest, indexed_shards, source_index_digest=EXPECTED_INDEX_SHA256,
+        )
     )
     # Fail before any 539 GB network streaming if model geometry is wrong.
     targets = validate_model_inventory(
@@ -282,16 +344,28 @@ def load_verified_full235_body(
     with span_scope(tracer, "iq235.checkpoint.stream_verified_shards", {
         "iq.shards.expected": EXPECTED_SHARDS,
         "iq.source_lexical": install_source_lexical,
+        "iq.integrity.mode": "unreviewed_snapshot" if experimental else "pinned",
     }) as checkpoint_span:
         for n, (name, keys) in enumerate(sorted(grouped.items()), 1):
-            with verified_remote_shard(
-                fs, f"{ROOT}/{name}", hashes[name],
-                expected_keys=keys, scratch_dir=scratch_dir,
-            ) as (staged, header):
-                installed = install_verified_shard(
-                    staged, header, keys, targets,
-                    install_source_lexical=install_source_lexical,
-                )
+            if experimental:
+                with snapshot_remote_shard(
+                    fs, f"{ROOT}/{name}", expected_keys=keys,
+                    scratch_dir=scratch_dir,
+                ) as (staged, header, actual_sha256):
+                    installed = install_verified_shard(
+                        staged, header, keys, targets,
+                        install_source_lexical=True,
+                    )
+                hashes[name] = actual_sha256
+            else:
+                with verified_remote_shard(
+                    fs, f"{ROOT}/{name}", hashes[name],
+                    expected_keys=keys, scratch_dir=scratch_dir,
+                ) as (staged, header):
+                    installed = install_verified_shard(
+                        staged, header, keys, targets,
+                        install_source_lexical=install_source_lexical,
+                    )
             if written & installed:
                 raise VerifiedBodyLoaderError("source tensor installed more than once")
             written |= installed
@@ -305,19 +379,30 @@ def load_verified_full235_body(
             verify_source_lexical_relation(targets)
             if install_source_lexical else 0
         )
+        manifest_sha256 = (
+            write_unreviewed_snapshot(
+                experimental_snapshot_path, hashes=hashes,
+                indexed_shards=indexed_shards,
+            ) if experimental else approved_manifest_sha256
+        )
         if checkpoint_span is not None:
-            checkpoint_span.set_attribute("iq.shards.verified", len(grouped))
+            checkpoint_span.set_attribute("iq.shards.completed", len(grouped))
             checkpoint_span.set_attribute("iq.tensors.loaded", len(written))
             checkpoint_span.set_attribute("iq.lexical.sampled_rows", sampled_rows)
+            checkpoint_span.set_attribute(
+                "iq.integrity.independently_verified", not experimental,
+            )
     return LoadedSourceBody(
         model=model,
         loaded_nonlexical_tensor_count=len(written - SOURCE_LEXICAL),
         verified_source_shard_count=len(grouped),
         source_index_sha256=EXPECTED_INDEX_SHA256,
-        digest_manifest_sha256=approved_manifest_sha256,
-        status=("verified_full_source_checkpoint_loaded_quality_unvalidated"
-                if install_source_lexical
-                else "verified_source_body_loaded_glm_lexical_untrained"),
+        digest_manifest_sha256=manifest_sha256,
+        status=("unreviewed_full_source_snapshot_loaded_quality_unvalidated"
+                if experimental else
+                "verified_full_source_checkpoint_loaded_quality_unvalidated"
+                if install_source_lexical else
+                "verified_source_body_loaded_glm_lexical_untrained"),
         lexical_rows_initialized=install_source_lexical,
         loaded_lexical_tensor_count=(2 if install_source_lexical else 0),
         sampled_lexical_rows_verified=sampled_rows,

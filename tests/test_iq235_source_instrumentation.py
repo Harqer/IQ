@@ -11,7 +11,7 @@ from safetensors.torch import save_file
 
 from iq_cloud.full235_weight_loader import (
     VerifiedBodyLoaderError, install_verified_shard,
-    verify_source_lexical_relation,
+    verify_source_lexical_relation, write_unreviewed_snapshot,
 )
 from iq_cloud.inference_diagnostics import (
     IQ235NumericError, emit_progress, examine_layer_output, span_scope,
@@ -53,6 +53,43 @@ class IQ235SourceInstrumentationTests(unittest.TestCase):
         }):
             with self.assertRaisesRegex(FullIQ235Error, "no GPU or checkpoint"):
                 load_pretrained_source()
+
+    def test_exploratory_single_pass_requires_explicit_authorization(self):
+        from iq_cloud.full_iq235 import load_pretrained_source, FullIQ235Error
+        with patch.dict("os.environ", {
+            "IQ_PHASE": "pretrained_source_exploratory",
+            "IQ235_AUTHORIZE_H200X8": "I_APPROVE_BILLABLE_H200X8",
+        }):
+            with self.assertRaisesRegex(FullIQ235Error, "provenance acceptance"):
+                load_pretrained_source()
+
+    def test_unreviewed_manifest_is_complete_and_never_overwrites(self):
+        from hashlib import sha256
+        import json
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "unreviewed.json"
+            hashes = {"model-a.safetensors": "a" * 64,
+                      "model-b.safetensors": "b" * 64}
+            with self.assertRaisesRegex(Exception, "cover every indexed shard"):
+                write_unreviewed_snapshot(
+                    path, hashes={"model-a.safetensors": "a" * 64},
+                    indexed_shards=set(hashes),
+                    source_index_digest="c" * 64,
+                )
+            self.assertFalse(path.exists())
+            digest = write_unreviewed_snapshot(
+                path, hashes=hashes, indexed_shards=set(hashes),
+                source_index_digest="c" * 64,
+            )
+            raw = path.read_bytes()
+            self.assertEqual(digest, sha256(raw).hexdigest())
+            self.assertEqual(json.loads(raw)["status"], "unreviewed_source_digest_snapshot")
+            self.assertFalse(json.loads(raw)["inference_ready"])
+            with self.assertRaisesRegex(VerifiedBodyLoaderError, "unused file"):
+                write_unreviewed_snapshot(
+                    path, hashes=hashes, indexed_shards=set(hashes),
+                    source_index_digest="c" * 64,
+                )
 
     def test_stage_contains_real_verified_source_loader_and_telemetry(self):
         from scripts.stage_iq235_baseten import selected_sources

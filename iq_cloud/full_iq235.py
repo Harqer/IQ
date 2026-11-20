@@ -114,6 +114,8 @@ class FullIQ235:
     phase: str = "architecture_only"
     checkpoint_weights_injected: bool = False
     verified_source_shards: int = 0
+    snapshot_manifest_sha256: str | None = None
+    checkpoint_integrity: str = "not_loaded"
 
 
 def load_phase_a():
@@ -165,8 +167,9 @@ def load_pretrained_source(*, tracer=None) -> FullIQ235:
     Strict gates run before constructing any GPU model or fetching weight data.
     No 539GB streaming is possible while the trusted digest pin remains None.
     """
-    if os.getenv("IQ_PHASE") != "pretrained_source":
-        raise FullIQ235Error("pretrained source mode requires explicit IQ_PHASE")
+    phase = os.getenv("IQ_PHASE")
+    if phase not in {"pretrained_source", "pretrained_source_exploratory"}:
+        raise FullIQ235Error("pretrained source mode requires an explicit IQ_PHASE")
     if os.getenv("IQ235_AUTHORIZE_H200X8") != "I_APPROVE_BILLABLE_H200X8":
         raise FullIQ235Error(
             "pretrained source mode requires separate explicit billable-GPU authorization"
@@ -174,22 +177,40 @@ def load_pretrained_source(*, tracer=None) -> FullIQ235:
     from .checkpoint_metadata import (
         PINNED_SOURCE_SHARD_MANIFEST_SHA256, EXPECTED_SHARDS,
     )
-    if PINNED_SOURCE_SHARD_MANIFEST_SHA256 is None:
-        raise FullIQ235Error(
-            "missing independently approved full source shard SHA-256 pin; "
-            "no GPU or checkpoint loading authorized"
-        )
-    manifest_location = os.getenv("IQ235_APPROVED_MANIFEST_PATH")
-    if not manifest_location:
-        raise FullIQ235Error("approved manifest file path required for source mode")
-    manifest_path = Path(manifest_location)
-    if not manifest_path.is_file() or manifest_path.is_symlink():
-        raise FullIQ235Error("approved manifest file missing or unsafe")
-    if manifest_path.stat().st_size > 8_000_000:
-        raise FullIQ235Error("approved manifest unexpectedly large")
-    manifest = manifest_path.read_bytes()
-    if sha256(manifest).hexdigest() != PINNED_SOURCE_SHARD_MANIFEST_SHA256:
-        raise FullIQ235Error("approved source manifest digest mismatch")
+    exploratory = phase == "pretrained_source_exploratory"
+    manifest = None
+    snapshot_location = None
+    if exploratory:
+        if (os.getenv("IQ235_EXPLORATORY_UNPINNED") != "I_ACCEPT_UNATTESTED_SOURCE"
+                or os.getenv("IQ235_AUTHORIZE_539GB_READ") != "I_AUTHORIZE_539GB"):
+            raise FullIQ235Error(
+                "unreviewed single-pass inference requires explicit provenance "
+                "acceptance and 539GB read authorization"
+            )
+        snapshot_location = os.getenv("IQ235_UNREVIEWED_MANIFEST_PATH")
+        if not snapshot_location:
+            raise FullIQ235Error("unreviewed manifest output path required")
+        output = Path(snapshot_location)
+        if (not output.is_absolute() or output.exists() or output.is_symlink()
+                or not output.parent.is_dir()):
+            raise FullIQ235Error("unreviewed snapshot path must be an unused absolute path")
+    else:
+        if PINNED_SOURCE_SHARD_MANIFEST_SHA256 is None:
+            raise FullIQ235Error(
+                "missing independently approved full source shard SHA-256 pin; "
+                "no GPU or checkpoint loading authorized"
+            )
+        manifest_location = os.getenv("IQ235_APPROVED_MANIFEST_PATH")
+        if not manifest_location:
+            raise FullIQ235Error("approved manifest file path required for source mode")
+        manifest_path = Path(manifest_location)
+        if not manifest_path.is_file() or manifest_path.is_symlink():
+            raise FullIQ235Error("approved manifest file missing or unsafe")
+        if manifest_path.stat().st_size > 8_000_000:
+            raise FullIQ235Error("approved manifest unexpectedly large")
+        manifest = manifest_path.read_bytes()
+        if sha256(manifest).hexdigest() != PINNED_SOURCE_SHARD_MANIFEST_SHA256:
+            raise FullIQ235Error("approved source manifest digest mismatch")
 
     from transformers import AutoTokenizer
     from .lexical_warmstart import (
@@ -230,8 +251,14 @@ def load_pretrained_source(*, tracer=None) -> FullIQ235:
         "iq.shards.expected": EXPECTED_SHARDS,
     }):
         loaded = load_verified_full235_body(
-            model, approved_manifest_bytes=manifest,
-            approved_manifest_sha256=PINNED_SOURCE_SHARD_MANIFEST_SHA256,
+            model,
+            approved_manifest_bytes=(None if exploratory else manifest),
+            approved_manifest_sha256=(
+                None if exploratory else PINNED_SOURCE_SHARD_MANIFEST_SHA256
+            ),
+            experimental_snapshot_path=(
+                snapshot_location if exploratory else None
+            ),
             scratch_dir=os.getenv("IQ235_SHARD_SCRATCH_DIR"),
             install_source_lexical=True, tracer=tracer,
         )
@@ -243,8 +270,12 @@ def load_pretrained_source(*, tracer=None) -> FullIQ235:
     # Only an experimental inference permit, NEVER a quality/production claim.
     return FullIQ235(
         tokenizer, model, model_schema_sha(model), digest, placement,
-        phase="pretrained_source", checkpoint_weights_injected=True,
+        phase=phase, checkpoint_weights_injected=True,
         verified_source_shards=loaded.verified_source_shard_count,
+        snapshot_manifest_sha256=loaded.digest_manifest_sha256,
+        checkpoint_integrity=(
+            "unreviewed_stream_hashes" if exploratory else "independently_pinned"
+        ),
     )
 
 
@@ -274,11 +305,11 @@ def generate_probe(state, prompt, *, max_new_tokens=1, tracer=None):
     if type(max_new_tokens) is not int or not 1 <= max_new_tokens <= 2:
         raise FullIQ235Error("phase A allows 1 or 2 complete forward tokens")
     phase = getattr(state, "phase", "architecture_only")
-    if phase not in {"architecture_only", "pretrained_source"}:
+    if phase not in {"architecture_only", "pretrained_source", "pretrained_source_exploratory"}:
         raise FullIQ235Error("unexpected inference phase")
-    if phase == "pretrained_source" and not state.checkpoint_weights_injected:
+    if phase != "architecture_only" and not state.checkpoint_weights_injected:
         raise FullIQ235Error("cannot infer before full pretrained source loading")
-    vocab_size = SOURCE_VOCAB if phase == "pretrained_source" else EXPECTED_VOCAB
+    vocab_size = SOURCE_VOCAB if phase != "architecture_only" else EXPECTED_VOCAB
     diagnostics = os.getenv("IQ235_NUMERIC_DIAGNOSTICS") == "1"
     ids = state.tokenizer(prompt, return_tensors="pt").input_ids
     if ids.ndim != 2 or ids.shape[0] != 1 or not 1 <= ids.shape[1] <= 64:
@@ -323,7 +354,7 @@ def generate_probe(state, prompt, *, max_new_tokens=1, tracer=None):
     eos_ids = {state.tokenizer.eos_token_id} if (
         isinstance(state.tokenizer.eos_token_id, int)
     ) else set(state.tokenizer.eos_token_id or ())
-    if phase == "pretrained_source":
+    if phase != "architecture_only":
         end_of_turn = vocab.get("<|eot_id|>")
         if isinstance(end_of_turn, int):
             eos_ids.add(end_of_turn)
@@ -359,7 +390,7 @@ def generate_probe(state, prompt, *, max_new_tokens=1, tracer=None):
                 if not 0 <= token_id < vocab_size:
                     raise FullIQ235Error("output token ID outside vocabulary")
                 output_ids.append(token_id)
-                if token_id in (eos_ids if phase == "pretrained_source"
+                if token_id in (eos_ids if phase != "architecture_only"
                                 else (154820, 154827, 154829)):
                     finish_reason = "eos_token"
                     break
@@ -377,7 +408,9 @@ def generate_probe(state, prompt, *, max_new_tokens=1, tracer=None):
         "moe_layers": 78,
         "experts_per_moe_layer": 256,
         "glm_tokenizer_vocab": (EXPECTED_VOCAB if phase == "architecture_only" else None),
-        "source_tokenizer_vocab": (SOURCE_VOCAB if phase == "pretrained_source" else None),
+        "source_tokenizer_vocab": (SOURCE_VOCAB if phase != "architecture_only" else None),
+        "checkpoint_integrity": state.checkpoint_integrity,
+        "unreviewed_or_pinned_manifest_sha256": state.snapshot_manifest_sha256,
         "verified_source_shards": state.verified_source_shards,
         "heldout_quality_verified": False,
         "input_tokens": prompt_token_count,
