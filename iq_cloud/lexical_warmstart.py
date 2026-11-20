@@ -80,9 +80,10 @@ def candidate_rows(
         ids = sorted(target_vocabulary.values())
     else:
         ids = sorted(target_ids)
+    defined_target_ids = set(target_vocabulary.values())
     if len(ids) != len(set(ids)) or any(
         type(i) is not int or i < 0 or i >= target_limit
-        or i not in set(target_vocabulary.values()) for i in ids
+        or i not in defined_target_ids for i in ids
     ):
         raise LexicalCandidateError("invalid target token IDs")
     source_special = set(source_tokenizer.all_special_ids)
