@@ -10,6 +10,9 @@ on:
       - "scripts/iq235_bucket_metadata.py"
       - "scripts/iq235_lexical_header.py"
       - "iq_cloud/lexical_header.py"
+      - "iq_cloud/glm53_calibration_headers.py"
+      - "scripts/iq235_glm53_calibration_headers.py"
+      - "tests/test_iq235_glm53_calibration_headers.py"
       - ".github/workflows/iq235-hf-bucket-metadata.yml"
   workflow_dispatch:
 
@@ -34,6 +37,9 @@ jobs:
           HF_HUB_DISABLE_TELEMETRY: "1"
         run: |
           python -m scripts.iq235_bucket_metadata
+      - name: Audit existing GLM residual-coordinate matrices (headers only)
+        run: |
+          python -m scripts.iq235_glm53_calibration_headers
       - name: Inspect real IQ235 lexical SafeTensors header only
         env:
           HF_HUB_DISABLE_TELEMETRY: "1"

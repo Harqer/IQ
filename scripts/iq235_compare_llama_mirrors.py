@@ -54,15 +54,17 @@ def main() -> None:
                 raise RuntimeError("independent Llama tokenizer encoding disagrees")
     primary_special = set(primary.all_special_ids)
     independent_special = set(independent.all_special_ids)
-    if primary_special != independent_special:
-        only_primary = sorted(primary_special - independent_special)
-        only_independent = sorted(independent_special - primary_special)
+    only_primary = sorted(primary_special - independent_special)
+    only_independent = sorted(independent_special - primary_special)
+    if only_primary != [128004] or only_independent:
         raise RuntimeError(
-            "independent Llama special classifications disagree: "
+            "unexpected independent Llama special classification drift: "
             f"only_primary={only_primary[:30]}, "
-            f"only_mirror={only_independent[:30]}, "
-            f"counts=({len(primary_special)}, {len(independent_special)})"
+            f"only_mirror={only_independent[:30]}"
         )
+    if (primary.convert_ids_to_tokens(128004) != "<|finetune_right_pad_id|>"
+            or independent.convert_ids_to_tokens(128004) != "<|finetune_right_pad_id|>"):
+        raise RuntimeError("Llama finetune padding token text differs")
     print(json.dumps({
         "candidate_source_tokenizer": LLAMA_PUBLIC_COPY,
         "candidate_source_commit": LLAMA_COPY_REVISION,
@@ -71,6 +73,8 @@ def main() -> None:
         "mapping_sha256": primary_digest,
         "mapping_agreement": True,
         "sampled_encode_agreement": True,
+        "special_classification_equal": False,
+        "only_public_copy_special_id": [128004],
         "sampled_text_count": len(TEXTS),
         "official_meta_llama_equivalence_verified": False,
         "iq_source_weight_alignment_verified": False,
