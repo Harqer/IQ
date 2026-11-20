@@ -227,18 +227,18 @@ class IQ235GLM53LexicalObjective(nn.Module):
         causal = F.cross_entropy(token_logits, dense.to(token_logits.device))
         teacher_kl: torch.Tensor | None = None
         if self.teacher_weight:
+            if (not isinstance(teacher_logits, torch.Tensor)
+                    or tuple(teacher_logits.shape) != expected
+                    or not bool(torch.isfinite(teacher_logits).all())):
+                raise LexicalTrainingError(
+                    "aligned finite GLM teacher logits are required for KD"
+                )
             if (not isinstance(teacher_input_ids, torch.Tensor)
                     or teacher_input_ids.shape != input_ids.shape
                     or teacher_input_ids.dtype not in (torch.int32, torch.int64)
                     or not torch.equal(teacher_input_ids, input_ids)):
                 raise LexicalTrainingError(
                     "GLM teacher input token IDs must exactly equal student input IDs"
-                )
-            if (not isinstance(teacher_logits, torch.Tensor)
-                    or tuple(teacher_logits.shape) != expected
-                    or not bool(torch.isfinite(teacher_logits).all())):
-                raise LexicalTrainingError(
-                    "aligned finite GLM teacher logits are required for KD"
                 )
             if teacher_logits.device != logits.device:
                 raise LexicalTrainingError("student and teacher logits must share a device")
