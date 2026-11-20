@@ -25,6 +25,7 @@ from .checkpoint_metadata import (
     BUCKET, RUN, EXPECTED_CONFIG_SHA256, EXPECTED_INDEX_SHA256,
     EXPECTED_KEYS, EXPECTED_SHARDS, IQ235MetadataError,
     check_pinned_metadata_sha256,
+    PINNED_SOURCE_SHARD_MANIFEST_SHA256,
 )
 from .checkpoint_migration import build_migration_plan
 from .glm53_lexical import GLM_VOCAB, IQ_WIDTH, SOURCE_IQ_VOCAB
@@ -33,11 +34,8 @@ from .remote_shard_loader import (
     verified_remote_shard,
 )
 
-# No independent, fully reviewed 20,283-shard checksum anchor exists yet.
-# Review the streamed shard digests and commit the approved root SHA here
-# before the production loader can execute. NEVER accept an arbitrary caller
-# fingerprint as permission to load the original checkpoint.
-PINNED_SOURCE_SHARD_MANIFEST_SHA256: str | None = None
+# The payload checksum pin is owned by the pure-metadata module so GPU-less
+# readiness checks never need to import torch merely to read this value.
 SOURCE_LEXICAL = frozenset(("embed_tokens.weight", "lm_head.weight"))
 SOURCE_LEXICAL_SHAPE = (SOURCE_IQ_VOCAB, IQ_WIDTH)
 TARGET_LEXICAL_SHAPE = (GLM_VOCAB, IQ_WIDTH)

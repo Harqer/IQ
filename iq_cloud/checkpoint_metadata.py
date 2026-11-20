@@ -18,6 +18,9 @@ EXPECTED_BYTES = 539388468802
 EXPECTED_INDEX_SHA256 = "0367412e31bb391a5c892497b565164a4b7954611250d1df1f0a986a8194b2bd"
 EXPECTED_CONFIG_SHA256 = "93f351e2bdd116ea5c83792cd1e494ce8dd904cb19c3bcac8c3cbecb1271a799"
 EXPECTED_GLOBAL_BYTES = 2101354776
+# No trusted 20,283-shard payload checksum manifest has been reviewed.
+# This remains None until a real remote integrity audit and human approval.
+PINNED_SOURCE_SHARD_MANIFEST_SHA256: str | None = None
 GLOBAL = "model-global.safetensors"
 BUCKET = "kofecheckmate/iq-glm53-all256"
 RUN = "IQ/runs/glm53-full78-local-20261025a"

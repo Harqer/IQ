@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 
 from iq_cloud.bulk_readiness import remote_header_audit, static_release_blockers
-from iq_cloud.full235_weight_loader import PINNED_SOURCE_SHARD_MANIFEST_SHA256
+from iq_cloud.checkpoint_metadata import PINNED_SOURCE_SHARD_MANIFEST_SHA256
 
 
 def main() -> None:
