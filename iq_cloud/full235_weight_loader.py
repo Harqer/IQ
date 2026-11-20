@@ -18,6 +18,7 @@ import json
 from pathlib import Path
 import re
 from typing import Callable, Mapping
+from .inference_diagnostics import span_scope, emit_progress
 
 import torch
 
@@ -67,6 +68,8 @@ class LoadedSourceBody:
     status: str = "verified_source_body_loaded_glm_lexical_untrained"
     lexical_rows_initialized: bool = False
     inference_ready: bool = False
+    loaded_lexical_tensor_count: int = 0
+    sampled_lexical_rows_verified: int = 0
 
 
 def validate_model_inventory(
@@ -100,7 +103,7 @@ def validate_model_inventory(
                 or expected_config is None
                 or model_config.to_dict() != expected_config
                 or getattr(getattr(model_config, "model", None), "vocab_size", None)
-                    != GLM_VOCAB
+                    != expected_lexical_shape[0]
                 or getattr(getattr(model_config, "model", None), "hidden_size", None)
                     != IQ_WIDTH
                 or len(getattr(model, "layers", ())) != 235
@@ -131,8 +134,9 @@ def install_verified_shard(
     *,
     original_lexical_shape: tuple[int, int] = SOURCE_LEXICAL_SHAPE,
     require_original_bf16: bool = True,
+    install_source_lexical: bool = False,
 ) -> set[str]:
-    """Copy only real nonlexical source rows; NEVER install source lexical IDs."""
+    """Copy nonlexical tensors, optionally original-ID lexical tensors (source mode only)."""
     from safetensors import safe_open
 
     if set(header) != expected_keys:
@@ -159,7 +163,7 @@ def install_verified_shard(
         if set(archive.keys()) != expected_keys:
             raise VerifiedBodyLoaderError("decoded shard tensor names mismatch")
         for name in sorted(expected_keys):
-            if name in SOURCE_LEXICAL:
+            if name in SOURCE_LEXICAL and not install_source_lexical:
                 continue
             value = archive.get_tensor(name)
             target = targets[name]
@@ -170,6 +174,38 @@ def install_verified_shard(
             target.copy_(value.to(device=target.device))
             written.add(name)
     return written
+
+
+@torch.no_grad()
+def verify_source_lexical_relation(
+    targets: Mapping[str, torch.Tensor],
+    *,
+    rows: tuple[int, ...] = (0, 1, 100, 1000, 64000, 128000, 128255),
+) -> int:
+    """Sample the two widened halves and 2x output-head scaling in original IDs.
+
+    This is structural evidence, not proof of equality to the original donor.
+    """
+    embedding = targets["embed_tokens.weight"]
+    head = targets["lm_head.weight"]
+    if (embedding.shape != head.shape or embedding.ndim != 2
+            or embedding.shape[1] % 2):
+        raise VerifiedBodyLoaderError("source lexical tensor geometry mismatch")
+    half = embedding.shape[1] // 2
+    for row in rows:
+        if type(row) is not int or not 0 <= row < embedding.shape[0]:
+            raise VerifiedBodyLoaderError("invalid lexical verification row")
+        emb, lm = embedding[row], head[row]
+        if (not bool(torch.isfinite(emb).all().item())
+                or not bool(torch.isfinite(lm).all().item())
+                or not bool((emb != 0).any().item())
+                or not torch.equal(emb[:half], emb[half:])
+                or not torch.equal(lm[:half], lm[half:])
+                or not torch.equal(emb, lm * 2)):
+            raise VerifiedBodyLoaderError(
+                f"source lexical widening/scaling mismatch at row {row}"
+            )
+    return len(rows)
 
 
 def _read_bounded(fs, name: str, limit: int) -> bytes:
@@ -187,12 +223,12 @@ def load_verified_full235_body(
     approved_manifest_sha256: str,
     scratch_dir: str | None = None,
     on_shard_verified: Callable[[int, int], None] | None = None,
+    install_source_lexical: bool = False,
+    tracer=None,
 ) -> LoadedSourceBody:
-    """Production-only source injection; refuses unpinned/missing digest files.
+    """Fail-closed 539GB injection. Original-ID lexical rows only in source mode.
 
-    Never call this with a randomly constructed production model expecting it
-    to generate meaningful GLM text: source lexical matrix IDs differ and
-    final full235 inference is still forbidden until lexical training/validation.
+    A returned record verifies loaded bytes/geometry, never language quality.
     """
     if (PINNED_SOURCE_SHARD_MANIFEST_SHA256 is None
             or approved_manifest_sha256 != PINNED_SOURCE_SHARD_MANIFEST_SHA256):
@@ -212,8 +248,9 @@ def load_verified_full235_body(
     from huggingface_hub import HfFileSystem
     from iq_cloud.full_iq235 import read_architecture_contract, config_paths
 
-    target_config = read_architecture_contract()
+    glm_config = read_architecture_contract()
     original_config = json.loads(config_paths()[0].read_text(encoding="utf-8"))
+    target_config = original_config if install_source_lexical else glm_config
     fs = HfFileSystem()
     config_bytes = _read_bounded(fs, "iq_config.json", 100_000)
     index_bytes = _read_bounded(fs, "model.safetensors.index.json", 8_000_000)
@@ -222,7 +259,7 @@ def load_verified_full235_body(
     if json.loads(config_bytes) != original_config:
         raise VerifiedBodyLoaderError("remote source config differs from pinned checkpoint")
     index = json.loads(index_bytes)
-    build_migration_plan(original_config, target_config, index,
+    build_migration_plan(original_config, glm_config, index,
                          json.loads(marker_bytes))
     hashes = validate_digest_manifest(
         manifest, set(index["weight_map"].values()),
@@ -231,6 +268,8 @@ def load_verified_full235_body(
     # Fail before any 539 GB network streaming if model geometry is wrong.
     targets = validate_model_inventory(
         model, index, expected_config=target_config,
+        expected_lexical_shape=(SOURCE_LEXICAL_SHAPE if install_source_lexical
+                                else TARGET_LEXICAL_SHAPE),
     )
     grouped: dict[str, set[str]] = defaultdict(set)
     for key, shard in index["weight_map"].items():
@@ -240,23 +279,46 @@ def load_verified_full235_body(
     written: set[str] = set()
     # Source model may be partially loaded if an I/O error occurs. No attestation
     # is ever emitted on failure, and the caller MUST discard the model object.
-    for n, (name, keys) in enumerate(sorted(grouped.items()), 1):
-        with verified_remote_shard(
-            fs, f"{ROOT}/{name}", hashes[name],
-            expected_keys=keys, scratch_dir=scratch_dir,
-        ) as (staged, header):
-            installed = install_verified_shard(staged, header, keys, targets)
-        if written & installed:
-            raise VerifiedBodyLoaderError("source tensor installed more than once")
-        written |= installed
-        if on_shard_verified is not None:
-            on_shard_verified(n, EXPECTED_SHARDS)
-    if written != set(targets) - SOURCE_LEXICAL:
-        raise VerifiedBodyLoaderError("full235 pretrained source body not completely installed")
+    with span_scope(tracer, "iq235.checkpoint.stream_verified_shards", {
+        "iq.shards.expected": EXPECTED_SHARDS,
+        "iq.source_lexical": install_source_lexical,
+    }) as checkpoint_span:
+        for n, (name, keys) in enumerate(sorted(grouped.items()), 1):
+            with verified_remote_shard(
+                fs, f"{ROOT}/{name}", hashes[name],
+                expected_keys=keys, scratch_dir=scratch_dir,
+            ) as (staged, header):
+                installed = install_verified_shard(
+                    staged, header, keys, targets,
+                    install_source_lexical=install_source_lexical,
+                )
+            if written & installed:
+                raise VerifiedBodyLoaderError("source tensor installed more than once")
+            written |= installed
+            emit_progress(checkpoint_span, n, EXPECTED_SHARDS, len(written))
+            if on_shard_verified is not None:
+                on_shard_verified(n, EXPECTED_SHARDS)
+        expected = set(targets) if install_source_lexical else set(targets) - SOURCE_LEXICAL
+        if written != expected:
+            raise VerifiedBodyLoaderError("full235 source checkpoint tensor coverage incomplete")
+        sampled_rows = (
+            verify_source_lexical_relation(targets)
+            if install_source_lexical else 0
+        )
+        if checkpoint_span is not None:
+            checkpoint_span.set_attribute("iq.shards.verified", len(grouped))
+            checkpoint_span.set_attribute("iq.tensors.loaded", len(written))
+            checkpoint_span.set_attribute("iq.lexical.sampled_rows", sampled_rows)
     return LoadedSourceBody(
         model=model,
-        loaded_nonlexical_tensor_count=len(written),
+        loaded_nonlexical_tensor_count=len(written - SOURCE_LEXICAL),
         verified_source_shard_count=len(grouped),
         source_index_sha256=EXPECTED_INDEX_SHA256,
         digest_manifest_sha256=approved_manifest_sha256,
+        status=("verified_full_source_checkpoint_loaded_quality_unvalidated"
+                if install_source_lexical
+                else "verified_source_body_loaded_glm_lexical_untrained"),
+        lexical_rows_initialized=install_source_lexical,
+        loaded_lexical_tensor_count=(2 if install_source_lexical else 0),
+        sampled_lexical_rows_verified=sampled_rows,
     )
