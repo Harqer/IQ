@@ -5,6 +5,7 @@ import unittest
 
 from iq_cloud.lexical_warmstart import (
     LexicalCandidateError, candidate_rows, validate_candidate_manifest,
+    validate_source_copy_provenance, LLAMA_COPY_REVISION, LLAMA_COPY_MAPPING_SHA256,
 )
 from iq_cloud.glm53_lexical import GLM_PINNED_MAPPING_SHA256, GLM_VOCAB
 
@@ -51,6 +52,13 @@ class CandidateTests(unittest.TestCase):
         source=TokenizerStub({"hi":11})
         target=TokenizerStub({"hi":2})
         self.assertEqual(candidate_rows(source,target,target_limit=10,source_limit=10),{})
+
+    def test_source_copy_drift_rejected(self):
+        validate_source_copy_provenance(LLAMA_COPY_MAPPING_SHA256, LLAMA_COPY_REVISION)
+        with self.assertRaisesRegex(LexicalCandidateError, "drifted"):
+            validate_source_copy_provenance("0"*64, LLAMA_COPY_REVISION)
+        with self.assertRaisesRegex(LexicalCandidateError, "drifted"):
+            validate_source_copy_provenance(LLAMA_COPY_MAPPING_SHA256, "0"*40)
 
     def test_manifest_rejects_false_ready(self):
         template=dict(schema_version=1,stage="lexical_candidate_mapping_only",

@@ -18,6 +18,8 @@ from .glm53_lexical import (
 
 LLAMA_PUBLIC_COPY = "unsloth/Meta-Llama-3.1-8B"
 LLAMA_OFFICIAL = "meta-llama/Llama-3.1-8B"
+LLAMA_COPY_REVISION = "e9a141a2091ea561b96483212645a2a05e6f99fc"
+LLAMA_COPY_MAPPING_SHA256 = "f66003c7a898537275cd9d3ab290d6e247b9c5063352c2cc010213febfbe068f"
 MAX_TOKEN_CHARS = 512
 
 
@@ -35,6 +37,12 @@ def _mapping_hash(tokenizer: Any, limit: int) -> str:
     return sha256(json.dumps(
         vocabulary, ensure_ascii=False, sort_keys=True, separators=(",", ":")
     ).encode("utf-8")).hexdigest()
+
+
+def validate_source_copy_provenance(digest: str, commit: str) -> None:
+    """A stable public tokenizer copy is not proof of official equivalence."""
+    if commit != LLAMA_COPY_REVISION or digest != LLAMA_COPY_MAPPING_SHA256:
+        raise LexicalCandidateError("source tokenizer copy revision/mapping has drifted")
 
 
 def _one_id_roundtrips(tokenizer: Any, token_id: int) -> str | None:
@@ -121,6 +129,9 @@ def make_candidate_manifest(
     if len(target_tokenizer) > GLM_VOCAB or len(source_tokenizer) > SOURCE_IQ_VOCAB:
         raise LexicalCandidateError("tokenizer exceeds recipient's vocabulary")
     source_hash = _mapping_hash(source_tokenizer, SOURCE_IQ_VOCAB)
+    validate_source_copy_provenance(source_hash, source_resolved_revision)
+    if source_revision != LLAMA_COPY_REVISION:
+        raise LexicalCandidateError("source revision must use pinned public copy")
     correspondences = candidate_rows(source_tokenizer, target_tokenizer)
     defined_target_count = len(target_tokenizer.get_vocab())
     return {

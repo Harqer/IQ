@@ -15,7 +15,7 @@ from iq_cloud.glm53_lexical import (
     verify_glm53_tokenizer,
 )
 from iq_cloud.lexical_warmstart import (
-    LLAMA_PUBLIC_COPY, make_candidate_manifest,
+    LLAMA_PUBLIC_COPY, LLAMA_COPY_REVISION, make_candidate_manifest,
     validate_candidate_manifest,
 )
 
@@ -24,13 +24,10 @@ def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--out", type=Path)
     args = p.parse_args()
-    from huggingface_hub import HfApi, hf_hub_download
+    from huggingface_hub import hf_hub_download
     from transformers import AutoTokenizer
 
-    api = HfApi()
-    source_commit = api.model_info(LLAMA_PUBLIC_COPY).sha
-    if not source_commit or len(source_commit) != 40:
-        raise RuntimeError("unable to resolve public Llama tokenizer commit")
+    source_commit = LLAMA_COPY_REVISION
     source = AutoTokenizer.from_pretrained(
         LLAMA_PUBLIC_COPY, revision=source_commit,
         use_fast=True, trust_remote_code=False,
