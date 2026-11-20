@@ -5,6 +5,7 @@ establish tensor integrity, functional weight alignment, or inference readiness.
 """
 from __future__ import annotations
 import json
+from hashlib import sha256
 from pathlib import Path
 
 from .glm53_lexical import inspect_lexical_boundary
@@ -12,12 +13,28 @@ from .glm53_lexical import inspect_lexical_boundary
 EXPECTED_SHARDS = 20283
 EXPECTED_KEYS = 63164
 EXPECTED_BYTES = 539388468802
+# Recorded in the immutable HF device-map metadata, verified against the
+# existing IQ235 checkpoint index/config. Not safetensors payload digests.
+EXPECTED_INDEX_SHA256 = "0367412e31bb391a5c892497b565164a4b7954611250d1df1f0a986a8194b2bd"
+EXPECTED_CONFIG_SHA256 = "93f351e2bdd116ea5c83792cd1e494ce8dd904cb19c3bcac8c3cbecb1271a799"
+EXPECTED_GLOBAL_BYTES = 2101354776
 GLOBAL = "model-global.safetensors"
 BUCKET = "kofecheckmate/iq-glm53-all256"
 RUN = "IQ/runs/glm53-full78-local-20261025a"
 
 class IQ235MetadataError(ValueError):
     pass
+
+
+def check_pinned_metadata_sha256(config_bytes: bytes, index_bytes: bytes,
+                                 *, config_digest: str = EXPECTED_CONFIG_SHA256,
+                                 index_digest: str = EXPECTED_INDEX_SHA256) -> None:
+    """Check original JSON bytes against historical recorded digest values."""
+    if sha256(config_bytes).hexdigest() != config_digest:
+        raise IQ235MetadataError("compiled config SHA-256 mismatch")
+    if sha256(index_bytes).hexdigest() != index_digest:
+        raise IQ235MetadataError("checkpoint index SHA-256 mismatch")
+
 
 def inspect_index(config, expected_source, glm_profile, index, marker,
                   *, counts=(EXPECTED_KEYS, EXPECTED_SHARDS, EXPECTED_BYTES)):
@@ -74,14 +91,19 @@ def inspect_bucket(source_config, glm_profile):
             raw = stream.read(cap + 1)
         if len(raw) > cap:
             raise IQ235MetadataError("metadata JSON exceeds bounded read")
-        return json.loads(raw)
-    config = get("iq_config.json", 100000)
-    index = get("model.safetensors.index.json", 8000000)
-    marker = get("COMPILE_COMPLETE.json", 100000)
+        return raw
+    config_bytes = get("iq_config.json", 100000)
+    index_bytes = get("model.safetensors.index.json", 8000000)
+    check_pinned_metadata_sha256(config_bytes, index_bytes)
+    marker_bytes = get("COMPILE_COMPLETE.json", 100000)
+    config = json.loads(config_bytes)
+    index = json.loads(index_bytes)
+    marker = json.loads(marker_bytes)
     report = inspect_index(config, source_config, glm_profile, index, marker)
-    report["global_shard_exists"] = bool(
-        fs.info(f"{base}/{GLOBAL}").get("size", 0) > 0
-    )
-    if not report["global_shard_exists"]:
-        raise IQ235MetadataError("original global lexical shard unavailable")
+    global_size = fs.info(f"{base}/{GLOBAL}").get("size")
+    if global_size != EXPECTED_GLOBAL_BYTES:
+        raise IQ235MetadataError("original global lexical shard size mismatch")
+    report["global_shard_size_bytes"] = global_size
+    report["pinned_config_sha256_checked"] = True
+    report["pinned_index_sha256_checked"] = True
     return report
