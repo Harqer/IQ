@@ -2,6 +2,8 @@
 from __future__ import annotations
 from os import environ
 
+from iq_cloud.inference_diagnostics import write_experimental_result
+
 from iq_cloud.full_iq235 import load_phase_a, load_pretrained_source, generate_probe
 
 
@@ -56,10 +58,35 @@ class Model:
             raise RuntimeError("full IQ architecture has not been loaded")
         if not isinstance(model_input, dict):
             raise ValueError("predict request must be a JSON object")
-        with self.tracer.start_as_current_span("iq235.inference.full"):
-            return generate_probe(
-                self.state,
-                model_input.get("prompt", "1 2 3"),
-                max_new_tokens=model_input.get("max_new_tokens", 1),
-                tracer=self.tracer,
+        phase = getattr(self.state, "phase", "architecture_only")
+        exploratory = phase == "pretrained_source_exploratory"
+        manifest_path = environ.get("IQ235_UNREVIEWED_MANIFEST_PATH")
+        try:
+            with self.tracer.start_as_current_span("iq235.inference.full"):
+                result = generate_probe(
+                    self.state,
+                    model_input.get("prompt", "1 2 3"),
+                    max_new_tokens=model_input.get("max_new_tokens", 1),
+                    tracer=self.tracer,
+                )
+        except Exception as exc:
+            if exploratory and manifest_path:
+                try:
+                    write_experimental_result(
+                        manifest_path, status="failed",
+                        manifest_sha256=self.state.snapshot_manifest_sha256,
+                        error_type=type(exc).__name__,
+                    )
+                except Exception:
+                    # Preserve the original exception; OTel records it.
+                    # A failed durable write is independently actionable.
+                    import logging
+                    logging.exception("IQ235 experimental result persistence failed")
+            raise
+        if exploratory and manifest_path:
+            write_experimental_result(
+                manifest_path, status="completed",
+                manifest_sha256=self.state.snapshot_manifest_sha256,
+                result=result,
             )
+        return result

@@ -118,4 +118,40 @@ weight data, or credentials are exported by the new instrumentation.
 **Not yet proven:** worker topology allocation, verified 539GB payloads,
 Mamba3 numerical correctness, actual GPU forward, and held-out generation.
 No production-readiness assertion is implied by the new path.
-\n## One-pass SHA snapshot during exploratory inference\n\n`IQ_PHASE=pretrained_source_exploratory` enables a **separate** experimental\npath only with explicit H200x8 authorization, 539GB source-read approval,\nand unpinned source acceptance. An unused **absolute**\n`IQ235_UNREVIEWED_MANIFEST_PATH` on a **durable/persistent worker mount**\nis mandatory. The original baseline `IQ_PHASE=architecture_only` remains\nthe default and uses no pretrained checkpoint.\n\nFor a first exploratory run, `snapshot_remote_shard` computes a SHA-256 while\nreading and staging each source shard **once**, validates the real file header,\nand installs the corresponding model tensors after structural validation. Once\nall 20,283 shards and 63,164 tensors are processed and sampled lexical row\nchecks pass, it creates a complete **unreviewed** manifest atomically without\noverwriting any prior result. The manifest's SHA-256 is returned in the probe\nresponse. Do not let a worker exit before persisting that output manifest.\n\nA self-generated digest during that same download is **not independent proof**\nof checkpoint provenance. It cannot detect a pre-existing tampered source.\nAfter the experiment, review source provenance, exported telemetry, all SHA\ndigests, and generated outputs **in bulk**; only then independently pin the\nmanifest for subsequent `IQ_PHASE=pretrained_source` verified runs. Never\ncall a successful exploratory response a production/quality attestation.\n\nExperimental mode requires: `IQ235_AUTHORIZE_H200X8=I_APPROVE_BILLABLE_H200X8`,\n`IQ235_AUTHORIZE_539GB_READ=I_AUTHORIZE_539GB`,\n`IQ235_EXPLORATORY_UNPINNED=I_ACCEPT_UNATTESTED_SOURCE`, and\n`IQ235_UNREVIEWED_MANIFEST_PATH=/durable/mount/new_snapshot.json`.\nNo flags are set automatically, and neither the checkpoint bucket nor the\nmodel serving configuration is modified to switch into this mode.\n
+
+## One-pass SHA snapshot during exploratory inference
+
+`IQ_PHASE=pretrained_source_exploratory` enables a **separate** experimental
+path only with explicit H200x8 authorization, 539GB source-read approval,
+and unpinned source acceptance. An unused **absolute**
+`IQ235_UNREVIEWED_MANIFEST_PATH` on a **durable/persistent worker mount**
+is mandatory. The original baseline `IQ_PHASE=architecture_only` remains
+the default and uses no pretrained checkpoint.
+
+For a first exploratory run, `snapshot_remote_shard` computes a SHA-256 while
+reading and staging each source shard **once**, validates the real file header,
+and installs the corresponding model tensors after structural validation. Once
+all 20,283 shards and 63,164 tensors are processed and sampled lexical row
+checks pass, it creates a complete **unreviewed** manifest atomically without
+overwriting any prior result. The manifest's SHA-256 is returned in the probe
+response. Do not let a worker exit before persisting that output manifest.
+
+A self-generated digest during that same download is **not independent proof**
+of checkpoint provenance. It cannot detect a pre-existing tampered source.
+After the experiment, review source provenance, exported telemetry, all SHA
+digests, and generated outputs **in bulk**; only then independently pin the
+manifest for subsequent `IQ_PHASE=pretrained_source` verified runs. Never
+call a successful exploratory response a production/quality attestation.
+
+Experimental mode requires: `IQ235_AUTHORIZE_H200X8=I_APPROVE_BILLABLE_H200X8`,
+`IQ235_AUTHORIZE_539GB_READ=I_AUTHORIZE_539GB`,
+`IQ235_EXPLORATORY_UNPINNED=I_ACCEPT_UNATTESTED_SOURCE`, and
+`IQ235_UNREVIEWED_MANIFEST_PATH=/durable/mount/new_snapshot.json`.
+No flags are set automatically, and neither the checkpoint bucket nor the
+model serving configuration is modified to switch into this mode.
+
+The experimental Baseten prediction also writes a one-time
+`<snapshot>.inference.json` beside the manifest with outcome, generated IDs,
+completion, failure type and verified-stage metadata (not the prompt or
+raw exception message). The snapshot and report must be on durable storage;
+filesystem persistence cannot be inferred from the provider's replica state.

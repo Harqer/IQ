@@ -15,6 +15,7 @@ from iq_cloud.full235_weight_loader import (
 )
 from iq_cloud.inference_diagnostics import (
     IQ235NumericError, emit_progress, examine_layer_output, span_scope,
+    write_experimental_result,
 )
 from iq_cloud.remote_shard_loader import verify_safetensors_header
 
@@ -53,6 +54,29 @@ class IQ235SourceInstrumentationTests(unittest.TestCase):
         }):
             with self.assertRaisesRegex(FullIQ235Error, "no GPU or checkpoint"):
                 load_pretrained_source()
+
+    def test_bulk_result_is_write_once_and_redacts_prompt(self):
+        import json
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "snapshot.json"
+            recorded = write_experimental_result(
+                str(path), status="completed",
+                manifest_sha256="a" * 64,
+                result={"full_model": True, "physical_layers": 235,
+                        "all_layers_executed": True, "input_tokens": 4,
+                        "generated_ids": [1, 2], "completion": "hi",
+                        "finish_reason": "length",
+                        "prompt": "PRIVATE_PROMPT_SHOULD_NOT_APPEAR"},
+            )
+            contents = Path(recorded).read_text()
+            self.assertNotIn("PRIVATE_PROMPT_SHOULD_NOT_APPEAR", contents)
+            self.assertTrue(json.loads(contents)["full_model"])
+            self.assertFalse(json.loads(contents)["independent_source_provenance_verified"])
+            with self.assertRaisesRegex(ValueError, "new absolute path"):
+                write_experimental_result(
+                    str(path), status="failed",
+                    manifest_sha256="a" * 64, error_type="RuntimeError",
+                )
 
     def test_exploratory_single_pass_requires_explicit_authorization(self):
         from iq_cloud.full_iq235 import load_pretrained_source, FullIQ235Error

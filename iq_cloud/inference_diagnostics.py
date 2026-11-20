@@ -56,3 +56,51 @@ def examine_layer_output(torch, output, *, index: int, layer_type: str, span=Non
             "iq.layer.rms": rms,
         })
     return maximum, rms
+
+
+def write_experimental_result(
+    manifest_path: str, *, status: str, manifest_sha256: str | None,
+    result: dict | None = None, error_type: str | None = None,
+) -> str:
+    """Create one durable, bounded inference report beside SHA snapshot.
+
+    Never record a prompt, raw error message, secret, checkpoint path, or
+    parameter payload. An existing result file always fails closed.
+    """
+    import json
+    import os
+    from pathlib import Path
+
+    if status not in {"completed", "failed"}:
+        raise ValueError("invalid experimental result status")
+    target = Path(str(manifest_path) + ".inference.json")
+    if (not target.is_absolute() or target.exists() or target.is_symlink()
+            or not target.parent.is_dir()):
+        raise ValueError("experiment result output must be a new absolute path")
+    data = {
+        "status": status,
+        "phase": "pretrained_source_exploratory",
+        "checkpoint_integrity": "unreviewed_stream_hashes",
+        "independent_source_provenance_verified": False,
+        "manifest_sha256": manifest_sha256,
+        "error_type": error_type if status == "failed" else None,
+    }
+    if status == "completed":
+        if not isinstance(result, dict):
+            raise ValueError("successful experiment must supply inference output")
+        data.update({
+            "full_model": result.get("full_model"),
+            "physical_layers": result.get("physical_layers"),
+            "all_layers_executed": result.get("all_layers_executed"),
+            "input_tokens": result.get("input_tokens"),
+            "generated_ids": result.get("generated_ids"),
+            "completion": result.get("completion"),
+            "finish_reason": result.get("finish_reason"),
+            "heldout_quality_verified": False,
+        })
+    payload = json.dumps(data, sort_keys=True, indent=2).encode() + b"\n"
+    with target.open("xb") as out:
+        out.write(payload)
+        out.flush()
+        os.fsync(out.fileno())
+    return str(target)
