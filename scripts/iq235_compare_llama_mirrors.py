@@ -52,8 +52,17 @@ def main() -> None:
             b = independent.encode(text, add_special_tokens=add_special_tokens)
             if a != b:
                 raise RuntimeError("independent Llama tokenizer encoding disagrees")
-    if primary.all_special_ids != independent.all_special_ids:
-        raise RuntimeError("independent Llama tokenizer special IDs disagree")
+    primary_special = set(primary.all_special_ids)
+    independent_special = set(independent.all_special_ids)
+    if primary_special != independent_special:
+        only_primary = sorted(primary_special - independent_special)
+        only_independent = sorted(independent_special - primary_special)
+        raise RuntimeError(
+            "independent Llama special classifications disagree: "
+            f"only_primary={only_primary[:30]}, "
+            f"only_mirror={only_independent[:30]}, "
+            f"counts=({len(primary_special)}, {len(independent_special)})"
+        )
     print(json.dumps({
         "candidate_source_tokenizer": LLAMA_PUBLIC_COPY,
         "candidate_source_commit": LLAMA_COPY_REVISION,
