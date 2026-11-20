@@ -77,11 +77,26 @@ class LexicalTrainTests(unittest.TestCase):
             obj(**batch())
         b = batch()
         b["teacher_logits"] = torch.zeros(2, 4, 6)
+        with self.assertRaisesRegex(LexicalTrainingError, "teacher input token IDs"):
+            obj(**b)
+        b["teacher_input_ids"] = b["input_ids"].clone()
         loss, metrics = obj(**b)
         self.assertTrue(torch.isfinite(loss))
         self.assertIsNotNone(metrics.teacher_kl)
         b["teacher_logits"][0, 0, 0] = float("nan")
         with self.assertRaisesRegex(LexicalTrainingError, "teacher logits"):
+            obj(**b)
+
+    def test_mismatched_teacher_token_prefix_rejected(self):
+        obj = IQ235GLM53LexicalObjective(
+            ToyIQ(), range(5), tokenizer_mapping_sha256="TEST_ONLY",
+            test_only_small_model=True, teacher_weight=0.5,
+        )
+        b = batch()
+        b["teacher_logits"] = torch.zeros(2, 4, 6)
+        b["teacher_input_ids"] = b["input_ids"].clone()
+        b["teacher_input_ids"][0, 0] = 4
+        with self.assertRaisesRegex(LexicalTrainingError, "must exactly equal"):
             obj(**b)
 
     def test_undefined_glm_input_or_target_rejected(self):

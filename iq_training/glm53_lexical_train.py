@@ -20,7 +20,7 @@ from torch import nn
 from torch.nn import functional as F
 
 from iq_cloud.glm53_lexical import (
-    GLM_PINNED_MAPPING_SHA256, GLM_VOCAB, IQ_WIDTH,
+    GLM_PINNED_MAPPING_SHA256, GLM_REVISION, GLM_VOCAB, IQ_WIDTH,
 )
 from iq_cloud.checkpoint_metadata import EXPECTED_INDEX_SHA256
 
@@ -103,6 +103,7 @@ class IQ235GLM53LexicalObjective(nn.Module):
         teacher_weight: float = 0.5,
         temperature: float = 2.0,
         source_integrity: Mapping[str, Any] | None = None,
+        teacher_model_revision: str | None = None,
         test_only_small_model: bool = False,
     ) -> None:
         super().__init__()
@@ -137,6 +138,10 @@ class IQ235GLM53LexicalObjective(nn.Module):
                 raise LexicalTrainingError("full235 untied GLM architecture required")
             if tokenizer_mapping_sha256 != GLM_PINNED_MAPPING_SHA256:
                 raise LexicalTrainingError("pinned GLM tokenizer mapping digest mismatch")
+            if teacher_weight and teacher_model_revision != GLM_REVISION:
+                raise LexicalTrainingError(
+                    "GLM teacher model must match the pinned full BF16 revision"
+                )
             if (not isinstance(source_integrity, Mapping)
                     or source_integrity.get("checkpoint_index_sha256") != EXPECTED_INDEX_SHA256
                     or source_integrity.get("source_payloads_sha256_verified") is not True
@@ -176,6 +181,7 @@ class IQ235GLM53LexicalObjective(nn.Module):
         self, input_ids: torch.Tensor, labels: torch.Tensor,
         attention_mask: torch.Tensor | None,
         teacher_logits: torch.Tensor | None,
+        teacher_input_ids: torch.Tensor | None,
         **student_kwargs: Any,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None, int]:
         if (input_ids.ndim != 2 or input_ids.shape[1] < 2
@@ -221,6 +227,13 @@ class IQ235GLM53LexicalObjective(nn.Module):
         causal = F.cross_entropy(token_logits, dense.to(token_logits.device))
         teacher_kl: torch.Tensor | None = None
         if self.teacher_weight:
+            if (not isinstance(teacher_input_ids, torch.Tensor)
+                    or teacher_input_ids.shape != input_ids.shape
+                    or teacher_input_ids.dtype not in (torch.int32, torch.int64)
+                    or not torch.equal(teacher_input_ids, input_ids)):
+                raise LexicalTrainingError(
+                    "GLM teacher input token IDs must exactly equal student input IDs"
+                )
             if (not isinstance(teacher_logits, torch.Tensor)
                     or tuple(teacher_logits.shape) != expected
                     or not bool(torch.isfinite(teacher_logits).all())):
@@ -247,10 +260,12 @@ class IQ235GLM53LexicalObjective(nn.Module):
         self, input_ids: torch.Tensor, *, labels: torch.Tensor,
         attention_mask: torch.Tensor | None = None,
         teacher_logits: torch.Tensor | None = None,
+        teacher_input_ids: torch.Tensor | None = None,
         **student_kwargs: Any,
     ) -> tuple[torch.Tensor, LexicalTrainingMetrics]:
         total, causal, kl, tokens = self._losses(
-            input_ids, labels, attention_mask, teacher_logits, **student_kwargs,
+            input_ids, labels, attention_mask, teacher_logits,
+            teacher_input_ids, **student_kwargs,
         )
         metrics = LexicalTrainingMetrics(
             total_loss=float(total.detach()),
@@ -291,7 +306,11 @@ def evaluate_lexical_holdout(
     objective: IQ235GLM53LexicalObjective,
     batch: Mapping[str, torch.Tensor],
 ) -> LexicalTrainingMetrics:
-    """Read-only held-out loss, not approval for pretrained generation."""
+    """Read-only held-out loss, not approval for pretrained generation.
+
+    The caller must first establish the held-out dataset manifest and prove
+    teacher logits came from the pinned GLM-5.3 revision for the exact IDs.
+    """
     was_training = objective.training
     try:
         objective.eval()
