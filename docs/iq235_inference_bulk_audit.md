@@ -86,3 +86,33 @@ Actual pretrained inference cannot be announced until a trusted worker has
 loaded verified pretrained weights, the source/target tokenization and tensor
 geometry agree, full kernel execution is observed, and meaningful held-out
 generation succeeds. This outcome has NOT been demonstrated.
+
+## Separate original-Llama-ID runtime (code implemented, still blocked)
+
+The Baseten entrypoint has an opt-in `IQ_PHASE=pretrained_source` path distinct
+from the default `IQ_PHASE=architecture_only` probe. It loads the pinned
+public Llama 3.1 mapping at the original source vocabulary capacity (128256),
+and prepares to inject **all** indexed source tensors, including the two
+original-ID lexical matrices. These are not GLM-tokenizer weights.
+
+The path **cannot** run until an independently reviewed 20,283-shard SHA-256
+manifest is anchored in `checkpoint_metadata.py`; that pin remains `None`.
+Once approved, a remote worker needs the reviewed manifest file at
+`IQ235_APPROVED_MANIFEST_PATH` and scratch at `IQ235_SHARD_SCRATCH_DIR`.
+Neither can be substituted for independent content verification. The default
+Truss config remains architecture-only; no GPU is started by this change.
+
+The existing OTel exporter is reused. Explicit source loading emits
+`iq235.source.construct_full235`,
+`iq235.source.install_verified_checkpoint`,
+and `iq235.checkpoint.stream_verified_shards` spans, with bounded progress
+(events at shard 1, every 250, and completion). Existing per-layer execution
+events are preserved. Setting `IQ235_NUMERIC_DIAGNOSTICS=1` also checks
+*each actual layer output* for nonfinite values and emits numeric aggregates
+and host-side forward duration. The optional checks synchronize CUDA and are
+slow; host duration is **not** GPU kernel latency. No raw text, token IDs,
+weight data, or credentials are exported by the new instrumentation.
+
+**Not yet proven:** worker topology allocation, verified 539GB payloads,
+Mamba3 numerical correctness, actual GPU forward, and held-out generation.
+No production-readiness assertion is implied by the new path.

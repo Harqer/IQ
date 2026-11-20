@@ -4,6 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import torch
 from safetensors.torch import save_file
@@ -41,6 +42,21 @@ class FakeTracer:
 
 
 class IQ235SourceInstrumentationTests(unittest.TestCase):
+    def test_source_mode_guard_denies_gpu_before_manifest_pin(self):
+        from iq_cloud.full_iq235 import load_pretrained_source, FullIQ235Error
+        with patch.dict("os.environ", {"IQ_PHASE": "pretrained_source"}):
+            with self.assertRaisesRegex(FullIQ235Error, "no GPU or checkpoint"):
+                load_pretrained_source()
+
+    def test_stage_contains_real_verified_source_loader_and_telemetry(self):
+        from scripts.stage_iq235_baseten import selected_sources
+        names = {str(p) for p in selected_sources()}
+        for required in ("iq_cloud/full235_weight_loader.py",
+                         "iq_cloud/remote_shard_loader.py",
+                         "iq_cloud/inference_diagnostics.py",
+                         "iq_cloud/lexical_warmstart.py"):
+            self.assertIn(required, names)
+
     def test_source_mode_can_install_only_original_lexical_ids(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "tiny.safetensors"
