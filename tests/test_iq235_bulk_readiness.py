@@ -52,8 +52,10 @@ class ReadinessTests(unittest.TestCase):
             step.startswith("Stream/sha256/load each source shard exactly once")
             for step in report["steps_before_real_pretrained_inference"]
         ))
-        self.assertIn("Pin the fully reviewed source manifest",
-                      report["steps_before_verified_production_inference"])
+        self.assertTrue(any(
+            step.startswith("Pin the fully reviewed source manifest")
+            for step in report["steps_before_verified_production_inference"]
+        ))
         self.assertTrue(report["runtime_injects_checkpoint_weights"])
         self.assertTrue(report["baseten_stage_includes_loader"])
         self.assertTrue(report["lexical_production_training_blocked"])
