@@ -93,6 +93,15 @@ class Full235GLM53LexicalTests(unittest.TestCase):
         self.assertEqual(result["eos_ids"], list(GLM_EOS_IDS))
         self.assertFalse(result["neural_weight_alignment_verified"])
 
+    def test_sparse_defined_ids_with_reserved_rows_are_valid(self):
+        subset = {
+            token: idx for token, idx in self.tokenizer.get_vocab().items()
+            if idx % 4 != 0 or idx in GLM_EOS_IDS
+        }
+        self.assertLess(len(subset), GLM_VOCAB)
+        digest = mapping_sha256(subset)
+        self.assertEqual(len(digest), 64)
+
     def test_corrupt_mapping_and_wrong_pin_fail(self):
         corrupted = dict(self.tokenizer.get_vocab())
         corrupted["tok_0"] = GLM_VOCAB

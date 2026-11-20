@@ -186,6 +186,11 @@ def generate_probe(state, prompt, *, max_new_tokens=1, tracer=None):
                     ),
                 })
         hooks.append(layer.register_forward_hook(on_forward))
+    # The model's 154880 output rows can include reserved, unassigned IDs.
+    # Never select or decode a row absent from the actual GLM token mapping.
+    valid_output_ids = torch.tensor(
+        sorted(set(state.tokenizer.get_vocab().values())), dtype=torch.long
+    )
     output_ids = []
     finish_reason = "length"
     try:
@@ -202,7 +207,9 @@ def generate_probe(state, prompt, *, max_new_tokens=1, tracer=None):
                     raise FullIQ235Error("nonfinite IQ logits")
                 if any(executed[i] != before[i] + 1 for i in range(235)):
                     raise FullIQ235Error("one or more physical IQ layers failed to execute")
-                token_id = int(logits.argmax(-1).item())
+                valid = valid_output_ids.to(device=logits.device)
+                choice = int(logits[0].index_select(0, valid).argmax().item())
+                token_id = int(valid_output_ids[choice].item())
                 if not 0 <= token_id < EXPECTED_VOCAB:
                     raise FullIQ235Error("GLM output token ID outside vocabulary")
                 output_ids.append(token_id)

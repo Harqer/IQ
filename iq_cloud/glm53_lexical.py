@@ -63,13 +63,14 @@ def inspect_lexical_boundary(
 
 
 def mapping_sha256(vocab: Mapping[str, int]) -> str:
-    if not isinstance(vocab, dict) or len(vocab) != GLM_VOCAB:
-        raise GLM53LexicalError("complete 154880-entry GLM token mapping required")
+    if not isinstance(vocab, dict) or not 0 < len(vocab) <= GLM_VOCAB:
+        raise GLM53LexicalError("invalid GLM token-to-ID mapping size")
     if any(type(k) is not str or type(v) is not int for k, v in vocab.items()):
         raise GLM53LexicalError("token mapping must contain string tokens and integer IDs")
     values = list(vocab.values())
-    if len(set(values)) != GLM_VOCAB or min(values) != 0 or max(values) != GLM_VOCAB - 1:
-        raise GLM53LexicalError("GLM tokenizer IDs must be unique and contiguous")
+    if (len(set(values)) != len(values)
+            or min(values) < 0 or max(values) >= GLM_VOCAB):
+        raise GLM53LexicalError("GLM tokenizer IDs must be unique and in range")
     blob = json.dumps(vocab, sort_keys=True, ensure_ascii=False,
                       separators=(",", ":")).encode("utf-8")
     return sha256(blob).hexdigest()
@@ -89,13 +90,16 @@ def verify_glm53_tokenizer(
             or official_config.get("pad_token_id") != GLM_PAD_ID
             or official_config.get("eos_token_id") != list(GLM_EOS_IDS)):
         raise GLM53LexicalError("official GLM-5.3 source config mismatch")
-    if len(tokenizer) != GLM_VOCAB:
-        raise GLM53LexicalError("GLM tokenizer vocabulary length mismatch")
+    if not 0 < len(tokenizer) <= GLM_VOCAB:
+        raise GLM53LexicalError("GLM tokenizer length outside configured ID space")
     if getattr(tokenizer, "pad_token_id", None) != GLM_PAD_ID:
         raise GLM53LexicalError("GLM tokenizer padding ID mismatch")
     if getattr(tokenizer, "eos_token_id", None) not in GLM_EOS_IDS:
         raise GLM53LexicalError("GLM tokenizer primary EOS ID mismatch")
-    digest = mapping_sha256(tokenizer.get_vocab())
+    vocab = tokenizer.get_vocab()
+    digest = mapping_sha256(vocab)
+    if len(tokenizer) != len(vocab):
+        raise GLM53LexicalError("reported tokenizer length and mapping disagree")
     for identifier in GLM_EOS_IDS:
         token = tokenizer.convert_ids_to_tokens(identifier)
         if not isinstance(token, str) or not token:
@@ -113,6 +117,9 @@ def verify_glm53_tokenizer(
         "mapping_sha256": digest,
         "mapping_independently_pinned": expected_mapping_sha256 is not None,
         "vocab_size": GLM_VOCAB,
+        "defined_token_ids": len(vocab),
+        "reserved_unmapped_rows": GLM_VOCAB - len(vocab),
+        "highest_defined_id": max(vocab.values()),
         "eos_ids": list(GLM_EOS_IDS),
         "pad_id": GLM_PAD_ID,
         "neural_weight_alignment_verified": False,
