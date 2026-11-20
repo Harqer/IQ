@@ -13,11 +13,19 @@ from iq_cloud.full_iq235 import (
 def main():
     config = read_architecture_contract()
     ids = physical_layer_placement(config)
+    from iq_cloud.glm53_lexical import inspect_lexical_boundary
+    from iq_cloud.full_iq235 import config_paths
+    source_path, target_path, _ = config_paths()
+    lexical = inspect_lexical_boundary(
+        json.loads(source_path.read_text(encoding="utf-8")),
+        json.loads(target_path.read_text(encoding="utf-8")),
+    )
     stage = stage_sources()
     counts = {key: config["schedule"]["layers"].count(key)
               for key in sorted(EXPECTED_TYPES)}
     print(json.dumps({
         "stage": "architecture_only",
+        "lexical_boundary": lexical,
         "full_model": True,
         "physical_layers": len(ids),
         "component_counts": counts,

@@ -79,21 +79,13 @@ def physical_layer_placement(config, *, gpu_count=GPU_COUNT):
     return ids
 
 
-def tokenizer_contract(tokenizer):
-    if len(tokenizer) != EXPECTED_VOCAB:
-        raise FullIQ235Error("expected full GLM tokenizer ID space of 154880")
-    if tokenizer.eos_token_id != 154820:
-        raise FullIQ235Error("unexpected pinned GLM tokenizer EOS")
-    vocab = tokenizer.get_vocab()
-    if (not isinstance(vocab, dict) or len(vocab) != EXPECTED_VOCAB
-            or len(set(vocab.values())) != EXPECTED_VOCAB):
-        raise FullIQ235Error("invalid GLM token-to-ID mapping")
-    if any(type(key) is not str or type(value) is not int
-           for key, value in vocab.items()):
-        raise FullIQ235Error("invalid tokenizer entries")
-    blob = json.dumps(vocab, sort_keys=True, ensure_ascii=False,
-                      separators=(",", ":")).encode("utf-8")
-    return sha256(blob).hexdigest()
+def tokenizer_contract(tokenizer, source_config):
+    """Reuse the official GLM-5.3 lexical contract, never source IQ token IDs."""
+    from .glm53_lexical import verify_glm53_tokenizer
+    expected = os.getenv("IQ_GLM53_TOKENIZER_SHA256") or None
+    return verify_glm53_tokenizer(
+        tokenizer, source_config, expected_mapping_sha256=expected
+    )["mapping_sha256"]
 
 
 def model_schema_sha(model):
@@ -132,12 +124,23 @@ def load_phase_a():
     from scripts.patch_iq_native_mimo_tail import check_installed_kernel_guard
     check_installed_kernel_guard()
     from transformers import AutoTokenizer
+    from huggingface_hub import hf_hub_download
     from iq_model.hybrid import IQHybridConfig, IQHybridForCausalLM
-    # No pretrained neural weights are loaded in this phase.
-    tokenizer = AutoTokenizer.from_pretrained(
-        GLM_TOKENIZER, revision=GLM_REVISION, use_fast=True, trust_remote_code=False
+    from .glm53_lexical import inspect_lexical_boundary
+    source_path = hf_hub_download(
+        repo_id=GLM_TOKENIZER, filename="config.json", revision=GLM_REVISION,
+        local_files_only=os.getenv("HF_HUB_OFFLINE") == "1",
     )
-    digest = tokenizer_contract(tokenizer)
+    source_config = json.loads(Path(source_path).read_text(encoding="utf-8"))
+    inspect_lexical_boundary(
+        json.loads(config_paths()[0].read_text(encoding="utf-8")), config_data
+    )
+    # No pretrained neural weights are loaded in this architecture-only phase.
+    tokenizer = AutoTokenizer.from_pretrained(
+        GLM_TOKENIZER, revision=GLM_REVISION, use_fast=True,
+        trust_remote_code=False, local_files_only=os.getenv("HF_HUB_OFFLINE") == "1",
+    )
+    digest = tokenizer_contract(tokenizer, source_config)
     config = IQHybridConfig.from_dict(config_data)
     placement = physical_layer_placement(config_data)
     if config.model.vocab_size != EXPECTED_VOCAB:
@@ -166,6 +169,8 @@ def generate_probe(state, prompt, *, max_new_tokens=1, tracer=None):
     ids = state.tokenizer(prompt, return_tensors="pt").input_ids
     if ids.ndim != 2 or ids.shape[0] != 1 or not 1 <= ids.shape[1] <= 64:
         raise FullIQ235Error("phase A prompt must encode to 1..64 GLM token IDs")
+    if bool(((ids < 0) | (ids >= EXPECTED_VOCAB)).any().item()):
+        raise FullIQ235Error("GLM input token ID outside 154880 vocabulary")
     ids = ids.to("cuda:0")
     executed = [0 for _ in range(235)]
     hooks = []
@@ -196,7 +201,11 @@ def generate_probe(state, prompt, *, max_new_tokens=1, tracer=None):
                 if any(executed[i] != before[i] + 1 for i in range(235)):
                     raise FullIQ235Error("one or more physical IQ layers failed to execute")
                 token_id = int(logits.argmax(-1).item())
+                if not 0 <= token_id < EXPECTED_VOCAB:
+                    raise FullIQ235Error("GLM output token ID outside vocabulary")
                 output_ids.append(token_id)
+                if token_id in (154820, 154827, 154829):
+                    break
                 ids = torch.cat([ids, torch.tensor([[token_id]], device=ids.device)], -1)
     finally:
         for handle in hooks:
