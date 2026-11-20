@@ -23,7 +23,7 @@ class DeploymentSourceContracts(unittest.TestCase):
         self.assertEqual(parsed["model_class_name"], "Model")
         self.assertEqual(parsed["resources"]["accelerator"], "H200:8")
         self.assertEqual(parsed["environment_variables"]["IQ_PHASE"], "architecture_only")
-        self.assertEqual(len(parsed["build_commands"]), 3)
+        self.assertEqual(len(parsed["build_commands"]), 4)
         self.assertTrue(any(
             "git+https://github.com/state-spaces/mamba.git@" in command
             for command in parsed["build_commands"]
