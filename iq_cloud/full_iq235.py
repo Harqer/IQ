@@ -1,7 +1,9 @@
-"""Exact 235-layer IQ phase-A inference, GLM tokenizer, no injected neural weights.
+"""Full IQ235 architecture probe and separately guarded source-vocabulary experiment.
 
-This is NOT the 24-layer Mamba student. A paid Baseten GPU run is separate
-from the read-only preflight.
+Architecture-only is the deployment default. Strict source inference requires
+an independently pinned manifest; separately authorized exploratory source
+inference may write an unreviewed manifest during loading. Neither mode
+certifies language quality or production use.
 """
 from __future__ import annotations
 from collections import Counter
@@ -11,6 +13,9 @@ from hashlib import sha256
 import json
 import os
 from pathlib import Path
+from time import perf_counter
+
+from .inference_diagnostics import examine_layer_output, span_scope
 
 import torch
 
@@ -79,21 +84,18 @@ def physical_layer_placement(config, *, gpu_count=GPU_COUNT):
     return ids
 
 
-def tokenizer_contract(tokenizer):
-    if len(tokenizer) != EXPECTED_VOCAB:
-        raise FullIQ235Error("expected full GLM tokenizer ID space of 154880")
-    if tokenizer.eos_token_id != 154820:
-        raise FullIQ235Error("unexpected pinned GLM tokenizer EOS")
-    vocab = tokenizer.get_vocab()
-    if (not isinstance(vocab, dict) or len(vocab) != EXPECTED_VOCAB
-            or len(set(vocab.values())) != EXPECTED_VOCAB):
-        raise FullIQ235Error("invalid GLM token-to-ID mapping")
-    if any(type(key) is not str or type(value) is not int
-           for key, value in vocab.items()):
-        raise FullIQ235Error("invalid tokenizer entries")
-    blob = json.dumps(vocab, sort_keys=True, ensure_ascii=False,
-                      separators=(",", ":")).encode("utf-8")
-    return sha256(blob).hexdigest()
+def tokenizer_contract(tokenizer, source_config):
+    """Reuse the official GLM-5.3 lexical contract, never source IQ token IDs."""
+    from .glm53_lexical import (
+        GLM_PINNED_MAPPING_SHA256, verify_glm53_tokenizer,
+    )
+    supplied = os.getenv("IQ_GLM53_TOKENIZER_SHA256")
+    if supplied and supplied.lower().strip() != GLM_PINNED_MAPPING_SHA256:
+        raise FullIQ235Error("unverified override of pinned GLM tokenizer mapping")
+    return verify_glm53_tokenizer(
+        tokenizer, source_config,
+        expected_mapping_sha256=GLM_PINNED_MAPPING_SHA256,
+    )["mapping_sha256"]
 
 
 def model_schema_sha(model):
@@ -110,34 +112,36 @@ class FullIQ235:
     schema_sha256: str
     tokenizer_sha256: str
     layer_devices: tuple[int, ...]
+    phase: str = "architecture_only"
+    checkpoint_weights_injected: bool = False
+    verified_source_shards: int = 0
+    snapshot_manifest_sha256: str | None = None
+    checkpoint_integrity: str = "not_loaded"
 
 
 def load_phase_a():
     if os.getenv("IQ_PHASE") != "architecture_only":
-        raise FullIQ235Error("only architecture_only is implemented; injection follows the first stop")
+        raise FullIQ235Error("architecture-only loader requires IQ_PHASE=architecture_only")
     config_data = read_architecture_contract()
-    if not torch.cuda.is_available() or torch.cuda.device_count() != GPU_COUNT:
-        raise FullIQ235Error("eight Baseten CUDA GPUs required; no CPU fallback")
-    if (torch.__version__.split("+", 1)[0] != "2.10.0"
-            or torch.version.cuda != "12.8"):
-        raise FullIQ235Error("pinned CUDA PyTorch 2.10.0/12.8 environment required")
-    for i in range(GPU_COUNT):
-        if "H200" not in torch.cuda.get_device_name(i):
-            raise FullIQ235Error(f"GPU {i} is not H200")
-        if torch.cuda.get_device_capability(i) != (9, 0):
-            raise FullIQ235Error(f"GPU {i} is not Hopper SM90")
-        with torch.cuda.device(i):
-            if not torch.cuda.is_bf16_supported():
-                raise FullIQ235Error(f"GPU {i} has no native BF16")
-    from scripts.patch_iq_native_mimo_tail import check_installed_kernel_guard
-    check_installed_kernel_guard()
+    _require_worker_cuda()
     from transformers import AutoTokenizer
+    from huggingface_hub import hf_hub_download
     from iq_model.hybrid import IQHybridConfig, IQHybridForCausalLM
-    # No pretrained neural weights are loaded in this phase.
-    tokenizer = AutoTokenizer.from_pretrained(
-        GLM_TOKENIZER, revision=GLM_REVISION, use_fast=True, trust_remote_code=False
+    from .glm53_lexical import inspect_lexical_boundary
+    source_path = hf_hub_download(
+        repo_id=GLM_TOKENIZER, filename="config.json", revision=GLM_REVISION,
+        local_files_only=os.getenv("HF_HUB_OFFLINE") == "1",
     )
-    digest = tokenizer_contract(tokenizer)
+    source_config = json.loads(Path(source_path).read_text(encoding="utf-8"))
+    inspect_lexical_boundary(
+        json.loads(config_paths()[0].read_text(encoding="utf-8")), config_data
+    )
+    # No pretrained neural weights are loaded in this architecture-only phase.
+    tokenizer = AutoTokenizer.from_pretrained(
+        GLM_TOKENIZER, revision=GLM_REVISION, use_fast=True,
+        trust_remote_code=False, local_files_only=os.getenv("HF_HUB_OFFLINE") == "1",
+    )
+    digest = tokenizer_contract(tokenizer, source_config)
     config = IQHybridConfig.from_dict(config_data)
     placement = physical_layer_placement(config_data)
     if config.model.vocab_size != EXPECTED_VOCAB:
@@ -157,30 +161,216 @@ def load_phase_a():
     return FullIQ235(tokenizer, model, model_schema_sha(model), digest, placement)
 
 
+
+def load_pretrained_source(*, tracer=None) -> FullIQ235:
+    """Experimental full source-ID inference, not production quality certification.
+
+    Strict gates run before constructing any GPU model or fetching weight data.
+    No 539GB streaming is possible without explicit billing/scan authorization.
+    """
+    phase = os.getenv("IQ_PHASE")
+    if phase not in {"pretrained_source", "pretrained_source_exploratory"}:
+        raise FullIQ235Error("pretrained source mode requires an explicit IQ_PHASE")
+    if os.getenv("IQ235_AUTHORIZE_H200X8") != "I_APPROVE_BILLABLE_H200X8":
+        raise FullIQ235Error(
+            "pretrained source mode requires separate explicit billable-GPU authorization"
+        )
+    from .checkpoint_metadata import (
+        PINNED_SOURCE_SHARD_MANIFEST_SHA256, EXPECTED_SHARDS,
+    )
+    exploratory = phase == "pretrained_source_exploratory"
+    manifest = None
+    snapshot_location = None
+    if exploratory:
+        if (os.getenv("IQ235_EXPLORATORY_UNPINNED") != "I_ACCEPT_UNATTESTED_SOURCE"
+                or os.getenv("IQ235_AUTHORIZE_539GB_READ") != "I_AUTHORIZE_539GB"):
+            raise FullIQ235Error(
+                "unreviewed single-pass inference requires explicit provenance "
+                "acceptance and 539GB read authorization"
+            )
+        snapshot_location = os.getenv("IQ235_UNREVIEWED_MANIFEST_PATH")
+        if not snapshot_location:
+            raise FullIQ235Error("unreviewed manifest output path required")
+        output = Path(snapshot_location)
+        if (not output.is_absolute() or output.exists() or output.is_symlink()
+                or not output.parent.is_dir()):
+            raise FullIQ235Error("unreviewed snapshot path must be an unused absolute path")
+    else:
+        if PINNED_SOURCE_SHARD_MANIFEST_SHA256 is None:
+            raise FullIQ235Error(
+                "missing independently approved full source shard SHA-256 pin; "
+                "no GPU or checkpoint loading authorized"
+            )
+        manifest_location = os.getenv("IQ235_APPROVED_MANIFEST_PATH")
+        if not manifest_location:
+            raise FullIQ235Error("approved manifest file path required for source mode")
+        manifest_path = Path(manifest_location)
+        if not manifest_path.is_file() or manifest_path.is_symlink():
+            raise FullIQ235Error("approved manifest file missing or unsafe")
+        if manifest_path.stat().st_size > 8_000_000:
+            raise FullIQ235Error("approved manifest unexpectedly large")
+        manifest = manifest_path.read_bytes()
+        if sha256(manifest).hexdigest() != PINNED_SOURCE_SHARD_MANIFEST_SHA256:
+            raise FullIQ235Error("approved source manifest digest mismatch")
+
+    from transformers import AutoTokenizer
+    from .lexical_warmstart import (
+        LLAMA_PUBLIC_COPY, LLAMA_COPY_REVISION, LLAMA_COPY_MAPPING_SHA256,
+        _mapping_hash,
+    )
+    tokenizer = AutoTokenizer.from_pretrained(
+        LLAMA_PUBLIC_COPY, revision=LLAMA_COPY_REVISION,
+        use_fast=True, trust_remote_code=False,
+        local_files_only=os.getenv("HF_HUB_OFFLINE") == "1",
+    )
+    digest = _mapping_hash(tokenizer, SOURCE_VOCAB)
+    if digest != LLAMA_COPY_MAPPING_SHA256 or len(tokenizer) != SOURCE_VOCAB:
+        raise FullIQ235Error("source Llama token-to-ID mapping is not pinned")
+
+    # This still verifies the 235-layer schedule plus the GLM phase-A contract,
+    # but the constructed source model uses the ORIGINAL 128256-token profile.
+    read_architecture_contract()
+    original = json.loads(config_paths()[0].read_text(encoding="utf-8"))
+    _require_worker_cuda()
+    from iq_model.hybrid import IQHybridConfig, IQHybridForCausalLM
+    from .full235_weight_loader import load_verified_full235_body
+
+    config = IQHybridConfig.from_dict(original)
+    placement = physical_layer_placement(original)
+    if config.model.vocab_size != SOURCE_VOCAB:
+        raise FullIQ235Error("source model vocabulary geometry mismatch")
+    with span_scope(tracer, "iq235.source.construct_full235", {
+        "iq.physical_layers": 235, "iq.vocab_size": SOURCE_VOCAB,
+    }):
+        model = IQHybridForCausalLM(
+            config, dtype=torch.bfloat16, device="cuda:0",
+            layer_devices=tuple(f"cuda:{i}" for i in placement),
+        ).eval()
+    if len(model.layers) != 235:
+        raise FullIQ235Error("source model must contain 235 physical layers")
+    with span_scope(tracer, "iq235.source.install_verified_checkpoint", {
+        "iq.shards.expected": EXPECTED_SHARDS,
+    }):
+        loaded = load_verified_full235_body(
+            model,
+            approved_manifest_bytes=(None if exploratory else manifest),
+            approved_manifest_sha256=(
+                None if exploratory else PINNED_SOURCE_SHARD_MANIFEST_SHA256
+            ),
+            experimental_snapshot_path=(
+                snapshot_location if exploratory else None
+            ),
+            scratch_dir=os.getenv("IQ235_SHARD_SCRATCH_DIR"),
+            install_source_lexical=True, tracer=tracer,
+        )
+    if (loaded.verified_source_shard_count != EXPECTED_SHARDS
+            or loaded.loaded_lexical_tensor_count != 2
+            or loaded.sampled_lexical_rows_verified != 7
+            or not loaded.lexical_rows_initialized):
+        raise FullIQ235Error("source lexical/checkpoint loading incomplete")
+    # Only an experimental inference permit, NEVER a quality/production claim.
+    return FullIQ235(
+        tokenizer, model, model_schema_sha(model), digest, placement,
+        phase=phase, checkpoint_weights_injected=True,
+        verified_source_shards=loaded.verified_source_shard_count,
+        snapshot_manifest_sha256=loaded.digest_manifest_sha256,
+        checkpoint_integrity=(
+            "unreviewed_stream_hashes" if exploratory else "independently_pinned"
+        ),
+    )
+
+
+def _require_worker_cuda() -> None:
+    """Fail closed on any worker that is not the reviewed H200x8 topology."""
+    if not torch.cuda.is_available() or torch.cuda.device_count() != GPU_COUNT:
+        raise FullIQ235Error("eight Baseten CUDA GPUs required; no CPU fallback")
+    if (torch.__version__.split("+", 1)[0] != "2.10.0"
+            or torch.version.cuda != "12.8"):
+        raise FullIQ235Error("pinned CUDA PyTorch 2.10.0/12.8 environment required")
+    for i in range(GPU_COUNT):
+        if "H200" not in torch.cuda.get_device_name(i):
+            raise FullIQ235Error(f"GPU {i} is not H200")
+        if torch.cuda.get_device_capability(i) != (9, 0):
+            raise FullIQ235Error(f"GPU {i} is not Hopper SM90")
+        with torch.cuda.device(i):
+            if not torch.cuda.is_bf16_supported():
+                raise FullIQ235Error(f"GPU {i} has no native BF16")
+    from scripts.patch_iq_native_mimo_tail import check_installed_kernel_guard
+    check_installed_kernel_guard()
+
+
 @torch.inference_mode()
 def generate_probe(state, prompt, *, max_new_tokens=1, tracer=None):
     if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > 1024:
         raise FullIQ235Error("prompt must be a nonempty string up to 1024 characters")
     if type(max_new_tokens) is not int or not 1 <= max_new_tokens <= 2:
         raise FullIQ235Error("phase A allows 1 or 2 complete forward tokens")
+    phase = getattr(state, "phase", "architecture_only")
+    if phase not in {"architecture_only", "pretrained_source", "pretrained_source_exploratory"}:
+        raise FullIQ235Error("unexpected inference phase")
+    if phase != "architecture_only" and not state.checkpoint_weights_injected:
+        raise FullIQ235Error("cannot infer before full pretrained source loading")
+    vocab_size = SOURCE_VOCAB if phase != "architecture_only" else EXPECTED_VOCAB
+    diagnostics = os.getenv("IQ235_NUMERIC_DIAGNOSTICS") == "1"
     ids = state.tokenizer(prompt, return_tensors="pt").input_ids
     if ids.ndim != 2 or ids.shape[0] != 1 or not 1 <= ids.shape[1] <= 64:
-        raise FullIQ235Error("phase A prompt must encode to 1..64 GLM token IDs")
+        raise FullIQ235Error("prompt must encode to 1..64 valid token IDs")
+    if bool(((ids < 0) | (ids >= vocab_size)).any().item()):
+        raise FullIQ235Error("input token ID outside model vocabulary")
+    prompt_token_count = int(ids.shape[1])
     ids = ids.to("cuda:0")
     executed = [0 for _ in range(235)]
     hooks = []
+    started_at: dict[int, float] = {}
     for index, layer in enumerate(state.model.layers):
+        if diagnostics:
+            def on_pre(_module, _args, idx=index):
+                started_at[idx] = perf_counter()
+            hooks.append(layer.register_forward_pre_hook(on_pre))
+
         def on_forward(_module, _args, _output, idx=index):
             executed[idx] += 1
+            kind = str(state.model.config.schedule.layers[idx].value)
+            current = None
             if tracer is not None:
                 from opentelemetry import trace
-                trace.get_current_span().add_event("iq.physical_layer", {
-                    "layer.index": idx, "layer.type": str(
-                        state.model.config.schedule.layers[idx].value
-                    ),
+                current = trace.get_current_span()
+                current.add_event("iq.physical_layer", {
+                    "layer.index": idx, "layer.type": kind,
                 })
+            if diagnostics:
+                host_start = started_at.pop(idx, None)
+                if host_start is not None and current is not None:
+                    current.add_event("iq.layer.host_elapsed", {
+                        "iq.layer.index": idx,
+                        "iq.layer.host_elapsed_ms": (perf_counter() - host_start) * 1000,
+                    })
+                # CUDA synchronization makes this deliberately slow. It is
+                # diagnostic host timing, NOT a GPU kernel latency measurement.
+                examine_layer_output(
+                    torch, _output, index=idx, layer_type=kind, span=current,
+                )
         hooks.append(layer.register_forward_hook(on_forward))
+    vocab = state.tokenizer.get_vocab()
+    eos_ids = {state.tokenizer.eos_token_id} if (
+        isinstance(state.tokenizer.eos_token_id, int)
+    ) else set(state.tokenizer.eos_token_id or ())
+    if phase != "architecture_only":
+        end_of_turn = vocab.get("<|eot_id|>")
+        if isinstance(end_of_turn, int):
+            eos_ids.add(end_of_turn)
+        # The independent public Llama copies classify ID 128004 differently;
+        # never let it appear as generated text in this experimental baseline.
+        invalid_specials = set(state.tokenizer.all_special_ids) - eos_ids
+        invalid_specials.add(128004)
+        allowed_ids = set(vocab.values()) - invalid_specials
+    else:
+        allowed_ids = set(vocab.values())
+    valid_output_ids = torch.tensor(sorted(allowed_ids), dtype=torch.long)
+    if not len(valid_output_ids) or bool((valid_output_ids >= vocab_size).any()):
+        raise FullIQ235Error("invalid token-to-ID output mapping")
     output_ids = []
+    finish_reason = "length"
     try:
         for step in range(max_new_tokens):
             scope = (tracer.start_as_current_span("iq235.full_forward")
@@ -189,29 +379,43 @@ def generate_probe(state, prompt, *, max_new_tokens=1, tracer=None):
                 before = list(executed)
                 prediction = state.model(ids)
                 logits = prediction.logits[:, -1, :]
-                if tuple(logits.shape) != (1, EXPECTED_VOCAB):
-                    raise FullIQ235Error(f"wrong GLM vocabulary logits: {tuple(logits.shape)}")
+                if tuple(logits.shape) != (1, vocab_size):
+                    raise FullIQ235Error(f"wrong vocabulary logits: {tuple(logits.shape)}")
                 if not torch.isfinite(logits).all().item():
                     raise FullIQ235Error("nonfinite IQ logits")
                 if any(executed[i] != before[i] + 1 for i in range(235)):
                     raise FullIQ235Error("one or more physical IQ layers failed to execute")
-                token_id = int(logits.argmax(-1).item())
+                valid = valid_output_ids.to(device=logits.device)
+                choice = int(logits[0].index_select(0, valid).argmax().item())
+                token_id = int(valid_output_ids[choice].item())
+                if not 0 <= token_id < vocab_size:
+                    raise FullIQ235Error("output token ID outside vocabulary")
                 output_ids.append(token_id)
+                if token_id in (eos_ids if phase != "architecture_only"
+                                else (154820, 154827, 154829)):
+                    finish_reason = "eos_token"
+                    break
                 ids = torch.cat([ids, torch.tensor([[token_id]], device=ids.device)], -1)
     finally:
         for handle in hooks:
             handle.remove()
     return {
-        "phase": "architecture_only",
-        "checkpoint_weights_injected": False,
+        "phase": phase,
+        "checkpoint_weights_injected": state.checkpoint_weights_injected,
         "full_model": True,
         "physical_layers": 235,
         "mamba3_layers": 79,
         "context_layers": 78,
         "moe_layers": 78,
         "experts_per_moe_layer": 256,
-        "glm_tokenizer_vocab": EXPECTED_VOCAB,
-        "input_tokens": int(ids.shape[1] - len(output_ids)),
+        "glm_tokenizer_vocab": (EXPECTED_VOCAB if phase == "architecture_only" else None),
+        "source_tokenizer_vocab": (SOURCE_VOCAB if phase != "architecture_only" else None),
+        "checkpoint_integrity": state.checkpoint_integrity,
+        "unreviewed_or_pinned_manifest_sha256": state.snapshot_manifest_sha256,
+        "verified_source_shards": state.verified_source_shards,
+        "heldout_quality_verified": False,
+        "input_tokens": prompt_token_count,
+        "finish_reason": finish_reason,
         "generated_ids": output_ids,
         "completion": state.tokenizer.decode(output_ids, skip_special_tokens=True),
         "schema_sha256": state.schema_sha256,

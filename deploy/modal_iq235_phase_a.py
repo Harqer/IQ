@@ -3,6 +3,8 @@
 Before use:
     python3 -m scripts.iq235_preflight
     modal setup
+    # This script needs the verified staged source tree:
+    python3 -m scripts.stage_iq235_baseten
     # Set Modal workspace spend limit and budget in Usage & Billing first.
     modal run deploy/modal_iq235_phase_a.py
 
@@ -25,7 +27,7 @@ if modal.is_local() and (
 ):
     raise RuntimeError(
         "Missing verified IQ source stage; run "
-        "python3 -m scripts.iq235_preflight from the repository first"
+        "python3 -m scripts.stage_iq235_baseten from the repository first"
     )
 
 # Copy only the 44 verified source/config files staged by IQ, not HF weights,

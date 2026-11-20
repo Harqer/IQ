@@ -1,0 +1,31 @@
+name: iq235-glm53-tokenizer
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tokenizer-only:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Checkout source (not checkpoints)
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install tokenizer libraries only
+        run: |
+          python -m pip install "transformers==5.17.0" "huggingface_hub>=1.5,<2.0"
+      - name: Compile lexical contracts
+        run: |
+          python -m compileall -q iq_cloud/glm53_lexical.py scripts/iq235_verify_official_tokenizer.py
+      - name: Inspect official GLM-5.3 tokenizer (never model weights)
+        env:
+          HF_HUB_DISABLE_TELEMETRY: "1"
+        run: |
+          python -m scripts.iq235_verify_official_tokenizer

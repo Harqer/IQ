@@ -19,7 +19,12 @@ REPO = Path(__file__).resolve().parents[1]
 DEST = REPO / "deploy" / "_iq235_baseten_packages"
 PACKAGE_NAMES = ("iq_cloud", "iq_model", "scripts", "configs")
 ROOT_FILES = {
-    "iq_cloud": ("__init__.py", "full_iq235.py"),
+    "iq_cloud": (
+        "__init__.py", "full_iq235.py", "glm53_lexical.py",
+        "lexical_warmstart.py", "checkpoint_metadata.py",
+        "checkpoint_migration.py", "remote_shard_loader.py",
+        "full235_weight_loader.py", "inference_diagnostics.py",
+    ),
     "scripts": ("__init__.py", "patch_iq_native_mimo_tail.py"),
     "configs": (
         "__init__.py",

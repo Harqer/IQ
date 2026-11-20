@@ -1,0 +1,63 @@
+name: iq235-hf-bucket-metadata
+
+on:
+  pull_request:
+    paths:
+      - "iq_cloud/checkpoint_metadata.py"
+      - "iq_cloud/bulk_readiness.py"
+      - "scripts/iq235_bulk_readiness.py"
+      - "tests/test_iq235_bulk_readiness.py"
+      - "iq_cloud/checkpoint_migration.py"
+      - "scripts/iq235_checkpoint_migration.py"
+      - "tests/test_iq235_checkpoint_migration.py"
+      - "iq_cloud/glm53_lexical.py"
+      - "configs/iq235_checkpoint_source.json"
+      - "configs/iq235_glm53_tokenizer_phase_a.json"
+      - "scripts/iq235_bucket_metadata.py"
+      - "scripts/iq235_lexical_header.py"
+      - "iq_cloud/lexical_header.py"
+      - "iq_cloud/glm53_calibration_headers.py"
+      - "scripts/iq235_glm53_calibration_headers.py"
+      - "tests/test_iq235_glm53_calibration_headers.py"
+      - ".github/workflows/iq235-hf-bucket-metadata.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bucket-metadata-only:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout source only
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install HF metadata client only
+        run: python -m pip install "huggingface_hub==1.33.0"
+      - name: Audit read-only IQ235 index and completion marker
+        env:
+          HF_HUB_DISABLE_TELEMETRY: "1"
+        run: |
+          python -m scripts.iq235_bucket_metadata
+      - name: Check source-to-GLM body reuse and lexical replacement plan
+        env:
+          HF_HUB_DISABLE_TELEMETRY: "1"
+        run: |
+          python -m scripts.iq235_checkpoint_migration
+      - name: Audit existing GLM residual-coordinate matrices (headers only)
+        run: |
+          python -m scripts.iq235_glm53_calibration_headers
+      - name: Inspect real IQ235 lexical SafeTensors header only
+        env:
+          HF_HUB_DISABLE_TELEMETRY: "1"
+        run: |
+          python -m scripts.iq235_lexical_header
+      - name: Bulk readiness plus six representative source headers only
+        env:
+          HF_HUB_DISABLE_TELEMETRY: "1"
+        run: |
+          python -m scripts.iq235_bulk_readiness --remote-header-samples
