@@ -59,6 +59,13 @@ oc start-build iq-full -n "$ns" --from-dir="$context" --follow --wait
 
 # Save old success logs before replacing its completed Job.
 if oc get job "$job" -n "$ns" >/dev/null 2>&1; then
+  # Re-check status after the build: another operator may have replaced it.
+  status=$(oc get job "$job" -n "$ns" -o jsonpath='{.status.succeeded}')
+  active=$(oc get job "$job" -n "$ns" -o jsonpath='{.status.active}')
+  if [[ "$status" != 1 || ( -n "$active" && "$active" != 0 ) ]]; then
+    echo "ABORT: Job changed state during build; refusing deletion" >&2
+    exit 1
+  fi
   log_file="/tmp/iq-full-previous-$(date +%Y%m%d-%H%M%S).log"
   oc logs -n "$ns" "job/$job" > "$log_file" 2>&1 || true
   echo "Saved previous Job logs: $log_file"
