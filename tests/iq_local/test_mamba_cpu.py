@@ -23,6 +23,7 @@ e9594ce1c732d97440f0332fdc43170a2294dbfa, the commit pinned by
 """
 
 import math
+from pathlib import Path
 
 import torch
 import torch.nn.functional as F
@@ -248,8 +249,14 @@ def test_source_commit_matches_production_pin():
 
 
 def test_core_param_names_match_checkpoint():
-    hybrid_config = IQHybridConfig.from_json(CHECKPOINT_CONFIG)
-    mamba_config = CPUConfig(**vars(hybrid_config.mamba3))
+    # The checkpoint config is intentionally not committed. Validate the
+    # architectural key schema in CI using the same module with a tiny config;
+    # retain the checkpoint-specific shape path when the local file exists.
+    if Path(CHECKPOINT_CONFIG).is_file():
+        hybrid_config = IQHybridConfig.from_json(CHECKPOINT_CONFIG)
+        mamba_config = CPUConfig(**vars(hybrid_config.mamba3))
+    else:
+        mamba_config = _tiny_config()
     model = Mamba3CPU(mamba_config, layer_idx=0)
     names = set(model.core.state_dict().keys())
     assert names == CHECKPOINT_CORE_PARAM_NAMES
