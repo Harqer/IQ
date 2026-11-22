@@ -489,7 +489,10 @@ class _Mamba3MIMOCore(nn.Module):
         beta = (1.0 - trap.to(torch.float32)) * dt * alpha
         gamma = trap.to(torch.float32) * dt
 
-        xpj = self.mimo_x.permute(1, 0, 2)
+        # The transferred checkpoint can store MIMO factors in BF16. Contract
+        # them in FP32 with the FP32 recurrent state; restore BF16 only before
+        # the final learned out_proj, as in the existing CPU math path.
+        xpj = self.mimo_x.permute(1, 0, 2).to(torch.float32)
         x_vals = x4.to(torch.float32)[:, None, :, :] * xpj[None, :, :, :]
         xs_vals = state.v.to(torch.float32)[:, None, :, :] * xpj[None, :, :, :]
 
@@ -511,10 +514,10 @@ class _Mamba3MIMOCore(nn.Module):
         if config.outproj_norm:
             y = self._postprocess(out_r, z4)
         else:
-            zpj = self.mimo_z.permute(1, 0, 2)
+            zpj = self.mimo_z.permute(1, 0, 2).to(torch.float32)
             z_vals = z4.to(torch.float32)[:, None, :, :] * zpj[None, :, :, :]
             out_r = out_r * z_vals * torch.sigmoid(z_vals)
-            outpj = self.mimo_o.permute(1, 0, 2)
+            outpj = self.mimo_o.permute(1, 0, 2).to(torch.float32)
             y = torch.einsum("brnh,rnh->bnh", out_r, outpj)
 
         out = y.reshape(batch, d_inner).to(u.dtype)
@@ -536,13 +539,13 @@ class _Mamba3MIMOCore(nn.Module):
         """Verbatim port of modules/mamba3.py:304-312 _postprocess (the
         outproj_norm=true decode path; modules/mamba3.py:382-405)."""
         batch, rank, nheads, headdim = y_r.shape
-        zpj = self.mimo_z.permute(1, 0, 2)
+        zpj = self.mimo_z.permute(1, 0, 2).to(torch.float32)
         z_r = torch.einsum("bhp,rhp->brhp", z4.to(torch.float32), zpj)
         z_r = z_r.reshape(batch, rank, nheads * headdim)
         y = y_r.reshape(batch, rank, nheads * headdim).to(torch.float32)
         y = self.norm(y, z_r)
         y = y.reshape(batch, rank, nheads, headdim)
-        outpj = self.mimo_o.permute(1, 0, 2)
+        outpj = self.mimo_o.permute(1, 0, 2).to(torch.float32)
         return torch.einsum("brhp,rhp->bhp", y, outpj)
 
 
