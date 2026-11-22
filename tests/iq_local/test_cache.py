@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from iq_local.cache import CacheDiskFullError, LocalCache
+from iq_local.cache import CacheDiskFullError, LocalCache, checkpoint_cache_root
 
 
 def test_commit_moves_file_and_counts(tmp_path: Path):
@@ -85,3 +85,14 @@ def test_commit_raises_on_aliased_path(tmp_path: Path):
     second.write_bytes(b"x" * 50)
     with pytest.raises(ValueError):
         cache.commit("a/b", second)
+
+
+def test_checkpoint_cache_is_scoped_by_bucket_and_run(tmp_path: Path):
+    first = checkpoint_cache_root(tmp_path, "owner/a", "runs/first")
+    assert first == checkpoint_cache_root(tmp_path, "owner/a", "runs/first/")
+    assert first != checkpoint_cache_root(tmp_path, "owner/a", "runs/second")
+    assert first != checkpoint_cache_root(tmp_path, "owner/b", "runs/first")
+    first.mkdir(parents=True)
+    (first / "sentinel").write_bytes(b"checkpoint-one")
+    second = checkpoint_cache_root(tmp_path, "owner/a", "runs/second")
+    assert not (second / "sentinel").exists()
