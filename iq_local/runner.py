@@ -113,6 +113,8 @@ class HybridRunner:
             raise ValueError("prompt token outside vocabulary")
         self.reset()
         logits = self._prefill(prompt_ids, progress_callback=progress_callback)
+        if progress_callback is not None:
+            self._notify_first_token_logits(progress_callback, logits)
         next_token = int(logits[0, -1].argmax())
         generated = [next_token]
         if progress_callback is not None:
@@ -155,7 +157,7 @@ class HybridRunner:
                     layer_output - layer_input,
                 )
             x = layer_output
-            self._notify_layer(progress_callback, "prefill", position)
+            self._notify_layer(progress_callback, "prefill", position, x)
         if self.model.attnres is not None:
             assert attnres_state is not None
             x = self.model.attnres.finalize(attnres_state)
@@ -186,7 +188,7 @@ class HybridRunner:
                     layer_output - layer_input,
                 )
             x = layer_output
-            self._notify_layer(progress_callback, "decode", position)
+            self._notify_layer(progress_callback, "decode", position, x)
         if self.model.attnres is not None:
             assert attnres_state is not None
             x = self.model.attnres.finalize(attnres_state)
@@ -197,15 +199,43 @@ class HybridRunner:
         logits = self.model.lm_head(final_hidden)
         return logits[:, -1:]
 
-    def _notify_layer(self, progress_callback, phase: str, position: int) -> None:
-        # Callbacks run only after real layer math returned, never at dispatch.
+    def _notify_layer(
+        self, progress_callback, phase: str, position: int, activation: torch.Tensor
+    ) -> None:
+        # Diagnostic RMS uses the real returned activation without changing math.
         done = position + 1
-        if progress_callback is not None and (done % 10 == 0 or done == len(self._layers)):
-            progress_callback({
-                "phase": phase,
-                "completed_layers": done,
-                "total_layers": len(self._layers),
-            })
+        if progress_callback is None or (
+            done % 10 != 0 and done != len(self._layers)
+        ):
+            return
+        sample = activation[0, -1].float()
+        if not torch.isfinite(sample).all().item():
+            raise FloatingPointError(f"{phase} layer {position}: non-finite activation")
+        rms = sample.square().mean().sqrt()
+        progress_callback({
+            "phase": phase,
+            "completed_layers": done,
+            "total_layers": len(self._layers),
+            "activation_rms": float(rms),
+            "activation_max_abs": float(sample.abs().max()),
+        })
+
+    @staticmethod
+    def _notify_first_token_logits(progress_callback, logits: torch.Tensor) -> None:
+        values = logits[0, -1].float()
+        if not torch.isfinite(values).all().item():
+            raise FloatingPointError("prefill produced non-finite logits")
+        probs = torch.softmax(values, dim=-1)
+        top = torch.topk(probs, k=min(5, probs.numel()))
+        entropy = -(probs * probs.clamp_min(1e-30).log()).sum()
+        progress_callback({
+            "phase": "first_token_logits",
+            "top_token_ids": top.indices.tolist(),
+            "top_probabilities": [round(float(p), 6) for p in top.values],
+            "entropy_nats": round(float(entropy), 4),
+            "logit_min": float(values.min()),
+            "logit_max": float(values.max()),
+        })
 
     def _run_layer(
         self,
