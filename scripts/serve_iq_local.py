@@ -52,6 +52,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bucket-id", default=BUCKET_ID)
     parser.add_argument("--run-prefix", default=RUN_PREFIX)
     parser.add_argument("--tokenizer", default="unsloth/Meta-Llama-3.1-8B")
+    parser.add_argument("--cpu-int4-base", action="store_true", help="EXPERIMENTAL: meta + CPU INT4 context/shared-MoE loading")
+    parser.add_argument("--cpu-int4-group-size", type=int, default=32)
     return parser.parse_args()
 
 
@@ -67,21 +69,28 @@ def build_stack(args: argparse.Namespace):
         index, cache, client, max_ram_experts=args.max_ram_experts
     )
     config = index.config
-    model = CPUHybridForCausalLM(config, dtype=torch.bfloat16, device="cpu")
-    global_keys = [key for key in index.weight_map if not key.startswith("layers.")]
-    state: dict[str, torch.Tensor] = {}
-    for key in global_keys:
-        state[key] = provider.load_global(key)
-    for layer_idx in range(len(config.schedule.layers)):
-        state.update(provider.load_layer_base(layer_idx))
-    missing, unexpected = model.load_state_dict(state, strict=False)
-    if missing or unexpected:
-        raise RuntimeError(
-            f"checkpoint state mismatch: missing={sorted(missing)[:4]}... "
-            f"unexpected={sorted(unexpected)[:4]}..."
+    if args.cpu_int4_base:
+        from iq_local.int4_loading import build_cpu_int4_model
+        model, stats = build_cpu_int4_model(
+            config, index, provider, group_size=args.cpu_int4_group_size
         )
-    print(f"IQ: base weights loaded ({len(state)} tensors)", flush=True)
-    model.eval()
+        print(f"IQ: CPU INT4 experimental base loaded: {stats}", flush=True)
+    else:
+        model = CPUHybridForCausalLM(config, dtype=torch.bfloat16, device="cpu")
+        global_keys = [key for key in index.weight_map if not key.startswith("layers.")]
+        state: dict[str, torch.Tensor] = {}
+        for key in global_keys:
+            state[key] = provider.load_global(key)
+        for layer_idx in range(len(config.schedule.layers)):
+            state.update(provider.load_layer_base(layer_idx))
+        missing, unexpected = model.load_state_dict(state, strict=False)
+        if missing or unexpected:
+            raise RuntimeError(
+                f"checkpoint state mismatch: missing={sorted(missing)[:4]}... "
+                f"unexpected={sorted(unexpected)[:4]}..."
+            )
+        print(f"IQ: base weights loaded ({len(state)} tensors)", flush=True)
+        model.eval()
     runner = HybridRunner(model, provider)
     tokenizer = AutoTokenizer.from_pretrained(args.tokenizer)
     expected_special_ids = {
