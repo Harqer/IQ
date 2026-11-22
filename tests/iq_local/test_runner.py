@@ -170,6 +170,47 @@ def test_expert_fetch_happens_between_layers():
     assert {stage for stage, _ in provider.calls} == {0}
 
 
+def test_generation_runs_without_autograd_and_restores_grad_mode():
+    from iq_local.runner import HybridRunner
+
+    model = _tiny_model()
+    runner = HybridRunner(model, CountingProvider())
+    enabled = []
+    handle = model.lm_head.register_forward_hook(
+        lambda *_: enabled.append(torch.is_grad_enabled())
+    )
+    try:
+        with torch.enable_grad():
+            assert torch.is_grad_enabled()
+            runner.generate([1, 2, 3], max_new_tokens=2)
+            assert torch.is_grad_enabled()
+    finally:
+        handle.remove()
+    assert enabled and not any(enabled)
+
+
+def test_verifier_counts_every_real_layer_on_prefill_and_decode():
+    from collections import Counter
+
+    from iq_local.runner import HybridRunner
+    from scripts.verify_iq_full_inference import attach_layer_execution_probes
+
+    model = _tiny_model()
+    runner = HybridRunner(model, CountingProvider())
+    hits = Counter()
+    handles, methods = attach_layer_execution_probes(model.layers, hits)
+    try:
+        runner.generate([1, 2, 3], max_new_tokens=2)
+    finally:
+        for handle in handles:
+            handle.remove()
+        for obj, method, original in methods:
+            setattr(obj, method, original)
+    assert {i: hits[i] for i in range(len(model.layers))} == {
+        0: 2, 1: 2, 2: 2, 3: 2
+    }
+
+
 def test_reset_clears_streaming_state():
     from iq_local.runner import HybridRunner
 
