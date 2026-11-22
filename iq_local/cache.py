@@ -2,10 +2,21 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import shutil
 from collections import OrderedDict
 from pathlib import Path
+
+
+def checkpoint_cache_root(root: Path, bucket_id: str, run_prefix: str) -> Path:
+    """Keep manifests and shard/INT4 caches isolated by checkpoint identity.
+
+    The full digest avoids collisions and permits safe reuse of the same
+    checkpoint across restarts without trusting a cache from another run.
+    """
+    identity = f"{bucket_id}\0{run_prefix.rstrip('/')}".encode("utf-8")
+    return Path(root) / "checkpoints" / hashlib.sha256(identity).hexdigest()
 
 
 class CacheDiskFullError(RuntimeError):
