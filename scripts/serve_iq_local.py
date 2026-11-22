@@ -32,7 +32,7 @@ if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
 from iq_local.bucket import BUCKET_ID, RUN_PREFIX, BucketClient
-from iq_local.cache import LocalCache
+from iq_local.cache import LocalCache, checkpoint_cache_root
 from iq_local.cpu_hybrid import CPUHybridForCausalLM
 from iq_local.index import RunIndex
 from iq_local.provider import StreamingWeightProvider
@@ -58,13 +58,14 @@ def parse_args() -> argparse.Namespace:
 
 
 def build_stack(args: argparse.Namespace):
+    cache_root = checkpoint_cache_root(args.cache_dir, args.bucket_id, args.run_prefix)
     print(
-        f"IQ: bucket={args.bucket_id} run={args.run_prefix} cache={args.cache_dir}",
+        f"IQ: bucket={args.bucket_id} run={args.run_prefix} cache={cache_root}",
         flush=True,
     )
     client = BucketClient(args.bucket_id, args.run_prefix)
-    cache = LocalCache(args.cache_dir, budget_bytes=int(args.cache_budget_gb * (1 << 30)))
-    index = RunIndex(client, args.cache_dir / "run")
+    cache = LocalCache(cache_root / "store", budget_bytes=int(args.cache_budget_gb * (1 << 30)))
+    index = RunIndex(client, cache_root / "run")
     provider = StreamingWeightProvider(
         index, cache, client, max_ram_experts=args.max_ram_experts
     )
