@@ -1,0 +1,66 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: iq-full-verification
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app: iq-full-verification
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: iq
+          image: image-registry.openshift-image-registry.svc:5000/__NAMESPACE__/iq-full:latest
+          imagePullPolicy: Always
+          command: ["python", "scripts/verify_iq_full_inference.py"]
+          args:
+            - --cache-dir
+            - /data/cache
+            - --cache-budget-gb
+            - "64"
+            - --max-ram-experts
+            - "4"
+            - --cpu-int4-group-size
+            - "32"
+            - --require-free-gib
+            - "20"
+            - --max-rss-gib
+            - "29"
+            - --output
+            - /data/iq_full_inference_report.json
+            - --prompt
+            - "What is two plus two?"
+            - --max-new-tokens
+            - "8"
+          env:
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: iq-hf-token
+                  key: HF_TOKEN
+            - name: HF_HOME
+              value: /data/hf
+            - name: HOME
+              value: /tmp
+          resources:
+            requests:
+              memory: 12Gi
+              cpu: "2"
+            limits:
+              memory: 30Gi
+              cpu: "3"
+          volumeMounts:
+            - name: checkpoint-cache
+              mountPath: /data
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+      volumes:
+        - name: checkpoint-cache
+          persistentVolumeClaim:
+            claimName: iq-full-cache

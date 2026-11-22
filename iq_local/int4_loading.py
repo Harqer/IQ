@@ -1,0 +1,169 @@
+"""Opt-in incremental meta-device IQ loader with per-layer CPU INT4 conversion.
+
+This does not update the original HF checkpoint and leaves routed expert
+streaming untouched. It is a memory feasibility and forward-path trial.
+"""
+from __future__ import annotations
+
+import gc
+
+import torch
+from torch import nn
+
+from iq_local.cpu_hybrid import CPUHybridForCausalLM
+from iq_local.int4_linear import PackedInt4Linear
+
+
+def _is_target(layer_type: object, name: str, weight: torch.Tensor, *, min_elements: int) -> bool:
+    kind = getattr(layer_type, 'value', str(layer_type)).lower()
+    if not any(x in kind for x in ('csa', 'hca', 'moe')):
+        return False
+    # Keep routing and index selection at original precision for the first trial.
+    if any(x in name for x in ('router', 'index_', 'compressor_gate_proj')):
+        return False
+    return weight.ndim == 2 and weight.numel() >= min_elements
+
+
+def _assert_exact(actual: set[str], expected: set[str], context: str) -> None:
+    missing = sorted(expected - actual)
+    extra = sorted(actual - expected)
+    if missing or extra:
+        raise RuntimeError(f'{context}: missing={missing[:6]} unexpected={extra[:6]}')
+
+
+
+def _materialize_meta_rope_buffers(model, config) -> int:
+    """Restore derived, non-persistent CSA/HCA RoPE buffers on CPU.
+
+    `RotaryEmbedding.inv_freq` is registered with persistent=False, so it is
+    intentionally absent from the checkpoint state_dict. On a meta-built model,
+    loading weights with assign=True cannot materialize this particular buffer.
+    Recompute its exact constructor formula from IQ's compressed-context config.
+    """
+    from iq_model.position import InterleavedRotaryEmbedding
+
+    count = 0
+    for name, module in model.named_modules():
+        if not isinstance(module, InterleavedRotaryEmbedding):
+            continue
+        if not module.inv_freq.is_meta:
+            continue
+        context = config.compressed_context
+        if context is None:
+            raise RuntimeError(f'{name}: compressed-context config missing for RoPE')
+        dim = int(module.dim)
+        if (dim != int(context.partial_rotary_dim)
+                or module.max_position_embeddings != int(context.max_position_embeddings)):
+            raise RuntimeError(f'{name}: RoPE shape/config mismatch')
+        base = float(context.compress_rope_theta)
+        freq = 1.0 / (base ** (
+            torch.arange(0, dim, 2, dtype=torch.float32, device='cpu') / dim
+        ))
+        if freq.shape != module.inv_freq.shape:
+            raise RuntimeError(f'{name}: RoPE buffer shape mismatch')
+        # Assigning a registered buffer retains persistent=False automatically.
+        module.inv_freq = freq
+        count += 1
+    return count
+
+
+
+def _materialize_meta_reasoning_depth_buffers(model, config):
+    """Restore deterministic, nonpersistent reasoning-depth buffers."""
+    from iq_model.reasoning.recurrence import SpectralDepthEncoding
+
+    count = 0
+    for name, module in model.named_modules():
+        if not isinstance(module, SpectralDepthEncoding):
+            continue
+        if not module.frequencies.is_meta:
+            continue
+        if config.reasoning is None:
+            raise RuntimeError(f"{name}: missing reasoning configuration")
+
+        expected = SpectralDepthEncoding(
+            int(module.dim),
+            base=float(config.reasoning.depth_base),
+        ).frequencies
+
+        if expected.shape != module.frequencies.shape:
+            raise RuntimeError(f"{name}: frequency shape mismatch")
+
+        module.frequencies = expected
+        count += 1
+
+    return count
+
+
+def build_cpu_int4_model(config, index, provider, *, group_size: int = 32,
+                         min_elements: int = 8192):
+    if getattr(config.model, 'tie_word_embeddings', False):
+        raise RuntimeError('The experimental INT4 loader has not validated tied-weight aliasing')
+    # Critical: do not allocate a 31+ GiB BF16 model before packing.
+    model = CPUHybridForCausalLM(config, dtype=torch.bfloat16, device='meta')
+    original_expected = set(model.state_dict().keys())
+    routed = '.moe.routed_experts.'
+    checkpoint_expected = {key for key in index.weight_map if routed not in key}
+    _assert_exact(checkpoint_expected, original_expected, 'checkpoint/schema mismatch')
+
+    global_keys = [k for k in index.weight_map if not k.startswith('layers.')]
+    global_state = {k: provider.load_global(k) for k in global_keys}
+    # Missing layer parameters here are intentional: they are filled per layer.
+    _, unexpected = model.load_state_dict(global_state, strict=False, assign=True)
+    if unexpected:
+        raise RuntimeError(f'unexpected global keys: {unexpected[:6]}')
+    del global_state
+    gc.collect()
+
+    stats = {'compressed_linears': 0, 'original_bytes': 0, 'packed_bytes': 0,
+             'zero_columns': 0, 'base_tensors': 0}
+    for layer_idx, layer_type in enumerate(config.schedule.layers):
+        prefix = f'layers.{layer_idx}.'
+        source = provider.load_layer_base(layer_idx)
+        local = {k[len(prefix):]: v for k, v in source.items()}
+        del source
+        layer = model.layers[layer_idx]
+        _assert_exact(set(local), set(layer.state_dict()), f'layer {layer_idx} before packing')
+        for name, module in list(layer.named_modules()):
+            if not name or type(module) is not nn.Linear:
+                continue
+            weight_key = f'{name}.weight'
+            weight = local.get(weight_key)
+            if weight is None or not _is_target(layer_type, name, weight,
+                                                 min_elements=min_elements):
+                continue
+            bias_key = f'{name}.bias'
+            if module.bias is not None and bias_key not in local:
+                raise RuntimeError(f'layer {layer_idx}: missing bias {bias_key}')
+            bias = local.get(bias_key)
+            compressed = PackedInt4Linear.from_weight(
+                weight, bias=bias, group_size=group_size)
+            stats['compressed_linears'] += 1
+            stats['original_bytes'] += weight.numel() * weight.element_size()
+            stats['packed_bytes'] += compressed.packed_nbytes
+            stats['zero_columns'] += weight.shape[1] - compressed.active_features
+            layer.set_submodule(name, compressed)
+            local.pop(weight_key)
+            if bias is not None:
+                local.pop(bias_key)
+            for buffer_name, tensor in compressed.state_dict().items():
+                local[f'{name}.{buffer_name}'] = tensor
+            del weight, compressed
+        # The strict load enforces all non-compressed layer keys as well.
+        layer.load_state_dict(local, strict=True, assign=True)
+        stats['base_tensors'] += len(local)
+        del local
+        if (layer_idx + 1) % 10 == 0:
+            print(f'IQ INT4: loaded {layer_idx + 1}/{len(config.schedule.layers)} '
+                  f'layers; packed modules={stats["compressed_linears"]}', flush=True)
+        gc.collect()
+    rope_buffers = _materialize_meta_rope_buffers(model, config)
+    print(f'IQ INT4: materialized {rope_buffers} derived RoPE CPU buffers', flush=True)
+    depth_buffers = _materialize_meta_reasoning_depth_buffers(model, config)
+    print(f"IQ INT4: materialized {depth_buffers} reasoning-depth buffers", flush=True)
+    remaining = [n for n, p in model.named_parameters() if p.is_meta]
+    remaining += [n for n, b in model.named_buffers() if b.is_meta]
+    if remaining:
+        raise RuntimeError(f'unmaterialized meta tensors: {remaining[:8]}')
+    model.eval()
+    return model, stats
