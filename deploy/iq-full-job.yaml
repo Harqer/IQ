@@ -25,7 +25,7 @@ spec:
             - --cpu-int4-group-size
             - "32"
             - --require-free-gib
-            - "24"
+            - "20"
             - --max-rss-gib
             - "29"
             - --output
@@ -46,7 +46,7 @@ spec:
               value: /tmp
           resources:
             requests:
-              memory: 26Gi
+              memory: 12Gi
               cpu: "2"
             limits:
               memory: 30Gi
