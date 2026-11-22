@@ -96,6 +96,7 @@ class HybridRunner:
         _, selected, weights = layer.moe._route(flat)
         return weights, selected
 
+    @torch.inference_mode()
     def generate(
         self,
         prompt_ids: list[int],
