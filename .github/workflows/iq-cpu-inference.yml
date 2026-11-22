@@ -44,6 +44,6 @@ jobs:
       - name: Compile Python source
         run: python -m compileall -q iq_model/state/mamba3_cpu.py iq_local scripts/serve_iq_local.py scripts/verify_iq_full_inference.py tests/iq_local
       - name: Lint changed CPU runtime and regression test
-        run: python -m ruff check --select E4,E7,E9,F iq_model/state/mamba3_cpu.py tests/iq_local/test_mamba_mixed_dtype.py
+        run: python -m ruff check --select E4,E7,E9,F iq_model/state/mamba3_cpu.py iq_local/quality.py iq_local/runner.py scripts/verify_iq_full_inference.py tests/iq_local/test_mamba_mixed_dtype.py tests/iq_local/test_quality_gate.py tests/iq_local/test_runner.py
       - name: Run Mamba CPU prefill and decode regression tests
-        run: python -m pytest -q tests/iq_local/test_mamba_mixed_dtype.py tests/iq_local/test_mamba_cpu.py tests/iq_local/test_cache.py tests/iq_local/test_runner.py tests/iq_local/test_server.py
+        run: python -m pytest -q tests/iq_local/test_mamba_mixed_dtype.py tests/iq_local/test_mamba_cpu.py tests/iq_local/test_cache.py tests/iq_local/test_runner.py tests/iq_local/test_server.py tests/iq_local/test_quality_gate.py
