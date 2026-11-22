@@ -30,6 +30,7 @@ from iq_local.cpu_hybrid import CPUMamba3ResidualLayer
 from iq_local.cache import LocalCache, checkpoint_cache_root
 from iq_local.index import RunIndex
 from iq_local.provider import StreamingWeightProvider
+from iq_local.quality import check_arithmetic_canary
 
 
 def gib(value: float) -> float:
@@ -112,6 +113,8 @@ def make_args():
     p.add_argument('--prompt', default='What is two plus two?')
     p.add_argument('--max-new-tokens', type=int, default=8)
     p.add_argument('--expect-substring', default=None, help='Optional content acceptance check for decoded output')
+    p.add_argument('--require-arithmetic-canary', action='store_true',
+                   help='Reject garbled/incorrect output for the explicit 2+2 acceptance prompt')
     p.add_argument('--max-rss-gib', type=float, default=30.0, help='Maximum allowed peak RSS for success')
     p.add_argument('--require-free-gib', type=float, default=25,
                    help='Refuse full loading when currently available RAM or cgroup headroom is below this threshold')
@@ -161,7 +164,9 @@ def main():
     begin = time.monotonic()
     report = {'checkpoint': args.run_prefix, 'bucket': args.bucket_id,
               'architecture_unmodified': True, 'mock_inference': False,
-              'status': 'STARTED', 'finished': False}
+              'status': 'STARTED', 'finished': False,
+              'semantic_quality_verified': False,
+              'arithmetic_canary_required': bool(args.require_arithmetic_canary)}
     try:
         emit('start', {'mode': 'manifest' if args.manifest_only else 'full',
                        'checkpoint': args.run_prefix})
@@ -174,6 +179,13 @@ def main():
         assert len(index.weight_map) > 1000, 'checkpoint index unexpectedly small'
         report.update(schedule_counts=type_counts, schedule_length=len(schedule),
                       weight_map_keys=len(index.weight_map))
+        manifest = json.loads((index.work_dir / 'transplant_manifest.json').read_text())
+        report['calibration_mode'] = manifest.get('calibration_mode', 'unknown')
+        report['lexical_foundation'] = manifest.get('foundation', {}).get('repo')
+        if report['lexical_foundation'] != 'state-spaces/mamba3-mimo-1.5b':
+            raise AssertionError('Checkpoint lexical foundation differs from expected Mamba-3 donor')
+        if config.model.vocab_size != 128256:
+            raise AssertionError('Checkpoint vocab is incompatible with the Mamba-3 lexical foundation')
         emit('manifest_ok', {'schedule_length': 235, 'types': type_counts,
                              'weight_map_keys': len(index.weight_map)})
         if args.manifest_only:
@@ -274,9 +286,15 @@ def main():
                     emit('generating', {'prompt_token_count': len(prompt_ids),
                                         'max_new_tokens': args.max_new_tokens})
                     started_generation = time.monotonic()
+                    def on_progress(event):
+                        emit('inference_progress', {
+                            **event,
+                            'elapsed_seconds': round(time.monotonic() - started_generation, 2),
+                        })
                     with torch.inference_mode():
                         generated = runner.generate(prompt_ids, args.max_new_tokens,
-                                                    stop_tokens=eos or None)
+                                                    stop_tokens=eos or None,
+                                                    progress_callback=on_progress)
                     generated = list(generated)
                     elapsed = time.monotonic() - started_generation
                     if not generated:
@@ -316,7 +334,17 @@ def main():
                     report['distinct_routed_experts_loaded'] = len(expert_reads)
                     if args.expect_substring and args.expect_substring not in decoded:
                         raise AssertionError(f'Generated output did not contain expected text: {args.expect_substring!r}')
-                    report['status'] = 'ALL_235_LAYERS_EXECUTED_AND_TOKENS_GENERATED'
+                    # Runtime evidence and language quality are independent claims.
+                    # A weight-only transplant can execute all 235 layers and still
+                    # produce incoherent output. Never report accepted in that case.
+                    report['runtime_status'] = 'ALL_235_LAYERS_EXECUTED_AND_TOKENS_GENERATED'
+                    if args.require_arithmetic_canary:
+                        passed, reason = check_arithmetic_canary(decoded)
+                        report['arithmetic_canary_passed'] = passed
+                        report['arithmetic_canary_reason'] = reason
+                        if not passed:
+                            raise AssertionError(f'MODEL_QUALITY_FAILURE ({reason}): {decoded[:120]!r}')
+                    report['status'] = report['runtime_status']
                 finally:
                     for h in handles:
                         h.remove()

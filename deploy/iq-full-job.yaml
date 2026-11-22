@@ -31,9 +31,10 @@ spec:
             - --output
             - /data/iq_full_inference_report.json
             - --prompt
-            - "What is two plus two?"
+            - "What is 2 + 2? Reply with only the digit."
             - --max-new-tokens
             - "8"
+            - --require-arithmetic-canary
           env:
             - name: HF_TOKEN
               valueFrom:
@@ -46,7 +47,7 @@ spec:
               value: /tmp
           resources:
             requests:
-              memory: 12Gi
+              memory: 24Gi
               cpu: "2"
             limits:
               memory: 30Gi
