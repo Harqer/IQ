@@ -103,6 +103,7 @@ class HybridRunner:
         max_new_tokens: int,
         *,
         stop_tokens: set[int] | None = None,
+        progress_callback=None,
     ) -> list[int]:
         if not prompt_ids:
             raise ValueError("prompt_ids must contain at least one token")
@@ -111,20 +112,28 @@ class HybridRunner:
         if any(token < 0 or token >= self.model.model_config.vocab_size for token in prompt_ids):
             raise ValueError("prompt token outside vocabulary")
         self.reset()
-        logits = self._prefill(prompt_ids)
+        logits = self._prefill(prompt_ids, progress_callback=progress_callback)
         next_token = int(logits[0, -1].argmax())
         generated = [next_token]
+        if progress_callback is not None:
+            progress_callback({"phase": "token", "token_index": 1, "token_id": next_token})
         if stop_tokens and next_token in stop_tokens:
             return generated
         for _ in range(max_new_tokens - 1):
-            logits = self._decode_step(next_token)
+            logits = self._decode_step(next_token, progress_callback=progress_callback)
             next_token = int(logits[0, -1].argmax())
             generated.append(next_token)
+            if progress_callback is not None:
+                progress_callback({
+                    "phase": "token",
+                    "token_index": len(generated),
+                    "token_id": next_token,
+                })
             if stop_tokens and next_token in stop_tokens:
                 break
         return generated
 
-    def _prefill(self, prompt_ids: list[int]) -> torch.Tensor:
+    def _prefill(self, prompt_ids: list[int], *, progress_callback=None) -> torch.Tensor:
         self._token_ids = list(prompt_ids)
         input_ids = torch.tensor([prompt_ids], dtype=torch.long)
         x = self.model.embed_tokens(input_ids)
@@ -146,6 +155,7 @@ class HybridRunner:
                     layer_output - layer_input,
                 )
             x = layer_output
+            self._notify_layer(progress_callback, "prefill", position)
         if self.model.attnres is not None:
             assert attnres_state is not None
             x = self.model.attnres.finalize(attnres_state)
@@ -154,7 +164,7 @@ class HybridRunner:
         final_hidden = self._apply_reasoning(hidden)
         return self.model.lm_head(final_hidden)
 
-    def _decode_step(self, token_id: int) -> torch.Tensor:
+    def _decode_step(self, token_id: int, *, progress_callback=None) -> torch.Tensor:
         self._token_ids.append(token_id)
         input_ids = torch.tensor([[token_id]], dtype=torch.long)
         x = self.model.embed_tokens(input_ids)
@@ -176,6 +186,7 @@ class HybridRunner:
                     layer_output - layer_input,
                 )
             x = layer_output
+            self._notify_layer(progress_callback, "decode", position)
         if self.model.attnres is not None:
             assert attnres_state is not None
             x = self.model.attnres.finalize(attnres_state)
@@ -185,6 +196,16 @@ class HybridRunner:
         final_hidden = self._apply_reasoning(history)
         logits = self.model.lm_head(final_hidden)
         return logits[:, -1:]
+
+    def _notify_layer(self, progress_callback, phase: str, position: int) -> None:
+        # Callbacks run only after real layer math returned, never at dispatch.
+        done = position + 1
+        if progress_callback is not None and (done % 10 == 0 or done == len(self._layers)):
+            progress_callback({
+                "phase": phase,
+                "completed_layers": done,
+                "total_layers": len(self._layers),
+            })
 
     def _run_layer(
         self,
