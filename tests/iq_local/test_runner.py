@@ -238,10 +238,15 @@ def test_real_layer_and_token_progress_order():
     )
     assert len(generated) == 2
     assert [event["phase"] for event in events] == [
-        "prefill", "token", "decode", "token"
+        "prefill", "first_token_logits", "token", "decode", "token"
     ]
     assert events[0]["completed_layers"] == len(model.layers)
     assert events[0]["total_layers"] == len(model.layers)
-    assert events[2]["completed_layers"] == len(model.layers)
-    assert [events[1]["token_index"], events[3]["token_index"]] == [1, 2]
-    assert [events[1]["token_id"], events[3]["token_id"]] == generated
+    assert events[0]["activation_rms"] >= 0
+    assert events[0]["activation_max_abs"] >= 0
+    assert len(events[1]["top_token_ids"]) == 5
+    assert len(events[1]["top_probabilities"]) == 5
+    assert events[1]["entropy_nats"] >= 0
+    assert events[3]["completed_layers"] == len(model.layers)
+    assert [events[2]["token_index"], events[4]["token_index"]] == [1, 2]
+    assert [events[2]["token_id"], events[4]["token_id"]] == generated
