@@ -226,3 +226,22 @@ def test_reset_clears_streaming_state():
     assert not runner._mamba_states
     second = runner.generate([1, 2, 3], max_new_tokens=2)
     assert first == second
+
+def test_real_layer_and_token_progress_order():
+    from iq_local.runner import HybridRunner
+
+    model = _tiny_model()
+    runner = HybridRunner(model, CountingProvider())
+    events = []
+    generated = runner.generate(
+        [1, 2, 3], max_new_tokens=2, progress_callback=events.append
+    )
+    assert len(generated) == 2
+    assert [event["phase"] for event in events] == [
+        "prefill", "token", "decode", "token"
+    ]
+    assert events[0]["completed_layers"] == len(model.layers)
+    assert events[0]["total_layers"] == len(model.layers)
+    assert events[2]["completed_layers"] == len(model.layers)
+    assert [events[1]["token_index"], events[3]["token_index"]] == [1, 2]
+    assert [events[1]["token_id"], events[3]["token_id"]] == generated
