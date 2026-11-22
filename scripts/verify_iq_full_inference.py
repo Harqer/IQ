@@ -26,7 +26,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from iq_local.bucket import BUCKET_ID, RUN_PREFIX, BucketClient
-from iq_local.cache import LocalCache
+from iq_local.cpu_hybrid import CPUMamba3ResidualLayer
+from iq_local.cache import LocalCache, checkpoint_cache_root
 from iq_local.index import RunIndex
 from iq_local.provider import StreamingWeightProvider
 
@@ -122,6 +123,35 @@ def make_args():
     return p.parse_args()
 
 
+def attach_layer_execution_probes(layers, hits: Counter):
+    """Count real residual executions, including direct Mamba prefill/step.
+
+    The streaming runner intentionally bypasses Mamba residual.forward,
+    so normal module forward hooks would falsely report skipped layers.
+    All probes are removable and only count successfully returned calls.
+    """
+    handles = []
+    patched_methods = []
+    for layer_id, layer in enumerate(layers):
+        if isinstance(layer, CPUMamba3ResidualLayer):
+            for method_name in ("prefill", "step"):
+                original = getattr(layer.mamba, method_name)
+
+                def counted(*args, _original=original, _idx=layer_id, **kwargs):
+                    output = _original(*args, **kwargs)
+                    hits[_idx] += 1
+                    return output
+
+                setattr(layer.mamba, method_name, counted)
+                patched_methods.append((layer.mamba, method_name, original))
+        else:
+            def on_forward(mod, inp, out, idx=layer_id):
+                hits[idx] += 1
+
+            handles.append(layer.register_forward_hook(on_forward))
+    return handles, patched_methods
+
+
 def main():
     args = make_args()
     if not 1 <= args.max_new_tokens <= 64:
@@ -136,7 +166,7 @@ def main():
         emit('start', {'mode': 'manifest' if args.manifest_only else 'full',
                        'checkpoint': args.run_prefix})
         client = BucketClient(args.bucket_id, args.run_prefix)
-        index = RunIndex(client, args.cache_dir / 'run')
+        index = RunIndex(client, checkpoint_cache_root(args.cache_dir, args.bucket_id, args.run_prefix) / 'run')
         config = index.config
         schedule = [getattr(layer, 'value', str(layer)) for layer in config.schedule.layers]
         type_counts = dict(Counter(schedule))
@@ -194,13 +224,9 @@ def main():
                 emit('model_loaded', {'seconds': report['load_seconds'],
                                       'rss_gib': report['rss_after_load_gib']})
 
-                # Count actual forward executions, not merely configured layer names.
+                # Instrument the entry points the streaming runner actually executes.
                 hits = Counter()
-                handles = []
-                for layer_id, layer in enumerate(model.layers):
-                    def on_forward(mod, inp, out, idx=layer_id):
-                        hits[idx] += 1
-                    handles.append(layer.register_forward_hook(on_forward))
+                handles, patched_mamba = attach_layer_execution_probes(model.layers, hits)
                 extra_hits = Counter()
                 if model.reasoning is not None:
                     handles.append(model.reasoning.register_forward_hook(
@@ -294,6 +320,8 @@ def main():
                 finally:
                     for h in handles:
                         h.remove()
+                    for obj, method, original in patched_mamba:
+                        setattr(obj, method, original)
                     for method, orig in original_methods.items():
                         setattr(attnres, method, orig)
         finally:
