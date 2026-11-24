@@ -8,11 +8,14 @@ from __future__ import annotations
 
 import argparse
 import shutil
+import sys
 from pathlib import Path
 
-from iq_local.mamba3_csa_hca import PHASE5E_SHA256, _sha256
-
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from iq_local.mamba3_csa_hca import PHASE5E_SHA256, _sha256
 CHECKPOINT = ROOT / "checkpoints/mamba3-csa-hca/iq_phase5e_attention_candidate.pt"
 
 FILES = {
