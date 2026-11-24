@@ -12,7 +12,7 @@ spec:
       restartPolicy: Never
       containers:
         - name: iq
-          image: image-registry.openshift-image-registry.svc:5000/__NAMESPACE__/iq-full:latest
+          image: image-registry.openshift-image-registry.svc:5000/itbrginsnow01-dev/iq-full:latest
           imagePullPolicy: Always
           command: ["python", "scripts/verify_iq_full_inference.py"]
           args:
@@ -51,7 +51,7 @@ spec:
               cpu: "2"
             limits:
               memory: 30Gi
-              cpu: "3"
+              cpu: "30"
           volumeMounts:
             - name: checkpoint-cache
               mountPath: /data

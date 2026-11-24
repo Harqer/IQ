@@ -1,0 +1,86 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: iq-mamba3-csa-hca-answer-v5
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 14400
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: answer
+          image: python:3.11-slim
+          command: [bash, -ec]
+          args:
+            - |
+              export PIP_DISABLE_PIP_VERSION_CHECK=1
+              export PIP_CONFIG_FILE=/dev/null
+              export PYTHONPATH=/scratch/pylibs
+              mkdir -p /scratch/pylibs /scratch/hf
+              echo '[artifact] Check the original Phase 4d checkpoint and writable PVC'
+              test -s /checkpoint/iq_attention_pilot.pt
+              python - <<'PY'
+              import hashlib
+              path='/checkpoint/iq_attention_pilot.pt'
+              h=hashlib.sha256(open(path,'rb').read()).hexdigest()
+              print('PILOT_SHA256='+h,flush=True)
+              assert h=='f7472337b7773c4c3fc71fe146b0d4519b5b88f9701e79967aa6e889364b6e53'
+              PY
+              touch /checkpoint/.phase5e-write-check && rm /checkpoint/.phase5e-write-check
+              echo '[setup] Install CPU dependencies into writable scratch'
+              python -m pip install -q --no-cache-dir --upgrade --target /scratch/pylibs \
+                torch==2.6.0 --index-url https://download.pytorch.org/whl/cpu
+              python -m pip install -q --no-cache-dir --upgrade --target /scratch/pylibs \
+                'huggingface_hub>=0.27,<2' 'tokenizers>=0.20,<0.23' 'numpy>=1.26,<3'
+              echo '[toy] Paired factual answer + hard-negative gradients and frozen selector'
+              python /app/iq_answer_phase5e.py --toy
+              echo '[real] Paired evidence training + actual frozen-tail answer ranking'
+              python /app/iq_answer_phase5e.py \
+                --pilot /checkpoint/iq_attention_pilot.pt \
+                --output /checkpoint/iq_phase5e_attention_candidate.pt \
+                --report /checkpoint/iq_phase5e_retrieval_report.json \
+                --train-cases 8 --dev-cases 4 --test-cases 8 --locked-offset 24 \
+                --steps 8 --lr 0.00005 --rank-weight 0.5 --margin 0.5 \
+                --min-dev-gain 0.005 --min-locked-gain 0.01 --kl-budget 0.01 \
+                --min-shift-gain 0.02 \
+                --patience 3 --threads 2
+          env:
+            - name: HOME
+              value: /scratch
+            - name: PYTHONUSERBASE
+              value: /scratch/.local
+            - name: HF_HOME
+              value: /scratch/hf
+            - name: OMP_NUM_THREADS
+              value: '2'
+            - name: MKL_NUM_THREADS
+              value: '2'
+            - name: PYTHONUNBUFFERED
+              value: '1'
+          resources:
+            requests:
+              cpu: '2'
+              memory: 10Gi
+              ephemeral-storage: 6Gi
+            limits:
+              cpu: '3'
+              memory: 22Gi
+              ephemeral-storage: 12Gi
+          volumeMounts:
+            - name: source
+              mountPath: /app
+              readOnly: true
+            - name: scratch
+              mountPath: /scratch
+            - name: checkpoints
+              mountPath: /checkpoint
+      volumes:
+        - name: source
+          configMap:
+            name: iq-mamba3-csa-hca-phase5e
+        - name: scratch
+          emptyDir: {}
+        - name: checkpoints
+          persistentVolumeClaim:
+            claimName: iq-mamba3-attention-artifacts

@@ -164,7 +164,9 @@ class HybridRunner:
         hidden = self.model.norm(x)
         self._hidden_cache = [row for row in hidden[0]]
         final_hidden = self._apply_reasoning(hidden)
-        return self.model.lm_head(final_hidden)
+        # The head is position-wise. Only the final token's logits feed decode;
+        # all 235 backbone layers and full-context reasoning still execute.
+        return self.model.lm_head(final_hidden[:, -1:, :])
 
     def _decode_step(self, token_id: int, *, progress_callback=None) -> torch.Tensor:
         self._token_ids.append(token_id)
@@ -196,8 +198,8 @@ class HybridRunner:
         self._hidden_cache.append(hidden[0, 0])
         history = torch.stack(self._hidden_cache, dim=0).unsqueeze(0)
         final_hidden = self._apply_reasoning(history)
-        logits = self.model.lm_head(final_hidden)
-        return logits[:, -1:]
+        # Avoid repeating a 128,256-way head projection for every cached token.
+        return self.model.lm_head(final_hidden[:, -1:, :])
 
     def _notify_layer(
         self, progress_callback, phase: str, position: int, activation: torch.Tensor

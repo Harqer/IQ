@@ -1,0 +1,85 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: iq-mamba3-csa-hca-answer-v3
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 14400
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: answer
+          image: python:3.11-slim
+          command: [bash, -ec]
+          args:
+            - |
+              export PIP_DISABLE_PIP_VERSION_CHECK=1
+              export PIP_CONFIG_FILE=/dev/null
+              export PYTHONPATH=/scratch/pylibs
+              mkdir -p /scratch/pylibs /scratch/hf
+              echo '[artifact] Check the original Phase 4d checkpoint and writable PVC'
+              test -s /checkpoint/iq_attention_pilot.pt
+              python - <<'PY'
+              import hashlib
+              path='/checkpoint/iq_attention_pilot.pt'
+              h=hashlib.sha256(open(path,'rb').read()).hexdigest()
+              print('PILOT_SHA256='+h,flush=True)
+              assert h=='f7472337b7773c4c3fc71fe146b0d4519b5b88f9701e79967aa6e889364b6e53'
+              PY
+              touch /checkpoint/.phase5c-write-check && rm /checkpoint/.phase5c-write-check
+              echo '[setup] Install CPU dependencies into writable scratch'
+              python -m pip install -q --no-cache-dir --upgrade --target /scratch/pylibs \
+                torch==2.6.0 --index-url https://download.pytorch.org/whl/cpu
+              python -m pip install -q --no-cache-dir --upgrade --target /scratch/pylibs \
+                'huggingface_hub>=0.27,<2' 'tokenizers>=0.20,<0.23' 'numpy>=1.26,<3'
+              echo '[toy] Frozen-tail exactness + answer gradients + checkpoint test'
+              python /app/iq_answer_phase5c.py --toy
+              echo '[real] Frozen-Mamba-tail answer-NLL HCA training'
+              python /app/iq_answer_phase5c.py \
+                --pilot /checkpoint/iq_attention_pilot.pt \
+                --output /checkpoint/iq_phase5c_attention_candidate.pt \
+                --report /checkpoint/iq_phase5c_retrieval_report.json \
+                --train-cases 8 --dev-cases 4 --test-cases 4 \
+                --steps 8 --lr 0.00005 --selector-weight 0.01 \
+                --nll-margin 0.005 --kl-budget 0.01 \
+                --patience 2 --threads 2
+          env:
+            - name: HOME
+              value: /scratch
+            - name: PYTHONUSERBASE
+              value: /scratch/.local
+            - name: HF_HOME
+              value: /scratch/hf
+            - name: OMP_NUM_THREADS
+              value: '2'
+            - name: MKL_NUM_THREADS
+              value: '2'
+            - name: PYTHONUNBUFFERED
+              value: '1'
+          resources:
+            requests:
+              cpu: '2'
+              memory: 10Gi
+              ephemeral-storage: 6Gi
+            limits:
+              cpu: '3'
+              memory: 22Gi
+              ephemeral-storage: 12Gi
+          volumeMounts:
+            - name: source
+              mountPath: /app
+              readOnly: true
+            - name: scratch
+              mountPath: /scratch
+            - name: checkpoints
+              mountPath: /checkpoint
+      volumes:
+        - name: source
+          configMap:
+            name: iq-mamba3-csa-hca-phase5c
+        - name: scratch
+          emptyDir: {}
+        - name: checkpoints
+          persistentVolumeClaim:
+            claimName: iq-mamba3-attention-artifacts

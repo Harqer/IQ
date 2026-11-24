@@ -1,0 +1,74 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: iq-mamba3-csa-hca-calibration-v3
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 14400
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: calibration
+          image: python:3.11-slim
+          command: ["bash", "-ec"]
+          args:
+            - |
+              export PIP_DISABLE_PIP_VERSION_CHECK=1
+              export PIP_CONFIG_FILE=/dev/null
+              export PYTHONPATH=/scratch/pylibs
+              mkdir -p /scratch/pylibs /scratch/hf
+              echo '[setup] Installing CPU packages in writable scratch'
+              python -m pip install -q --no-cache-dir --upgrade --target /scratch/pylibs \
+                torch==2.6.0 --index-url https://download.pytorch.org/whl/cpu
+              python -m pip install -q --no-cache-dir --upgrade --target /scratch/pylibs \
+                'huggingface_hub>=0.27,<2' 'tokenizers>=0.20,<0.23' 'numpy>=1.26,<3'
+              echo '[toy] Training/identity checks, no pretrained weights'
+              python /app/iq_calibrate_cpu.py --toy
+              echo '[real] Pretrained CPU memory warmstart plus non-destructive residual gain calibration'
+              python /app/iq_calibrate_cpu.py \
+                --context-tokens 136 \
+                --memory-steps 8 \
+                --language-steps 0 \
+                --max-relative-norm 0.02 \
+                --kl-budget 0.01 \
+                --output /scratch/iq_attention_pilot.pt
+              if [ -f /scratch/iq_attention_pilot.pt ]; then
+                echo '[artifact] Attention checkpoint in /scratch/iq_attention_pilot.pt; copy with oc cp from the RUNNING pod'
+                echo '[artifact] Pod remains running 600 seconds for extraction; this is a temporary scratch path'
+                sleep 600
+              fi
+          env:
+            - name: HOME
+              value: /scratch
+            - name: PYTHONUSERBASE
+              value: /scratch/.local
+            - name: HF_HOME
+              value: /scratch/hf
+            - name: OMP_NUM_THREADS
+              value: "2"
+            - name: MKL_NUM_THREADS
+              value: "2"
+            - name: PYTHONUNBUFFERED
+              value: "1"
+          resources:
+            requests:
+              cpu: "2"
+              memory: 10Gi
+              ephemeral-storage: 6Gi
+            limits:
+              cpu: "3"
+              memory: 22Gi
+              ephemeral-storage: 12Gi
+          volumeMounts:
+            - name: source
+              mountPath: /app
+              readOnly: true
+            - name: scratch
+              mountPath: /scratch
+      volumes:
+        - name: source
+          configMap:
+            name: iq-mamba3-csa-hca-phase4c
+        - name: scratch
+          emptyDir: {}

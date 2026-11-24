@@ -1,0 +1,74 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: iq-mamba3-csa-hca-cpu-probe
+  labels:
+    app: iq-mamba3-csa-hca-cpu-probe
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 7200
+  template:
+    metadata:
+      labels:
+        app: iq-mamba3-csa-hca-cpu-probe
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: cpu-probe
+        image: python:3.11-slim
+        imagePullPolicy: IfNotPresent
+        command: ["bash", "-ec"]
+        args:
+        - |
+          export PIP_DISABLE_PIP_VERSION_CHECK=1
+          export PIP_CONFIG_FILE=/dev/null
+          export PYTHONPATH=/scratch/pylibs
+          mkdir -p /scratch/pylibs /scratch/hf
+          echo "[setup] Installing CPU PyTorch and Hugging Face Hub"
+          python -m pip install -q --no-cache-dir --target /scratch/pylibs torch==2.6.0 --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -q --no-cache-dir --target /scratch/pylibs 'huggingface_hub>=0.27,<2'
+          echo "[smoke] Toy architecture, baseline identity, compressed attention causality and gradients"
+          python /app/iq_hybrid_cpu.py --smoke
+          echo "[download] Original Mamba-3 MIMO 1.5B checkpoint (no IQ235/remapped model)"
+          python - <<'PY'
+          from huggingface_hub import hf_hub_download
+          p=hf_hub_download(repo_id="state-spaces/mamba3-mimo-1.5b", filename="pytorch_model.bin")
+          open('/scratch/checkpoint_path.txt','w').write(p)
+          print('CHECKPOINT='+p,flush=True)
+          PY
+          echo "[run] Original checkpoint CPU reference, unmodified vs identity vs active CSA/HCA"
+          python /app/iq_hybrid_cpu.py --checkpoint "$(cat /scratch/checkpoint_path.txt)" --token-ids 128000 791 1401 312 279 1665
+        env:
+        - name: HOME
+          value: /scratch
+        - name: PYTHONUSERBASE
+          value: /scratch/.local
+        - name: HF_HOME
+          value: /scratch/hf
+        - name: OMP_NUM_THREADS
+          value: "2"
+        - name: MKL_NUM_THREADS
+          value: "2"
+        - name: PYTHONUNBUFFERED
+          value: "1"
+        resources:
+          requests:
+            cpu: "2"
+            memory: 10Gi
+            ephemeral-storage: 6Gi
+          limits:
+            cpu: "3"
+            memory: 22Gi
+            ephemeral-storage: 12Gi
+        volumeMounts:
+        - name: source
+          mountPath: /app
+          readOnly: true
+        - name: scratch
+          mountPath: /scratch
+      volumes:
+      - name: source
+        configMap:
+          name: iq-mamba3-csa-hca-source
+      - name: scratch
+        emptyDir: {}

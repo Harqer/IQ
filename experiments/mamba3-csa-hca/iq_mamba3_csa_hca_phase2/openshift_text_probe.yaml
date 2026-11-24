@@ -1,0 +1,77 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: iq-mamba3-csa-hca-text-probe
+  labels:
+    app: iq-mamba3-csa-hca-text-probe
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 7200
+  template:
+    metadata:
+      labels:
+        app: iq-mamba3-csa-hca-text-probe
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: cpu-probe
+        image: python:3.11-slim
+        imagePullPolicy: IfNotPresent
+        command: ["bash", "-ec"]
+        args:
+        - |
+          export PIP_DISABLE_PIP_VERSION_CHECK=1
+          export PIP_CONFIG_FILE=/dev/null
+          export PYTHONPATH=/scratch/pylibs
+          mkdir -p /scratch/pylibs /scratch/hf
+          echo '[setup] Installing CPU PyTorch and tokenizer libraries into writable scratch'
+          python -m pip install -q --no-cache-dir --target /scratch/pylibs torch==2.6.0 --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -q --no-cache-dir --target /scratch/pylibs 'huggingface_hub>=0.27,<2' 'tokenizers>=0.20,<0.23' 'numpy>=1.26,<3'
+          echo '[smoke] Existing synthetic integration checks'
+          python /app/iq_hybrid_cpu.py --smoke
+          python /app/iq_long_context_smoke.py
+          echo '[download] Official original Mamba-3 MIMO 1.5B weights'
+          python - <<'PY'
+          from huggingface_hub import hf_hub_download
+          p=hf_hub_download(repo_id='state-spaces/mamba3-mimo-1.5b', filename='pytorch_model.bin')
+          open('/scratch/checkpoint_path.txt','w').write(p)
+          print('CHECKPOINT='+p,flush=True)
+          PY
+          echo '[text] CPU baseline, identity-preserving hybrid, and untrained active wiring'
+          python /app/iq_text_probe.py --checkpoint "$(cat /scratch/checkpoint_path.txt)" \
+            --tokenizer-repo unsloth/Meta-Llama-3.1-8B \
+            --prompt 'The capital of France is' --steps 6
+        env:
+        - name: HOME
+          value: /scratch
+        - name: PYTHONUSERBASE
+          value: /scratch/.local
+        - name: HF_HOME
+          value: /scratch/hf
+        - name: OMP_NUM_THREADS
+          value: "2"
+        - name: MKL_NUM_THREADS
+          value: "2"
+        - name: PYTHONUNBUFFERED
+          value: "1"
+        resources:
+          requests:
+            cpu: "2"
+            memory: 10Gi
+            ephemeral-storage: 6Gi
+          limits:
+            cpu: "3"
+            memory: 22Gi
+            ephemeral-storage: 12Gi
+        volumeMounts:
+        - name: source
+          mountPath: /app
+          readOnly: true
+        - name: scratch
+          mountPath: /scratch
+      volumes:
+      - name: source
+        configMap:
+          name: iq-mamba3-csa-hca-phase2
+      - name: scratch
+        emptyDir: {}

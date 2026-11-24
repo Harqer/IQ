@@ -189,7 +189,10 @@ class FunctionalStableLatentMoE(nn.Module):
         latent = self.latent_down(flat)
 
         routed = torch.zeros_like(latent)
-        for expert_index in range(self.config.num_experts):
+        # The production route is unchanged. Visit only experts with assignments;
+        # preserve ascending expert order for identical accumulation semantics.
+        active_experts = sorted(set(selected.reshape(-1).tolist()))
+        for expert_index in active_experts:
             token_rows, slots = torch.where(selected == expert_index)
             if token_rows.numel() == 0:
                 continue
