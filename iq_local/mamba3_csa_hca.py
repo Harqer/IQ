@@ -114,7 +114,8 @@ class Mamba3CSAHCARunner:
 
     @classmethod
     def from_checkpoints(cls, attention_path: Path, *, foundation_path: Path | None = None,
-                         expected_sha256: str = PHASE5E_SHA256, mode: str = "hybrid"):
+                         expected_sha256: str = PHASE5E_SHA256, mode: str = "hybrid",
+                         device: str = "cpu"):
         attention_path = Path(attention_path).expanduser()
         if not attention_path.is_file():
             raise FileNotFoundError(f"Phase 5e checkpoint not found: {attention_path}")
@@ -138,6 +139,14 @@ class Mamba3CSAHCARunner:
         attention.load_state_dict(checkpoint["attention_state_dict"], strict=True)
         if not all(torch.isfinite(p).all().item() for p in attention.parameters()):
             raise ValueError("Attention checkpoint contains non-finite values")
+        if device not in ("cpu", "cuda"):
+            raise ValueError("device must be cpu or cuda")
+        if device == "cuda":
+            if not torch.cuda.is_available():
+                raise RuntimeError("CUDA requested but no GPU is available")
+            # Hash and validate original FP32 foundation BEFORE transferring to GPU.
+            foundation = foundation.to("cuda")
+            attention = attention.to("cuda")
         return cls(foundation, attention, gain, mode=mode)
 
     @torch.inference_mode()
@@ -147,7 +156,8 @@ class Mamba3CSAHCARunner:
         if any(type(token) is not int or token < 0 or token >= self.vocab_size for token in token_ids):
             raise ValueError("token IDs outside the pretrained Mamba-3 vocabulary")
         use_baseline = self.mode == "baseline" if baseline is None else baseline
-        tokens = torch.tensor([token_ids], dtype=torch.long)
+        tokens = torch.tensor([token_ids], dtype=torch.long,
+                              device=self.model.backbone.embedding.weight.device)
         logits = self.model(tokens, None if use_baseline else self.insertions)[0, -1].float()
         if not bool(torch.isfinite(logits).all()):
             raise FloatingPointError("Mamba-3 inference returned non-finite logits")
