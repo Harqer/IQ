@@ -19,3 +19,6 @@ resources:
 environment_variables:
   OMP_NUM_THREADS: "2"
   MKL_NUM_THREADS: "2"
+runtime:
+  predict_concurrency: 1
+  streaming_read_timeout: 900
