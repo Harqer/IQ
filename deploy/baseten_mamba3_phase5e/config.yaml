@@ -1,0 +1,21 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/basetenlabs/truss/main/truss/config.schema.json
+# Dedicated model runtime: NOT vLLM/SGLang and not an arbitrary hosted model.
+model_name: iq-mamba3-mimo-phase5e-bulk
+description: Experimental original Mamba-3 MIMO 1.5B with pinned Phase 5e CSA/HCA
+model_framework: custom
+model_module_dir: model
+model_class_filename: model.py
+model_class_name: Model
+python_version: py311
+requirements:
+  - torch==2.6.0
+  - huggingface_hub>=0.27,<2
+  - numpy>=1.26,<3
+resources:
+  accelerator: L4
+  use_gpu: true
+  cpu: "4"
+  memory: 24Gi
+environment_variables:
+  OMP_NUM_THREADS: "2"
+  MKL_NUM_THREADS: "2"
