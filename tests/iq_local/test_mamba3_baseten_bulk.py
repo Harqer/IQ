@@ -50,7 +50,7 @@ def test_remote_wrong_checkpoint_aborts_bulk(monkeypatch):
     with pytest.raises(ValueError, match="HTTPS"):
         RemoteMamba3Runner("http://example.org/predict", "secret")
     with pytest.raises(ValueError, match="BASETEN_API_KEY"):
-        RemoteMamba3Runner("https://example.org/predict", "")
+        RemoteMamba3Runner("https://model-example.api.baseten.co/development/predict", "")
 
 
 def test_staging_guards_weights_and_preserves_package_layout(tmp_path, monkeypatch):
