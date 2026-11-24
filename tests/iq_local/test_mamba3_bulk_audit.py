@@ -73,3 +73,36 @@ def test_regression_error_and_freeform_are_not_hidden():
 def test_missing_modes_are_flagged():
     s = summarize([row("fresh:key:original", "hybrid", "amber", "amber")])
     assert s["finding_counts"]["missing_mode"] == 1
+
+
+def test_bulk_script_invokes_real_generate_and_scores_decoded_response():
+    from scripts.benchmark_iq_mamba3_csa_hca import AuditCase, _run_case
+
+    class Runner:
+        def __init__(self):
+            self.mode = "hybrid"
+            self.calls = []
+
+        def generate(self, ids, count, *, stop_tokens):
+            self.calls.append((self.mode, ids, count, stop_tokens))
+            return [17 if self.mode == "hybrid" else 18, 4]
+
+    class Tokenizer:
+        def decode(self, ids, skip_special_tokens):
+            return " amber." if ids[0] == 17 else " blue."
+
+    case = AuditCase(
+        case_id="fresh:toy:original", group="fresh", variant="original",
+        pair_id="toy", expected=("amber",), ids=(1, 22, 3), prompt="Answer:",
+    )
+    runner = Runner()
+    baseline = _run_case(runner, Tokenizer(), case, "baseline", 6, {5}, "run1")
+    hybrid = _run_case(runner, Tokenizer(), case, "hybrid", 6, {5}, "run1")
+    assert baseline["correct"] is False
+    assert hybrid["correct"] is True
+    assert baseline["response"] == " blue."
+    assert hybrid["response"] == " amber."
+    assert runner.calls == [
+        ("baseline", [1, 22, 3], 6, {5}),
+        ("hybrid", [1, 22, 3], 6, {5}),
+    ]
