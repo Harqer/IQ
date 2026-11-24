@@ -11,6 +11,8 @@ import argparse
 import hashlib
 import importlib
 import json
+import os
+import urllib.request
 import re
 import sys
 import time
@@ -26,7 +28,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from iq_local.mamba3_bulk_audit import grade_response, summarize
-from iq_local.mamba3_csa_hca import Mamba3CSAHCARunner, PHASE5E_SHA256
+from iq_local.mamba3_csa_hca import Mamba3CSAHCARunner, PHASE5E_SHA256, MODEL_ID
 
 EXPERIMENT_DIR = ROOT / "experiments" / "mamba3-csa-hca" / "iq_mamba3_csa_hca_phase5e"
 TOKENIZER_REPO = "unsloth/Meta-Llama-3.1-8B"
@@ -174,6 +176,51 @@ def _run_case(runner, tok, case: AuditCase, mode: str, new_tokens: int,
     }
 
 
+class RemoteMamba3Runner:
+    """One remote exact-model deployment; never a provider's generic model API.
+
+    A single benchmark command sends all case/mode generations and journals
+    completed decoded responses. Remote GPU workers must load the *same*
+    original Mamba-3 foundation and pinned Phase 5e checkpoint.
+    """
+    def __init__(self, predict_url: str, api_key: str):
+        from urllib.parse import urlparse
+        parsed = urlparse(predict_url)
+        if parsed.scheme != "https" or not parsed.netloc or parsed.username or parsed.password:
+            raise ValueError("Remote inference requires an HTTPS predict URL")
+        if not api_key:
+            raise ValueError("BASETEN_API_KEY must be set for --predict-url")
+        self.url = predict_url
+        self.api_key = api_key
+        self.mode = "hybrid"
+
+    def generate(self, prompt_ids, max_new_tokens, *, stop_tokens=None):
+        payload = json.dumps({
+            "prompt_ids": prompt_ids,
+            "max_new_tokens": max_new_tokens,
+            "stop_tokens": sorted(stop_tokens) if stop_tokens else [],
+            "mode": self.mode,
+        }).encode()
+        request = urllib.request.Request(
+            self.url, data=payload, method="POST",
+            headers={"Authorization": "Api-Key " + self.api_key,
+                     "Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(request, timeout=900) as response:
+            result = json.load(response)
+        if (not isinstance(result, dict)
+                or result.get("source_model") != MODEL_ID
+                or result.get("checkpoint_sha256") != PHASE5E_SHA256
+                or result.get("mode") != self.mode):
+            raise RuntimeError("Remote response identity mismatch: not the exact Phase 5e model/mode")
+        generated = result.get("generated_token_ids")
+        if (not isinstance(generated, list) or not generated
+                or len(generated) > max_new_tokens
+                or any(type(token) is not int or not 0 <= token < 128256 for token in generated)):
+            raise RuntimeError("Remote endpoint returned invalid generated token IDs")
+        return generated
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--attention-checkpoint", type=Path, default=ROOT / "checkpoints" /
@@ -190,6 +237,8 @@ def main():
     p.add_argument("--threads", type=int, default=2)
     p.add_argument("--resume", action="store_true",
                    help="Continue a matching interrupted run without redoing completed responses")
+    p.add_argument("--predict-url", default=None,
+                   help="Exact Phase 5e Truss prediction endpoint (Baseten custom deployment)")
     p.add_argument("--strict", action="store_true",
                    help="Return nonzero on runtime errors or baseline-over-hybrid accuracy regressions")
     args = p.parse_args()
@@ -218,6 +267,7 @@ def main():
         "paraphrase_pairs": args.paraphrase_pairs,
         "general_prompts": args.general_prompts,
         "max_new_tokens": args.max_new_tokens, "tokenizer_repo": TOKENIZER_REPO,
+        "execution_backend": args.predict_url or "local",
     }
     run_id = hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()
     root = args.output_dir.expanduser()
@@ -240,10 +290,14 @@ def main():
     # If an interrupted case is retried, the latest record supersedes the error.
     print(f"IQ Phase 5e BULK generation: {len(cases)} prompts x 2 modes; "
           f"already complete={len(completed)}", flush=True)
-    print("Loading original frozen Mamba-3 and verified Phase 5e adapter...", flush=True)
-    runner = Mamba3CSAHCARunner.from_checkpoints(
-        args.attention_checkpoint, foundation_path=args.foundation_checkpoint,
-        expected_sha256=PHASE5E_SHA256, mode="hybrid")
+    if args.predict_url:
+        print("Using remote exact-checkpoint Mamba-3 inference; no local model loading.", flush=True)
+        runner = RemoteMamba3Runner(args.predict_url, os.environ.get("BASETEN_API_KEY", ""))
+    else:
+        print("Loading original frozen Mamba-3 and verified Phase 5e adapter...", flush=True)
+        runner = Mamba3CSAHCARunner.from_checkpoints(
+            args.attention_checkpoint, foundation_path=args.foundation_checkpoint,
+            expected_sha256=PHASE5E_SHA256, mode="hybrid")
     stops = {tok.token_to_id(s) for s in ("<|eot_id|>", "<|end_of_text|>")}
     stops.discard(None)
     count = len(cases) * 2
@@ -261,6 +315,9 @@ def main():
             print(f"[{slot}/{count}] {mode:<8} {case.case_id:<34} "
                   f"answer={grade} generated={row['response']!r} "
                   f"time={row['seconds']}s error={row['error']}", flush=True)
+            if row["error"] and args.predict_url:
+                raise RuntimeError(f"Remote inference failed for {case.case_id}/{mode}; "
+                                   f"preserved journal for --resume: {row[\'error\']}")
             completed.add((case.case_id, mode))
 
     # A resumed case may have an earlier failed attempt; use the final attempt.
