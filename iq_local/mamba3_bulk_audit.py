@@ -110,7 +110,28 @@ def summarize(rows: list[dict]) -> dict:
                 "same_first_word": agg["identical_first_word"],
             })
 
+    # Group related failures into one remediation work unit. This is a
+    # diagnostic queue, NOT permission to retune a checkpoint on held-out data.
+    categories = {
+        "runtime_error": "Reproduce and repair loading, context, CPU or decoding code; rerun the full batch",
+        "missing_mode": "Resume interrupted baseline/hybrid runs before interpreting accuracy",
+        "empty_hybrid_response": "Inspect stop-token and tokenizer handling plus generated token IDs",
+        "hybrid_accuracy_regression": "Audit attention insertion and generation path; compare adapter-on/off activations",
+        "both_models_wrong": "Investigate model retrieval capability with separate training/development examples",
+        "incomplete_evidence_switching": "Inspect evidence selection and paired-fact generalization on new development data",
+    }
+    batches = []
+    for kind in sorted({item["kind"] for item in failures}):
+        affected = [item.get("case_id", item.get("group"))
+                    for item in failures if item["kind"] == kind]
+        batches.append({
+            "failure_type": kind, "affected_cases_or_groups": affected,
+            "next_action": categories.get(kind, "Investigate together in one corrective patch"),
+            "changes_applied": False,
+        })
+
     return {
+        "remediation_batches": batches,
         "group_metrics": groups,
         "pair_metrics": {f"{g}/{m}": v for (g, m), v in sorted(paired.items())},
         "head_to_head": outcome,
