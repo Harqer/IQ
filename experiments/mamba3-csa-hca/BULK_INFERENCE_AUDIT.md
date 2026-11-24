@@ -19,7 +19,8 @@ source .venv/bin/activate
 
 python -m pytest -q \
   tests/iq_local/test_mamba3_csa_hca_inference.py \
-  tests/iq_local/test_mamba3_bulk_audit.py
+  tests/iq_local/test_mamba3_bulk_audit.py \
+  tests/iq_local/test_mamba3_generated_http.py
 
 python -u scripts/benchmark_iq_mamba3_csa_hca.py \
   --attention-checkpoint \
