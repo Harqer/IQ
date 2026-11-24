@@ -186,8 +186,10 @@ class RemoteMamba3Runner:
     def __init__(self, predict_url: str, api_key: str):
         from urllib.parse import urlparse
         parsed = urlparse(predict_url)
-        if parsed.scheme != "https" or not parsed.netloc or parsed.username or parsed.password:
-            raise ValueError("Remote inference requires an HTTPS predict URL")
+        if (parsed.scheme != "https" or not parsed.netloc or parsed.username
+                or parsed.password or not parsed.hostname
+                or not parsed.hostname.endswith(".api.baseten.co")):
+            raise ValueError("Remote inference requires an HTTPS Baseten predict URL")
         if not api_key:
             raise ValueError("BASETEN_API_KEY must be set for --predict-url")
         self.url = predict_url
