@@ -59,7 +59,9 @@ def build_handler(runner, tokenizer, model_name: str):
         if not isinstance(input_ids, torch.Tensor):
             raise TypeError("tokenizer must return a tensor prompt")
         ids = input_ids.reshape(-1).tolist()
-        vocab = runner.model.model_config.vocab_size
+        vocab = getattr(runner, "vocab_size", None)
+        if vocab is None:
+            vocab = runner.model.model_config.vocab_size
         if not ids or len(ids) > MAX_PROMPT_TOKENS:
             raise ValueError(f"prompt must contain 1..{MAX_PROMPT_TOKENS} tokens")
         if any(token < 0 or token >= vocab for token in ids):
@@ -125,6 +127,9 @@ def build_handler(runner, tokenizer, model_name: str):
                 if compatible and prompt_format != "chat":
                     raise ValueError("prompt_format applies only to legacy /chat")
                 prompt_ids = encode_prompt(messages, prompt_format)
+                context_limit = getattr(runner, "max_context_tokens", None)
+                if context_limit is not None and len(prompt_ids) + tokens - 1 > context_limit:
+                    raise ValueError("generation would exceed the model context limit")
                 stop_ids = {tokenizer.eos_token_id}
                 eot_id = tokenizer.convert_tokens_to_ids("<|eot_id|>")
                 if isinstance(eot_id, int) and 0 <= eot_id < len(tokenizer):
