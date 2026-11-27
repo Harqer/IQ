@@ -1,0 +1,43 @@
+# Experimental Colab TPU inference: full IQ235 source
+
+The source bucket contains 539,388,468,802 bytes indexed across 20,283 shards.
+A single TPU cannot hold that checkpoint. This entrypoint uses the existing
+235-layer plain PyTorch reference and streams one layer and its selected
+BF16 experts at a time, retaining recurrent state and attention history on host.
+All 79 Mamba-3 rank-4, 78 MoE top-8, 21 CSA and 57 HCA layers run on the chosen
+device; embedding, depth residual, final norm, reasoning and LM head run on CPU.
+No training, quantization or bucket writes. Disk cache is bounded and evictable.
+
+## Colab
+
+Select a TPU runtime. Run in a fresh notebook:
+
+```python
+!git clone -b feat/iq235-colab-tpu-streaming https://github.com/Harqer/IQ.git
+%cd IQ
+%pip install -U torch 'torch_xla[tpu]' 'huggingface_hub==1.14.0' 'transformers==5.17.0' safetensors
+```
+
+Keep torch and torch_xla on matching release versions; restart the notebook
+runtime if packages were replaced. Set HF_TOKEN from Colab Secrets without
+printing it. The source tokenizer is gated: the token needs access to
+meta-llama/Llama-3.1-8B as well as the weight bucket.
+
+```python
+import os
+from google.colab import userdata
+os.environ["HF_TOKEN"] = userdata.get("HF_TOKEN")
+!python scripts/iq235_colab_tpu.py --prompt "The capital of France is" --max-new-tokens 2
+```
+
+If only tokenizer access is blocked, a real full-model token-ID diagnostic is
+available: `--token-ids 128000 32 --max-new-tokens 2`. It does not certify text quality.
+No trained GLM lexical overlay is present in the source checkpoint: its 128256
+rows use the Mamba/Llama lexical foundation, not the 154880 GLM rows. Do not
+substitute a GLM tokenizer for these embeddings. A GLM-tokenized deployment
+requires matching trained embedding/head tensors.
+
+Status: experimental, not TPU parity-tested. A single generation may take a long
+time and exhaust free runtime/network quotas; XLA operator support and actual
+HBM allocation must be established by real execution. The manifest identity
+checks cover config/index, not independent payload provenance.

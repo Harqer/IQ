@@ -296,8 +296,8 @@ def _rotary_qk_step_cpu(
     if half > rdim_half:
         pad_shape = list(cos.shape)
         pad_shape[-1] = half - rdim_half
-        cos = torch.cat([cos, torch.ones(pad_shape, dtype=cos.dtype)], dim=-1)
-        sin = torch.cat([sin, torch.zeros(pad_shape, dtype=sin.dtype)], dim=-1)
+        cos = torch.cat([cos, torch.ones(pad_shape, dtype=cos.dtype, device=cos.device)], dim=-1)
+        sin = torch.cat([sin, torch.zeros(pad_shape, dtype=sin.dtype, device=sin.device)], dim=-1)
 
     q0, q1 = q[..., :half], q[..., half:]
     k0, k1 = k[..., :half], k[..., half:]
