@@ -1006,9 +1006,32 @@ def load_complete_iq_checkpoint(
     device: torch.device | str = "cuda",
     dtype: torch.dtype = torch.bfloat16,
 ) -> IQHybridForCausalLM:
-    """Load a compiled complete IQ checkpoint with strict tensor coverage."""
-    root = Path(checkpoint_dir)
+    """Load a compiled complete IQ checkpoint with strict tensor coverage.
+
+    Validate all shard paths and metadata before materializing an expensive
+    CUDA model. Weight provenance and language quality require separate
+    cryptographic/source and generation evidence.
+    """
+    from .checkpoint_preflight import (
+        CheckpointPreflightError,
+        preflight_iq_checkpoint,
+    )
+
+    try:
+        evidence = preflight_iq_checkpoint(checkpoint_dir)
+    except (CheckpointPreflightError, OSError) as exc:
+        raise CompleteTransplantError(f"checkpoint preflight failed: {exc}") from exc
+    root = evidence.root
     config = IQHybridConfig.from_json(str(root / "iq_config.json"))
+    if evidence.manifest is not None:
+        expected_fingerprint = evidence.manifest.get("recipient_config_fingerprint")
+        if (
+            expected_fingerprint is not None
+            and expected_fingerprint != config.fingerprint
+        ):
+            raise CompleteTransplantError(
+                "checkpoint manifest/config fingerprint mismatch; refuse weight load"
+            )
     model = IQHybridForCausalLM(config, dtype=dtype, device=device)
     try:
         from safetensors.torch import load_file

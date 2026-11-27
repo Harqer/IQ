@@ -1,5 +1,6 @@
 from .guardrails import Guardrail, GuardrailDecision
 from .model import ModelBackend
+from .iq_http_model import IQHTTPModelBackend, IQHTTPModelError
 from .runtime import AgentRuntime, AgentRuntimeError
 from .session import InMemorySession, JsonlSession, Session
 from .skills import Skill, SkillCatalog, SkillError, load_skill
@@ -12,6 +13,8 @@ __all__ = [
     "GuardrailDecision",
     "AgentRuntimeError",
     "AgentSpec",
+    "IQHTTPModelBackend",
+    "IQHTTPModelError",
     "InMemorySession",
     "JsonlSession",
     "Message",
