@@ -28,7 +28,9 @@ def test_constants_match_checkpoint_run():
 
 
 def test_missing_token_raises_bucket_auth_error(monkeypatch):
+    import huggingface_hub
     monkeypatch.delenv("HF_TOKEN", raising=False)
+    monkeypatch.setattr(huggingface_hub, "get_token", lambda: None)
     client = BucketClient(BUCKET_ID, RUN_PREFIX)
     with pytest.raises(BucketAuthError):
         client.metadata("COMPILE_COMPLETE.json")
@@ -94,3 +96,27 @@ def test_metadata_and_download_real_file(tmp_path):
 def test_exists_false_for_absent_path():
     client = BucketClient(BUCKET_ID, RUN_PREFIX)
     assert not client.exists("definitely/not/here.safetensors")
+
+
+def test_sdk_login_without_environment_token(monkeypatch, tmp_path):
+    import huggingface_hub
+    from types import SimpleNamespace
+
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    monkeypatch.setattr(huggingface_hub, "get_token", lambda: "test-sdk-session")
+    def metadata(bucket_id, remote, *, token):
+        assert token == "test-sdk-session"
+        assert remote == RUN_PREFIX + "/COMPILE_COMPLETE.json"
+        return SimpleNamespace(size=2)
+    def download(bucket_id, payload, *, raise_on_missing_files, token):
+        assert token == "test-sdk-session"
+        assert raise_on_missing_files
+        from pathlib import Path
+        Path(payload[0][1]).write_text("{}")
+    monkeypatch.setattr(huggingface_hub, "get_bucket_file_metadata", metadata)
+    monkeypatch.setattr(huggingface_hub, "download_bucket_files", download)
+    client = BucketClient(BUCKET_ID, RUN_PREFIX)
+    assert client.metadata("COMPILE_COMPLETE.json").size == 2
+    dest = tmp_path / "marker.json"
+    client.download([("COMPILE_COMPLETE.json", dest)])
+    assert dest.read_text() == "{}"

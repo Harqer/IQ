@@ -1,13 +1,12 @@
-"""Typed wrapper around the huggingface_hub 1.14 bucket API.
+"""Typed wrapper around the huggingface_hub bucket API.
 
-Token policy: read HF_TOKEN from the environment, never print it, never
-persist it. huggingface_hub also reads HF_TOKEN itself; we use it for
-presence checks and explicit passing.
+Authentication policy: use the active Hugging Face login via the official
+SDK. The SDK manages its own credential cache and OAuth refresh. IQ never
+prints or persists credentials. Environment credentials remain SDK-supported.
 """
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -23,7 +22,7 @@ class BucketError(RuntimeError):
 
 
 class BucketAuthError(BucketError):
-    """HF_TOKEN missing or rejected by the bucket."""
+    """Hugging Face login missing or rejected by the bucket."""
 
 
 class BucketObjectMissing(BucketError):
@@ -37,8 +36,8 @@ class BucketClient:
 
     @staticmethod
     def _token() -> str | None:
-        token = os.environ.get("HF_TOKEN")
-        return token or None
+        from huggingface_hub import get_token
+        return get_token()
 
     def _remote(self, path: str) -> str:
         return f"{self.run_prefix}/{path.lstrip('/')}"
@@ -53,7 +52,7 @@ class BucketClient:
 
         token = self._token()
         if token is None:
-            raise BucketAuthError("HF_TOKEN is not set in the environment")
+            raise BucketAuthError("No active Hugging Face login. Run hf auth login and try again.")
         remote = self._remote(path)
         try:
             return get_bucket_file_metadata(self.bucket_id, remote, token=token)
@@ -88,7 +87,7 @@ class BucketClient:
     def download(self, files: list[tuple[str, Path]]) -> None:
         token = self._token()
         if token is None:
-            raise BucketAuthError("HF_TOKEN is not set in the environment")
+            raise BucketAuthError("No active Hugging Face login. Run hf auth login and try again.")
         if not files:
             return
         for _, dest in files:
