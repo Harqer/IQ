@@ -25,3 +25,23 @@ def test_state_to_preserves_fields_and_dtypes():
     result = state_to(state, "cpu")
     for name in ("angle", "ssm", "k", "v"):
         torch.testing.assert_close(getattr(state, name), getattr(result, name))
+
+
+def test_mounted_provider_reads_without_cache(tmp_path):
+    from types import SimpleNamespace
+    from safetensors.torch import save_file
+    from scripts.iq235_colab_tpu import MountedStreamingProvider, mounted_checkpoint_root
+    import pytest
+    for name in ("iq_config.json", "model.safetensors.index.json"):
+        (tmp_path / name).write_text("{}")
+    assert mounted_checkpoint_root(tmp_path) == tmp_path
+    filename = "model-global.safetensors"
+    weight = torch.arange(6, dtype=torch.bfloat16)
+    save_file({"norm.weight": weight}, str(tmp_path / filename))
+    index = SimpleNamespace(weight_map={"norm.weight": filename})
+    provider = MountedStreamingProvider(index, tmp_path)
+    torch.testing.assert_close(provider.load_global("norm.weight"), weight)
+    assert provider.counters["mounted_shard_opens"] == 1
+    assert provider.counters["bucket_files"] == 0
+    with pytest.raises(FileNotFoundError):
+        provider._shard_path("missing.safetensors")

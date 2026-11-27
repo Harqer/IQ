@@ -41,3 +41,34 @@ Status: experimental, not TPU parity-tested. A single generation may take a long
 time and exhaust free runtime/network quotas; XLA operator support and actual
 HBM allocation must be established by real execution. The manifest identity
 checks cover config/index, not independent payload provenance.
+
+
+## Alternative: direct hf-mount access (no duplicate shard cache)
+
+Install hf-mount using Homebrew if available, or install the Linux binaries
+from https://github.com/huggingface/hf-mount/releases. Both the daemon and the
+NFS backend binary must be available on PATH. NFS is the default; FUSE is
+optional and requires a usable /dev/fuse and fuse3. Hosted Colab may deny
+kernel mounts; installing the binary does not guarantee mount permission.
+
+With HF_TOKEN already set in the environment:
+
+```bash
+mkdir -p /content/iq-weights
+hf-mount start --read-only --cache-size 10000000000 bucket kofecheckmate/iq-glm53-all256 /content/iq-weights
+hf-mount status
+ls /content/iq-weights/IQ/runs/glm53-full78-local-20261025a/iq_config.json
+python scripts/iq235_colab_tpu.py --mount-dir /content/iq-weights --max-new-tokens 2
+```
+
+The mounted provider reads the original safetensors on demand, without
+downloading a separate copy into the application's cache. The hf-mount daemon
+still transfers requested bytes over the network and may cache them locally.
+The mount is not TPU memory. The runner streams each physical layer and its
+routed experts to the TPU as before. If the hosted runtime denies mounting,
+omit --mount-dir to use the existing bucket API transport instead.
+
+When finished: `hf-mount stop /content/iq-weights`.
+
+Do not mount the bucket read-write for inference. This path does not modify
+checkpoint artifacts. Actual hosted mount and TPU execution remain unverified.

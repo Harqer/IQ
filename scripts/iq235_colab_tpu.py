@@ -67,6 +67,44 @@ class RawStreamingProvider(StreamingWeightProvider):
         return tuple(tensors[k] for k in keys)
 
 
+class MountedStreamingProvider(RawStreamingProvider):
+    """Read safetensors directly from a read-only HF mount; no duplicate cache."""
+
+    def __init__(self, index, root):
+        super().__init__(index, None, None, max_ram_experts=0)
+        self.root = Path(root)
+        self.counters["mounted_shard_opens"] = 0
+
+    def _shard_path(self, filename):
+        if Path(filename).name != filename:
+            raise ValueError(f"Invalid checkpoint filename: {filename}")
+        path = self.root / filename
+        if not path.is_file():
+            raise FileNotFoundError(f"Mounted checkpoint shard missing: {path}")
+        self.counters["mounted_shard_opens"] += 1
+        return path
+
+    def _read_keys(self, path, keys):
+        # Copy the requested tensors into host RAM while the mapping is open.
+        # This avoids retaining remote mmap-backed storage across layer loads.
+        from safetensors import safe_open
+        with safe_open(str(path), framework="pt", device="cpu") as handle:
+            return {key: handle.get_tensor(key).clone() for key in keys}
+
+
+def mounted_checkpoint_root(path):
+    path = Path(path).expanduser().resolve()
+    for candidate in (path / RUN_PREFIX, path):
+        if (candidate / "iq_config.json").is_file() and (
+            candidate / "model.safetensors.index.json"
+        ).is_file():
+            return candidate
+    raise FileNotFoundError(
+        f"No IQ checkpoint manifests under {path} or {path / RUN_PREFIX}. "
+        "Check hf-mount status and the mounted bucket path."
+    )
+
+
 def validate_index(index):
     for name, expected in (
         ("iq_config.json", SOURCE_CONFIG_SHA),
@@ -263,6 +301,7 @@ def main():
     parser.add_argument("--token-ids", nargs="+", type=int,
                         help="Run real source-token inference without downloading a tokenizer")
     parser.add_argument("--max-new-tokens", type=int, default=2)
+    parser.add_argument("--mount-dir", type=Path, help="Existing read-only HF bucket mount or mounted checkpoint subfolder")
     parser.add_argument("--cache-dir", type=Path, default=Path("/content/iq-cache"))
     parser.add_argument("--cache-gib", type=float, default=None)
     parser.add_argument("--device", choices=("tpu", "cpu"), default="tpu")
@@ -295,17 +334,25 @@ def main():
         prompt = tokenizer.encode(args.prompt, add_special_tokens=True)
     else:
         prompt = args.token_ids
-    args.cache_dir.mkdir(parents=True, exist_ok=True)
-    free_gib = shutil.disk_usage(args.cache_dir).free / (1 << 30)
-    budget = args.cache_gib if args.cache_gib is not None else free_gib - 16
-    if budget <= 0 or budget > free_gib - 12:
-        raise RuntimeError("Insufficient scratch disk for requested cache budget")
-    cache_root = checkpoint_cache_root(args.cache_dir, BUCKET_ID, RUN_PREFIX)
-    client = BucketClient(BUCKET_ID, RUN_PREFIX)
-    cache = LocalCache(cache_root / "raw", budget_bytes=int(budget * (1 << 30)))
-    index = RunIndex(client, cache_root / "run")
-    config = validate_index(index)
-    provider = RawStreamingProvider(index, cache, client, max_ram_experts=0)
+    if args.mount_dir is not None:
+        root = mounted_checkpoint_root(args.mount_dir)
+        print(f"Using mounted checkpoint: {root}", flush=True)
+        index = RunIndex(None, root)
+        config = validate_index(index)
+        provider = MountedStreamingProvider(index, root)
+        budget = None
+    else:
+        args.cache_dir.mkdir(parents=True, exist_ok=True)
+        free_gib = shutil.disk_usage(args.cache_dir).free / (1 << 30)
+        budget = args.cache_gib if args.cache_gib is not None else free_gib - 16
+        if budget <= 0 or budget > free_gib - 12:
+            raise RuntimeError("Insufficient scratch disk for requested cache budget")
+        cache_root = checkpoint_cache_root(args.cache_dir, BUCKET_ID, RUN_PREFIX)
+        client = BucketClient(BUCKET_ID, RUN_PREFIX)
+        cache = LocalCache(cache_root / "raw", budget_bytes=int(budget * (1 << 30)))
+        index = RunIndex(client, cache_root / "run")
+        config = validate_index(index)
+        provider = RawStreamingProvider(index, cache, client, max_ram_experts=0)
     model = build_host_model(config, provider)
     runner = TPUStreamingRunner(model, provider, device)
     def report(event):
@@ -314,7 +361,8 @@ def main():
             print("token:", repr(tokenizer.decode([event["token_id"]])), flush=True)
     print(json.dumps({"mode": "experimental_source_inference",
                       "schedule": EXPECTED, "source_vocab": 128256,
-                      "prompt_ids": prompt, "cache_gib": budget}), flush=True)
+                      "prompt_ids": prompt, "cache_gib": budget,
+                      "weight_source": "mount" if args.mount_dir else "bucket_api"}), flush=True)
     start = time.monotonic()
     stop = {tokenizer.eos_token_id, 128009} if tokenizer is not None else None
     generated = runner.generate(prompt, args.max_new_tokens,
