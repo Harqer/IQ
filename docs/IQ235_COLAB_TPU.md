@@ -132,3 +132,29 @@ an attestation against Meta's gated original. Use --official-tokenizer or
 --tokenizer-dir for an authorized original. Output is decoded cumulatively
 and printed as IQ response. The base model uses question/answer completion,
 not an instruction-tuned chat template.
+
+## Reusable sessions and cache (Colab)
+
+After pulling the branch, initialize once:
+
+```python
+%cd /content/IQ
+from scripts.iq235_colab_tpu import open_session
+iq = open_session()
+```
+
+Then repeat only:
+
+```python
+result = iq.ask("What is the capital of France?", max_new_tokens=4)
+```
+
+Use iq.close() when finished. Do not run concurrent IQ processes against the
+same cache. Existing committed BF16 shards remain compatible. Default capacity
+includes their bytes in addition to usable free disk. Startup cache inventory
+and per-request download/cache counters are printed. Independent questions
+reset sequence state and still stream each physical layer. Selected missing
+experts are downloaded in batches of at most eight; one background worker
+prefetches next-layer base weights. Prefetch is optional (--no-prefetch) and
+skips speculation near the cache budget. Model math and routing are unchanged.
+Speedup requires measurement; cache does not survive a Colab VM reset.

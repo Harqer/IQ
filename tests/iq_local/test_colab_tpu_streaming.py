@@ -45,3 +45,32 @@ def test_mounted_provider_reads_without_cache(tmp_path):
     assert provider.counters["bucket_files"] == 0
     with pytest.raises(FileNotFoundError):
         provider._shard_path("missing.safetensors")
+
+
+def test_raw_provider_batches_missing_only_and_reuses_disk(tmp_path):
+    from types import SimpleNamespace
+    from iq_local.cache import LocalCache
+    from scripts.iq235_colab_tpu import RawStreamingProvider
+
+    class Client:
+        def __init__(self):
+            self.batches = []
+        def download(self, files):
+            self.batches.append([name for name, _ in files])
+            for name, dest in files:
+                dest.write_bytes(name.encode())
+
+    client = Client()
+    index = SimpleNamespace(weight_map={})
+    cache = LocalCache(tmp_path, budget_bytes=10000, min_free_bytes=0)
+    p = RawStreamingProvider(index, cache, client, prefetch=False)
+    p._ensure_shards(["a", "b", "a"])
+    p._ensure_shards(["b", "c"])
+    assert client.batches == [["a", "b"], ["c"]]
+    assert p._shard_path("a").read_bytes() == b"a"
+    p.close()
+    reopened = RawStreamingProvider(index, LocalCache(tmp_path, 10000, min_free_bytes=0),
+                                    client, prefetch=False)
+    reopened._ensure_shards(["a", "b", "c"])
+    assert len(client.batches) == 2
+    reopened.close()

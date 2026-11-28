@@ -96,3 +96,30 @@ def test_checkpoint_cache_is_scoped_by_bucket_and_run(tmp_path: Path):
     (first / "sentinel").write_bytes(b"checkpoint-one")
     second = checkpoint_cache_root(tmp_path, "owner/a", "runs/second")
     assert not (second / "sentinel").exists()
+
+
+def test_reusable_budget_counts_existing_bytes(tmp_path, monkeypatch):
+    from iq_local.cache import configure_reusable_budget
+    import iq_local.cache as module
+    gib = 1 << 30
+    cache = LocalCache(tmp_path / "store", budget_bytes=100 * gib, min_free_bytes=0)
+    staged = tmp_path / "s.bin"
+    staged.write_bytes(b"abc")
+    cache.commit("shards/a.safetensors", staged)
+    monkeypatch.setattr(module.shutil, "disk_usage", lambda p: type("U", (), {"free": 80 * gib})())
+    assert configure_reusable_budget(cache) == (64 * gib + 3) / gib
+    assert cache.contains("shards/a.safetensors")
+
+
+def test_touch_survives_reopen(tmp_path):
+    import os
+    root = tmp_path / "store"
+    cache = LocalCache(root, budget_bytes=1000, min_free_bytes=0)
+    for name in ("a", "b"):
+        staged = tmp_path / name
+        staged.write_bytes(b"x")
+        path = cache.commit("shards/" + name, staged)
+        os.utime(path, (1, 1))
+    cache.touch("shards/a")
+    reopened = LocalCache(root, budget_bytes=1000)
+    assert list(reopened._entries) == ["shards/b", "shards/a"]

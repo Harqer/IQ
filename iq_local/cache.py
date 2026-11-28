@@ -46,6 +46,12 @@ class LocalCache:
     def contains(self, key: str) -> bool:
         return key in self._entries
 
+    def touch(self, key: str) -> Path:
+        path = self.path_for(key)
+        self._entries.move_to_end(key)
+        os.utime(path, None)
+        return path
+
     def commit(self, key: str, tmp_path: Path) -> Path:
         size = os.path.getsize(tmp_path)
         free = shutil.disk_usage(self.root).free
@@ -94,8 +100,30 @@ class LocalCache:
         found = [(path, path.stat()) for path in self.root.iterdir() if path.is_file()]
         found.sort(key=lambda item: item[1].st_mtime)
         for path, info in found:
+            if path.name in {"staging.tmp", "int4-staging.tmp"}:
+                continue
             key = path.name.replace("_", "/", 1)
             if key in self._entries:
                 raise ValueError(f"cache key collision during rehydration: {key}")
             self._entries[key] = info.st_size
             self._bytes += info.st_size
+
+
+def configure_reusable_budget(cache: LocalCache, requested_gib: float | None = None) -> float:
+    """Total cache capacity includes existing committed bytes."""
+    import math
+
+    gib = 1 << 30
+    free = shutil.disk_usage(cache.root).free
+    used, _ = cache.usage()
+    reserve = max(16 * gib, cache.min_free_bytes + 4 * gib)
+    maximum = used + free - reserve
+    if requested_gib is not None and (not math.isfinite(requested_gib) or requested_gib <= 0):
+        raise ValueError("cache_gib must be finite and positive")
+    budget = maximum if requested_gib is None else int(requested_gib * gib)
+    if budget <= 0 or budget > maximum:
+        raise RuntimeError("Insufficient scratch disk for requested total cache budget")
+    if free < cache.min_free_bytes + 4 * gib:
+        raise RuntimeError("Insufficient free staging space; free disk before starting IQ")
+    cache.budget_bytes = budget
+    return budget / gib

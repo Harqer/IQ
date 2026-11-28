@@ -7,6 +7,9 @@ The original 128256-vocabulary checkpoint is NOT a trained GLM-tokenized model.
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
+from threading import RLock
+from tempfile import TemporaryDirectory
 from collections import Counter
 from hashlib import sha256
 import json
@@ -22,7 +25,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from iq_local.bucket import BUCKET_ID, RUN_PREFIX, BucketClient
-from iq_local.cache import LocalCache, checkpoint_cache_root
+from iq_local.cache import LocalCache, checkpoint_cache_root, configure_reusable_budget
 from iq_local.cpu_hybrid import (
     CPUHybridForCausalLM, CPUMamba3ResidualLayer,
     FunctionalStableLatentMoELayer, CompressedContextResidualLayer,
@@ -45,14 +48,81 @@ SOURCE_INDEX_SHA = "0367412e31bb391a5c892497b565164a4b7954611250d1df1f0a986a8194
 class RawStreamingProvider(StreamingWeightProvider):
     """Bounded disk LRU for BOTH base and original BF16 expert shards."""
 
+    def __init__(self, index, cache, client, *, max_ram_experts=0, prefetch=True):
+        super().__init__(index, cache, client, max_ram_experts=max_ram_experts)
+        self._io_lock = RLock()
+        self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="iq-prefetch") if prefetch and cache is not None else None
+        self._pending = None
+        self._base_files = {}
+        for key, filename in index.weight_map.items():
+            if key.startswith("layers.") and ".moe.routed_experts." not in key:
+                pos = int(key.split(".")[1])
+                self._base_files.setdefault(pos, set()).add(filename)
+        self.counters.update(bucket_batches=0, prefetch_batches=0)
+
+    def _ensure_shards(self, filenames, *, speculative=False):
+        # Single cache writer per session. Unique staging directory per batch.
+        with self._io_lock:
+            missing = [name for name in sorted(set(filenames))
+                       if not self.cache.contains(f"shards/{name}")]
+            if not missing:
+                return
+            if speculative and self.cache.budget_bytes - self.cache.usage()[0] < 4 * (1 << 30):
+                return
+            for offset in range(0, len(missing), 8):
+                batch = missing[offset:offset + 8]
+                with TemporaryDirectory(prefix="iq-batch-", dir=self.cache.root) as staging:
+                    paths = [(name, Path(staging) / name) for name in batch]
+                    self.client.download(paths)
+                    self.counters["bucket_batches"] += 1
+                    if speculative:
+                        self.counters["prefetch_batches"] += 1
+                    for name, tmp in paths:
+                        self.counters["bucket_files"] += 1
+                        self.counters["bucket_bytes"] += tmp.stat().st_size
+                        self.cache.commit(f"shards/{name}", tmp)
+
+    def prefetch_layer(self, position):
+        if self._pool is None or position not in self._base_files:
+            return
+        self.finish_prefetch()
+        self._pending = self._pool.submit(
+            self._ensure_shards, self._base_files[position], speculative=True)
+
+    def finish_prefetch(self):
+        if self._pending is not None:
+            pending, self._pending = self._pending, None
+            pending.result()
+
+    def close(self):
+        if self._pool is not None:
+            try:
+                self.finish_prefetch()
+            finally:
+                self._pool.shutdown(wait=True, cancel_futures=True)
+                self._pool = None
+
+    def prepare_experts(self, stage, experts):
+        self._ensure_shards([self._expert_filename(stage, int(e)) for e in experts])
+
+    def load_layer_base(self, layer_idx):
+        self.finish_prefetch()
+        with self._io_lock:
+            self._ensure_shards(self._base_files.get(layer_idx, ()))
+            return super().load_layer_base(layer_idx)
+
+    def load_global(self, key):
+        with self._io_lock:
+            return super().load_global(key)
+
     def _shard_path(self, filename):
-        key = f"shards/{filename}"
-        if self.cache.contains(key):
-            self.counters["nvme_hits"] += 1
-            # Existing cache has no public touch method; refresh the LRU entry.
-            self.cache._entries.move_to_end(key)
-            return self.cache.path_for(key)
-        return self._fetch_shard(filename, key)
+        with self._io_lock:
+            key = f"shards/{filename}"
+            if self.cache.contains(key):
+                self.counters["nvme_hits"] += 1
+                return self.cache.touch(key)
+            self._ensure_shards([filename])
+            return self.cache.touch(key)
 
     def load_expert(self, stage, expert_idx):
         layer = self._expert_layer(stage)
@@ -63,8 +133,9 @@ class RawStreamingProvider(StreamingWeightProvider):
         filename = self._expert_filename(stage, expert_idx)
         if any(self.index.weight_map.get(k) != filename for k in keys):
             raise RuntimeError(f"Unexpected expert shard mapping: {stage}/{expert_idx}")
-        tensors = self._read_keys(self._shard_path(filename), keys)
-        return tuple(tensors[k] for k in keys)
+        with self._io_lock:
+            tensors = self._read_keys(self._shard_path(filename), keys)
+            return tuple(tensors[k] for k in keys)
 
 
 class MountedStreamingProvider(RawStreamingProvider):
@@ -74,6 +145,12 @@ class MountedStreamingProvider(RawStreamingProvider):
         super().__init__(index, None, None, max_ram_experts=0)
         self.root = Path(root)
         self.counters["mounted_shard_opens"] = 0
+
+    def prepare_experts(self, stage, experts):
+        pass  # Mounted transport owns read-ahead.
+
+    def load_layer_base(self, layer_idx):
+        return StreamingWeightProvider.load_layer_base(self, layer_idx)
 
     def _shard_path(self, filename):
         if Path(filename).name != filename:
@@ -175,7 +252,7 @@ def state_to(state, device):
                             for name in ("angle", "ssm", "k", "v")})
 
 
-def moe_hidden(layer, x, expert_fn):
+def moe_hidden(layer, x, expert_fn, prepare_experts=None):
     """Same routing and ascending expert accumulation; dynamic indices on host."""
     moe = layer.moe
     flat = layer.norm(x).reshape(-1, moe.config.hidden_size)
@@ -184,7 +261,10 @@ def moe_hidden(layer, x, expert_fn):
     weights_cpu = weights.cpu()
     latent = moe.latent_down(flat)
     routed = torch.zeros_like(latent)
-    for expert in sorted(set(selected_cpu.flatten().tolist())):
+    experts = sorted(set(selected_cpu.flatten().tolist()))
+    if prepare_experts is not None:
+        prepare_experts(moe._stage, experts)
+    for expert in experts:
         rows, slots = torch.where(selected_cpu == expert)
         rows_dev = rows.to(x.device)
         result = moe._run_expert(expert_fn, expert, latent.index_select(0, rows_dev))
@@ -238,6 +318,7 @@ class TPUStreamingRunner(HybridRunner):
 
     def _run_layer(self, position, template, layer_input, *, prefill):
         layer = self._new_layer(position)
+        self.provider.prefetch_layer(position + 1)
         x = layer_input.to(self.device)
         if isinstance(layer, CPUMamba3ResidualLayer):
             # Explicit accelerator path through the plain-torch rank-4 core,
@@ -254,7 +335,7 @@ class TPUStreamingRunner(HybridRunner):
             out = x + layer.residual_dropout(torch.stack(outputs, dim=1))
             self._mamba_states[position] = state_to(state, "cpu")
         elif isinstance(layer, FunctionalStableLatentMoELayer):
-            out = moe_hidden(layer, x, self._expert_fn)
+            out = moe_hidden(layer, x, self._expert_fn, self.provider.prepare_experts)
         elif isinstance(layer, (CompressedContextResidualLayer, DenseContextResidualLayer)):
             if not prefill:
                 self._attn_cache[position] = [v.to(self.device)
@@ -295,24 +376,77 @@ class TPUStreamingRunner(HybridRunner):
         return generated
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--prompt", default="The capital of France is")
-    parser.add_argument("--token-ids", nargs="+", type=int,
-                        help="Run real source-token inference without downloading a tokenizer")
-    parser.add_argument("--tokenizer-dir", type=Path,
-                        help="Local copy of the original Llama 3.1 tokenizer files")
-    parser.add_argument("--official-tokenizer", action="store_true",
-                        help="Use the official gated source tokenizer instead of the public cross-checked codec")
-    parser.add_argument("--max-new-tokens", type=int, default=2)
-    parser.add_argument("--mount-dir", type=Path, help="Existing read-only HF bucket mount or mounted checkpoint subfolder")
-    parser.add_argument("--cache-dir", type=Path, default=Path("/content/iq-cache"))
-    parser.add_argument("--cache-gib", type=float, default=None)
-    parser.add_argument("--device", choices=("tpu", "cpu"), default="tpu")
-    args = parser.parse_args()
-    if args.device == "tpu":
-        # Colab's native TorchTPU registers the 'tpu' PyTorch backend.
-        # Do not import torch_xla or initialize a second TPU runtime.
+class IQSession:
+    """One initialized model/tokenizer; independent prompts share the weight cache."""
+    def __init__(self, runner, provider, tokenizer, budget, mounted=False):
+        self.runner, self.provider, self.tokenizer = runner, provider, tokenizer
+        self.budget, self.mounted = budget, mounted
+        self._closed = False
+        self._request_lock = RLock()
+
+    def ask(self, question, max_new_tokens=8):
+        return self.complete(f"Question: {question}\nAnswer:", max_new_tokens)
+
+    def complete(self, prompt, max_new_tokens=8):
+        from scripts.iq_source_tokenizer import encode_prompt
+        with self._request_lock:
+            if self._closed or self.tokenizer is None:
+                raise ValueError("A live text-mode session is required")
+            print("Prompt:", prompt, flush=True)
+            return self.generate_ids(encode_prompt(self.tokenizer, prompt), max_new_tokens)
+
+    def generate_ids(self, prompt, max_new_tokens=2):
+        with self._request_lock:
+            if self._closed:
+                raise RuntimeError("IQ session is closed")
+            before = dict(self.provider.counters)
+            output_ids = []
+            tokenizer = self.tokenizer
+
+            def report(event):
+                print(json.dumps(event), flush=True)
+                if event["phase"] == "token" and tokenizer is not None:
+                    output_ids.append(event["token_id"])
+                    print("IQ partial response:", tokenizer.decode(
+                        output_ids, skip_special_tokens=True), flush=True)
+
+            print(json.dumps({"mode": "experimental_source_inference",
+                              "schedule": EXPECTED, "source_vocab": 128256,
+                              "prompt_ids": prompt, "cache_gib": self.budget,
+                              "weight_source": "mount" if self.mounted else "bucket_api"}), flush=True)
+            start = time.monotonic()
+            try:
+                generated = self.runner.generate(
+                    prompt, max_new_tokens, stop_tokens={128001, 128009} if tokenizer else None,
+                    progress_callback=report)
+            finally:
+                self.provider.finish_prefetch()
+            seconds = time.monotonic() - start
+            result = {"generated_ids": generated, "seconds": seconds,
+                      "tokens_per_second_including_prefill": len(generated) / seconds,
+                      "provider": {k: v - before.get(k, 0) for k, v in self.provider.counters.items()},
+                      "text": tokenizer.decode(generated, skip_special_tokens=True) if tokenizer else None}
+            print(json.dumps(result), flush=True)
+            if tokenizer is not None:
+                print("IQ response:", result["text"], flush=True)
+            return result
+
+    def close(self):
+        with self._request_lock:
+            if not self._closed:
+                self._closed = True
+                try:
+                    self.provider.close()
+                finally:
+                    self.runner = None
+                    self.provider = None
+                    self.tokenizer = None
+
+
+def open_session(*, device="tpu", cache_dir=Path("/content/iq-cache"), cache_gib=None,
+                 mount_dir=None, tokenizer_dir=None, official_tokenizer=False,
+                 token_ids_only=False, prefetch=True):
+    if device == "tpu":
         device = torch.device("tpu")
         print("Native TorchTPU:", device, "torch:", torch.__version__, flush=True)
         probe = torch.ones((8, 8), device=device, dtype=torch.bfloat16)
@@ -321,59 +455,65 @@ def main():
             raise RuntimeError(f"Native TPU arithmetic failed: {probe.device}, {result}")
         del probe
         print("Native TPU BF16 matmul passed", flush=True)
-    else:
+    elif device == "cpu":
         device = torch.device("cpu")
         print("Explicit CPU reference mode", flush=True)
-    tokenizer = None
-    if args.token_ids is None:
-        from iq_source_tokenizer import load_source_tokenizer, encode_prompt
-        tokenizer = load_source_tokenizer(args.tokenizer_dir, official=args.official_tokenizer)
-        prompt = encode_prompt(tokenizer, args.prompt)
-        print("Prompt:", args.prompt, flush=True)
     else:
-        prompt = args.token_ids
-    if args.mount_dir is not None:
-        root = mounted_checkpoint_root(args.mount_dir)
+        raise ValueError("device must be tpu or cpu")
+    tokenizer = None
+    if not token_ids_only:
+        from scripts.iq_source_tokenizer import load_source_tokenizer
+        tokenizer = load_source_tokenizer(tokenizer_dir, official=official_tokenizer)
+    if mount_dir is not None:
+        root = mounted_checkpoint_root(mount_dir)
         print(f"Using mounted checkpoint: {root}", flush=True)
         index = RunIndex(None, root)
         config = validate_index(index)
         provider = MountedStreamingProvider(index, root)
         budget = None
     else:
-        args.cache_dir.mkdir(parents=True, exist_ok=True)
-        free_gib = shutil.disk_usage(args.cache_dir).free / (1 << 30)
-        budget = args.cache_gib if args.cache_gib is not None else free_gib - 16
-        if budget <= 0 or budget > free_gib - 12:
-            raise RuntimeError("Insufficient scratch disk for requested cache budget")
-        cache_root = checkpoint_cache_root(args.cache_dir, BUCKET_ID, RUN_PREFIX)
+        cache_root = checkpoint_cache_root(Path(cache_dir), BUCKET_ID, RUN_PREFIX)
+        cache = LocalCache(cache_root / "raw", budget_bytes=0)
+        budget = configure_reusable_budget(cache, cache_gib)
+        print(json.dumps({"phase": "cache_open", "cached_bytes": cache.usage()[0],
+                          "cached_shards": cache.usage()[1], "cache_gib": budget}), flush=True)
         client = BucketClient(BUCKET_ID, RUN_PREFIX)
-        cache = LocalCache(cache_root / "raw", budget_bytes=int(budget * (1 << 30)))
         index = RunIndex(client, cache_root / "run")
         config = validate_index(index)
-        provider = RawStreamingProvider(index, cache, client, max_ram_experts=0)
-    model = build_host_model(config, provider)
-    runner = TPUStreamingRunner(model, provider, device)
-    output_ids = []
-    def report(event):
-        print(json.dumps(event), flush=True)
-        if event["phase"] == "token" and tokenizer is not None:
-            output_ids.append(event["token_id"])
-            print("IQ partial response:", tokenizer.decode(output_ids, skip_special_tokens=True), flush=True)
-    print(json.dumps({"mode": "experimental_source_inference",
-                      "schedule": EXPECTED, "source_vocab": 128256,
-                      "prompt_ids": prompt, "cache_gib": budget,
-                      "weight_source": "mount" if args.mount_dir else "bucket_api"}), flush=True)
-    start = time.monotonic()
-    stop = {128001, 128009} if tokenizer is not None else None
-    generated = runner.generate(prompt, args.max_new_tokens,
-                                stop_tokens=stop, progress_callback=report)
-    seconds = time.monotonic() - start
-    print(json.dumps({"generated_ids": generated, "seconds": seconds,
-                      "tokens_per_second_including_prefill": len(generated)/seconds,
-                      "provider": provider.counters,
-                      "text": tokenizer.decode(generated, skip_special_tokens=True) if tokenizer else None}), flush=True)
-    if tokenizer is not None:
-        print("\nIQ response:", tokenizer.decode(generated, skip_special_tokens=True), flush=True)
+        provider = RawStreamingProvider(index, cache, client, prefetch=prefetch)
+    try:
+        model = build_host_model(config, provider)
+        runner = TPUStreamingRunner(model, provider, device)
+        return IQSession(runner, provider, tokenizer, budget, mount_dir is not None)
+    except BaseException:
+        provider.close()
+        raise
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--prompt", default="The capital of France is")
+    parser.add_argument("--token-ids", nargs="+", type=int)
+    parser.add_argument("--tokenizer-dir", type=Path)
+    parser.add_argument("--official-tokenizer", action="store_true")
+    parser.add_argument("--max-new-tokens", type=int, default=2)
+    parser.add_argument("--mount-dir", type=Path)
+    parser.add_argument("--cache-dir", type=Path, default=Path("/content/iq-cache"))
+    parser.add_argument("--cache-gib", type=float, default=None)
+    parser.add_argument("--device", choices=("tpu", "cpu"), default="tpu")
+    parser.add_argument("--no-prefetch", action="store_true")
+    args = parser.parse_args()
+    session = open_session(device=args.device, cache_dir=args.cache_dir,
+                           cache_gib=args.cache_gib, mount_dir=args.mount_dir,
+                           tokenizer_dir=args.tokenizer_dir, official_tokenizer=args.official_tokenizer,
+                           token_ids_only=args.token_ids is not None, prefetch=not args.no_prefetch)
+    try:
+        if args.token_ids is None:
+            session.complete(args.prompt, args.max_new_tokens)
+        else:
+            session.generate_ids(args.token_ids, args.max_new_tokens)
+    finally:
+        session.close()
 
 
 if __name__ == "__main__":
