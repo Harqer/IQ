@@ -231,7 +231,7 @@ class TPUStreamingRunner(HybridRunner):
                 c.model, c.compressed_context, mode=typ).to(dtype=DTYPE)
         else:
             raise RuntimeError(f"Unexpected layer {typ}")
-        # Construct real CPU buffers (e.g. RoPE) before moving to XLA.
+        # Construct real CPU buffers (e.g. RoPE) before moving to the native TPU.
         base = self.provider.load_layer_base(pos)
         materialize(layer, base, f"layers.{pos}.")
         return layer.to(self.device)
@@ -271,7 +271,7 @@ class TPUStreamingRunner(HybridRunner):
 
     @torch.no_grad()
     def generate(self, prompt_ids, max_new_tokens, *, stop_tokens=None, progress_callback=None):
-        # Avoid inference_mode interaction with XLA; use the same streaming
+        # Use no_grad for accelerator compatibility; use the same streaming
         # prefill/decode composition as HybridRunner.
         if not prompt_ids or max_new_tokens < 1:
             raise ValueError("Prompt and positive generation length required")
@@ -307,16 +307,16 @@ def main():
     parser.add_argument("--device", choices=("tpu", "cpu"), default="tpu")
     args = parser.parse_args()
     if args.device == "tpu":
-        import torch_xla
-        import torch_xla.runtime as xr
-        xr.set_device_type("TPU")
-        device = torch_xla.device()
-        if xr.device_type() != "TPU":
-            raise RuntimeError("No TPU backend; CPU fallback is not automatic")
-        print("TPU:", device, "devices:", xr.global_runtime_device_count(), flush=True)
-        # Prove device placement with real arithmetic, not just an import.
-        probe = torch.ones((8, 8), device=device)
-        assert float((probe @ probe).sum().cpu()) == 512.0
+        # Colab's native TorchTPU registers the 'tpu' PyTorch backend.
+        # Do not import torch_xla or initialize a second TPU runtime.
+        device = torch.device("tpu")
+        print("Native TorchTPU:", device, "torch:", torch.__version__, flush=True)
+        probe = torch.ones((8, 8), device=device, dtype=torch.bfloat16)
+        result = float((probe @ probe).sum().cpu())
+        if probe.device.type != "tpu" or result != 512.0:
+            raise RuntimeError(f"Native TPU arithmetic failed: {probe.device}, {result}")
+        del probe
+        print("Native TPU BF16 matmul passed", flush=True)
     else:
         device = torch.device("cpu")
         print("Explicit CPU reference mode", flush=True)

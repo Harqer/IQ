@@ -15,11 +15,13 @@ Select a TPU runtime. Run in a fresh notebook:
 ```python
 !git clone -b feat/iq235-colab-tpu-streaming https://github.com/Harqer/IQ.git
 %cd IQ
-%pip install -U torch 'torch_xla[tpu]' 'huggingface_hub==1.20.1' 'transformers==5.17.0' safetensors
+%pip install 'huggingface_hub==1.20.1' 'transformers==5.17.0' safetensors
 ```
 
-Keep torch and torch_xla on matching release versions; restart the notebook
-runtime if packages were replaced. Use the official browser OAuth login.
+Keep the Colab-provided PyTorch and native TorchTPU packages intact. Do not
+install torch_xla. The runner uses torch.device('tpu') and verifies BF16 matmul.
+If earlier setup installed incompatible accelerator packages, try the updated
+runner in a fresh subprocess; if needed, reconnect to a fresh TPU runtime. Use the official browser OAuth login.
 No manually created access token or Colab secret is needed. Your account must
 have access to meta-llama/Llama-3.1-8B and the weight bucket.
 
@@ -38,7 +40,7 @@ substitute a GLM tokenizer for these embeddings. A GLM-tokenized deployment
 requires matching trained embedding/head tensors.
 
 Status: experimental, not TPU parity-tested. A single generation may take a long
-time and exhaust free runtime/network quotas; XLA operator support and actual
+time and exhaust free runtime/network quotas; Native TorchTPU operator support and actual
 HBM allocation must be established by real execution. The manifest identity
 checks cover config/index, not independent payload provenance.
 
@@ -93,3 +95,13 @@ When finished: `hf-mount stop /content/iq-weights`.
 
 Do not mount the bucket read-write for inference. This path does not modify
 checkpoint artifacts. Actual hosted mount and TPU execution remain unverified.
+
+
+## Recovery from _XLAC undefined symbol
+
+The legacy torch_xla extension may be ABI-incompatible with the PyTorch already
+installed in Colab. The native runner no longer imports it. Pull this branch
+and run the same inference command in a new subprocess. No need to reinstall
+PyTorch or repeat HF login if the native TPU and current session are functional.
+If native TorchTPU itself fails, collect package versions (pip show torch
+ torch-tpu torch-xla libtpu) before changing dependencies.
