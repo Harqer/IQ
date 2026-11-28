@@ -105,3 +105,19 @@ and run the same inference command in a new subprocess. No need to reinstall
 PyTorch or repeat HF login if the native TPU and current session are functional.
 If native TorchTPU itself fails, collect package versions (pip show torch
  torch-tpu torch-xla libtpu) before changing dependencies.
+
+## Colab tokenizer access recovery
+
+The official Mamba-3 MIMO donor uses the Llama 3.1 tokenizer. A 403 from
+meta-llama/Llama-3.1-8B is a repository authorization issue, not a bucket or
+TPU failure. For full-layer token-ID inference without text decoding use:
+
+```python
+%cd /content/IQ
+!python -u scripts/iq235_colab_tpu.py --device tpu --token-ids 128000 32 --max-new-tokens 2
+```
+
+The notebook defaults explicitly to this mode. Text mode requires authorized
+access to the original tokenizer, or --tokenizer-dir pointing to an authorized
+local copy. The original vocabulary and special-token checks remain intact.
+No alternate tokenizer or fabricated text output is used.

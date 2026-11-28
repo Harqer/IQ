@@ -300,6 +300,8 @@ def main():
     parser.add_argument("--prompt", default="The capital of France is")
     parser.add_argument("--token-ids", nargs="+", type=int,
                         help="Run real source-token inference without downloading a tokenizer")
+    parser.add_argument("--tokenizer-dir", type=Path,
+                        help="Local authorized copy of the original Llama 3.1 tokenizer files")
     parser.add_argument("--max-new-tokens", type=int, default=2)
     parser.add_argument("--mount-dir", type=Path, help="Existing read-only HF bucket mount or mounted checkpoint subfolder")
     parser.add_argument("--cache-dir", type=Path, default=Path("/content/iq-cache"))
@@ -323,7 +325,17 @@ def main():
     tokenizer = None
     if args.token_ids is None:
         from transformers import AutoTokenizer
-        tokenizer = AutoTokenizer.from_pretrained(SOURCE_TOKENIZER)
+        try:
+            tokenizer = AutoTokenizer.from_pretrained(
+                str(args.tokenizer_dir) if args.tokenizer_dir else SOURCE_TOKENIZER,
+                local_files_only=args.tokenizer_dir is not None,
+            )
+        except OSError as exc:
+            raise SystemExit(
+                "Original source tokenizer unavailable. Obtain authorized access to "
+                f"{SOURCE_TOKENIZER}, pass an authorized local copy via --tokenizer-dir, "
+                "or explicitly run --token-ids 128000 32 for full-model token-ID inference."
+            ) from exc
         expected = {"<|begin_of_text|>": 128000, "<|end_of_text|>": 128001,
                     "<|start_header_id|>": 128006, "<|end_header_id|>": 128007,
                     "<|eot_id|>": 128009}
