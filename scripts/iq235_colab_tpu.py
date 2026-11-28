@@ -301,7 +301,9 @@ def main():
     parser.add_argument("--token-ids", nargs="+", type=int,
                         help="Run real source-token inference without downloading a tokenizer")
     parser.add_argument("--tokenizer-dir", type=Path,
-                        help="Local authorized copy of the original Llama 3.1 tokenizer files")
+                        help="Local copy of the original Llama 3.1 tokenizer files")
+    parser.add_argument("--official-tokenizer", action="store_true",
+                        help="Use the official gated source tokenizer instead of the public cross-checked codec")
     parser.add_argument("--max-new-tokens", type=int, default=2)
     parser.add_argument("--mount-dir", type=Path, help="Existing read-only HF bucket mount or mounted checkpoint subfolder")
     parser.add_argument("--cache-dir", type=Path, default=Path("/content/iq-cache"))
@@ -324,26 +326,10 @@ def main():
         print("Explicit CPU reference mode", flush=True)
     tokenizer = None
     if args.token_ids is None:
-        from transformers import AutoTokenizer
-        try:
-            tokenizer = AutoTokenizer.from_pretrained(
-                str(args.tokenizer_dir) if args.tokenizer_dir else SOURCE_TOKENIZER,
-                local_files_only=args.tokenizer_dir is not None,
-            )
-        except OSError as exc:
-            raise SystemExit(
-                "Original source tokenizer unavailable. Obtain authorized access to "
-                f"{SOURCE_TOKENIZER}, pass an authorized local copy via --tokenizer-dir, "
-                "or explicitly run --token-ids 128000 32 for full-model token-ID inference."
-            ) from exc
-        expected = {"<|begin_of_text|>": 128000, "<|end_of_text|>": 128001,
-                    "<|start_header_id|>": 128006, "<|end_header_id|>": 128007,
-                    "<|eot_id|>": 128009}
-        if len(tokenizer) != 128256 or any(
-            tokenizer.convert_tokens_to_ids(k) != v for k, v in expected.items()
-        ):
-            raise RuntimeError("Source tokenizer contract mismatch")
-        prompt = tokenizer.encode(args.prompt, add_special_tokens=True)
+        from iq_source_tokenizer import load_source_tokenizer, encode_prompt
+        tokenizer = load_source_tokenizer(args.tokenizer_dir, official=args.official_tokenizer)
+        prompt = encode_prompt(tokenizer, args.prompt)
+        print("Prompt:", args.prompt, flush=True)
     else:
         prompt = args.token_ids
     if args.mount_dir is not None:
@@ -367,23 +353,27 @@ def main():
         provider = RawStreamingProvider(index, cache, client, max_ram_experts=0)
     model = build_host_model(config, provider)
     runner = TPUStreamingRunner(model, provider, device)
+    output_ids = []
     def report(event):
         print(json.dumps(event), flush=True)
         if event["phase"] == "token" and tokenizer is not None:
-            print("token:", repr(tokenizer.decode([event["token_id"]])), flush=True)
+            output_ids.append(event["token_id"])
+            print("IQ partial response:", tokenizer.decode(output_ids, skip_special_tokens=True), flush=True)
     print(json.dumps({"mode": "experimental_source_inference",
                       "schedule": EXPECTED, "source_vocab": 128256,
                       "prompt_ids": prompt, "cache_gib": budget,
                       "weight_source": "mount" if args.mount_dir else "bucket_api"}), flush=True)
     start = time.monotonic()
-    stop = {tokenizer.eos_token_id, 128009} if tokenizer is not None else None
+    stop = {128001, 128009} if tokenizer is not None else None
     generated = runner.generate(prompt, args.max_new_tokens,
                                 stop_tokens=stop, progress_callback=report)
     seconds = time.monotonic() - start
     print(json.dumps({"generated_ids": generated, "seconds": seconds,
                       "tokens_per_second_including_prefill": len(generated)/seconds,
                       "provider": provider.counters,
-                      "text": tokenizer.decode(generated) if tokenizer else None}), flush=True)
+                      "text": tokenizer.decode(generated, skip_special_tokens=True) if tokenizer else None}), flush=True)
+    if tokenizer is not None:
+        print("\nIQ response:", tokenizer.decode(generated, skip_special_tokens=True), flush=True)
 
 
 if __name__ == "__main__":

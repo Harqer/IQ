@@ -121,3 +121,14 @@ The notebook defaults explicitly to this mode. Text mode requires authorized
 access to the original tokenizer, or --tokenizer-dir pointing to an authorized
 local copy. The original vocabulary and special-token checks remain intact.
 No alternate tokenizer or fabricated text output is used.
+
+## Natural-language inference (current default in notebook)
+
+The public Llama 3.1 tokenizer distributions Xenova/Meta-Llama-3.1-Tokenizer
+and NousResearch/Meta-Llama-3.1-8B are cross-checked for the complete vocabulary,
+BPE model, normalizer, pre-tokenizer, decoder and expected special IDs.
+Only tokenizer.json is downloaded, never donor model weights. This is not
+an attestation against Meta's gated original. Use --official-tokenizer or
+--tokenizer-dir for an authorized original. Output is decoded cumulatively
+and printed as IQ response. The base model uses question/answer completion,
+not an instruction-tuned chat template.
